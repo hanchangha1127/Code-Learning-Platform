@@ -1,0 +1,14 @@
+﻿.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+.env.local
+data
+mysql_data
+.git
+.gitignore
+.env
+.env.*
+!.env.example

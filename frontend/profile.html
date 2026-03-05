@@ -1,0 +1,89 @@
+﻿<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>내 정보 - 코드 학습 플랫폼</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260301-2" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+</head>
+<body>
+  <section id="profile-section" class="app">
+    <header class="app-header">
+      <div>
+        <h1>내 정보</h1>
+        <p class="header-status">계정 정보와 학습 설정을 관리하세요.</p>
+      </div>
+      <div class="header-actions">
+        <a href="/dashboard.html" class="ghost">대시보드</a>
+      </div>
+    </header>
+
+    <main class="workspace profile-grid">
+      <aside class="panel profile-summary">
+        <div class="panel-group">
+          <div class="profile-identity">
+            <div class="profile-identity-text">
+              <h2 id="profile-name">닉네임</h2>
+              <span id="profile-tier" class="pill">티어: -</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-group">
+          <button id="btn-wrong-note" class="profile-action" type="button">
+            <div class="profile-action-header">
+              <span>오답 노트</span>
+              <span class="profile-action-arrow">›</span>
+            </div>
+            <span class="profile-action-desc">틀린 문제와 피드백을 모아봐요</span>
+          </button>
+          <button id="btn-report" class="profile-action" type="button">
+            <div class="profile-action-header">
+              <span>리포트 확인</span>
+              <span class="profile-action-arrow">›</span>
+            </div>
+            <span class="profile-action-desc">최근 학습 리포트를 확인해요</span>
+          </button>
+        </div>
+      </aside>
+
+      <section class="panel profile-settings-panel">
+        <div class="panel-group">
+          <h3>학습 설정</h3>
+          <p class="panel-description">모든 학습 모드에 공통 적용됩니다.</p>
+        </div>
+        <div class="panel-group">
+          <h4>문제 언어</h4>
+          <div id="language-setting" class="pill-group"></div>
+        </div>
+        <div class="panel-group">
+          <h4>문제 난이도</h4>
+          <div id="difficulty-setting" class="pill-group"></div>
+        </div>
+        <button id="btn-logout" class="profile-logout" type="button">로그아웃</button>
+      </section>
+    </main>
+  </section>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="assertive"></div>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-card">
+      <button id="modal-close" type="button" class="ghost close-btn" aria-label="닫기">&times;</button>
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="/static/auth_client.js?v=20260209-1"></script>
+  <script src="/static/api_client.js?v=20260221-1"></script>
+  <script src="/static/profile.js?v=20260226-1" type="module"></script>
+</body>
+</html>
+

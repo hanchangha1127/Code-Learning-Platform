@@ -1,0 +1,255 @@
+﻿:root {
+  --board: #f6f7f2;
+  --board-line: rgba(38, 48, 58, 0.08);
+  --panel: #ffffff;
+  --panel-soft: #fbfcf8;
+  --line: #d5dacc;
+  --ink: #202833;
+  --ink-soft: #5e6a77;
+  --marker-blue: #2f80ed;
+  --marker-green: #2f9e44;
+  --marker-orange: #c37d12;
+  --marker-red: #c84545;
+  --marker-purple: #6f42c1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--ink);
+  font-family: "Noto Sans KR", sans-serif;
+  background:
+    radial-gradient(circle at 13% 18%, rgba(255, 255, 255, 0.75), transparent 34%),
+    radial-gradient(circle at 88% 8%, rgba(0, 0, 0, 0.03), transparent 30%),
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 24px,
+      var(--board-line) 24px,
+      var(--board-line) 25px
+    ),
+    linear-gradient(145deg, #f9faf5, var(--board));
+}
+
+.admin-shell {
+  max-width: 1340px;
+  margin: 0 auto;
+  padding: 26px 18px 34px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 16px 18px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 2px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 8px 18px rgba(36, 43, 50, 0.08);
+}
+
+.brand h1 {
+  margin: 0;
+  font-family: "Gaegu", "Noto Sans KR", sans-serif;
+  font-size: clamp(1.8rem, 1.2rem + 1.4vw, 2.6rem);
+  letter-spacing: 0.02em;
+  color: #1d2732;
+}
+
+.brand p {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pill {
+  border: 2px solid #c9cfbf;
+  border-radius: 999px;
+  padding: 8px 14px;
+  color: #36414f;
+  background: linear-gradient(180deg, #fffef8, #f4f6ed);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.btn {
+  border: 2px solid transparent;
+  border-radius: 11px;
+  padding: 10px 14px;
+  font-size: 0.91rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+}
+
+.btn:hover {
+  transform: translateY(-1px) rotate(-0.4deg);
+  box-shadow: 0 7px 14px rgba(22, 27, 34, 0.14);
+}
+
+.btn:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.btn-refresh {
+  background: #f1f8ff;
+  color: #1e4b7a;
+  border-color: #9fc2e9;
+}
+
+.btn-stop {
+  background: #fff2f2;
+  color: #812f2f;
+  border-color: #e5a3a3;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.card {
+  background: var(--panel);
+  border: 2px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 8px 16px rgba(24, 30, 38, 0.08);
+}
+
+.stat-card {
+  grid-column: span 3;
+  min-height: 126px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(250, 252, 245, 0.95));
+}
+
+.stat-card:nth-child(1) {
+  border-left: 6px solid var(--marker-blue);
+}
+
+.stat-card:nth-child(2) {
+  border-left: 6px solid var(--marker-green);
+}
+
+.stat-card:nth-child(3) {
+  border-left: 6px solid var(--marker-purple);
+}
+
+.stat-card:nth-child(4) {
+  border-left: 6px solid var(--marker-orange);
+}
+
+.stat-card h2 {
+  margin: 0;
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #586576;
+  font-weight: 700;
+}
+
+.stat-card .value {
+  margin-top: 10px;
+  font-family: "Gaegu", "Noto Sans KR", sans-serif;
+  font-size: clamp(1.9rem, 1.4rem + 1vw, 2.5rem);
+  font-weight: 700;
+  line-height: 1;
+  color: #1f2a36;
+}
+
+.stat-card .hint {
+  margin-top: 10px;
+  color: #667482;
+  font-size: 0.82rem;
+}
+
+.chart-card {
+  grid-column: span 6;
+  padding: 14px;
+  min-height: 320px;
+  background: var(--panel-soft);
+}
+
+.chart-card h3 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  color: #2c3642;
+}
+
+.chart-wrap {
+  position: relative;
+  height: 250px;
+}
+
+.status-row {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 2px dashed #c8cdbf;
+  background: #fffef7;
+  color: #5c6876;
+  font-size: 0.9rem;
+}
+
+.status-row strong {
+  color: #25303c;
+}
+
+.ok {
+  color: #2f8f43;
+}
+
+.warn {
+  color: #b2710c;
+}
+
+.bad {
+  color: #b83838;
+}
+
+@media (max-width: 1024px) {
+  .stat-card {
+    grid-column: span 6;
+  }
+
+  .chart-card {
+    grid-column: span 12;
+  }
+}
+
+@media (max-width: 640px) {
+  .admin-shell {
+    padding: 16px 12px 22px;
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .actions {
+    width: 100%;
+  }
+
+  .stat-card {
+    grid-column: span 12;
+  }
+}
