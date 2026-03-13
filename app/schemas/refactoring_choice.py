@@ -52,7 +52,7 @@ class RefactoringChoiceSubmitRequest(BaseModel):
         min_length=1,
         max_length=8,
     )
-    report: str
+    report: str = Field(..., min_length=1, max_length=8000)
 
     @field_validator("selected_option")
     @classmethod

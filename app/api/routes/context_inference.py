@@ -1,47 +1,78 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.api.routes.platform_mode_queue import execute_platform_mode_submit
 from app.api.security_deps import get_current_user
 from app.db.models import User
-from app.schemas.context_inference import (
-    ContextInferenceProblemRequest,
-    ContextInferenceProblemResponse,
-    ContextInferenceSubmitRequest,
-    ContextInferenceSubmitResponse,
-)
-from app.schemas.platform_mode_queue import PlatformModeSubmitQueuedResponse
+from app.schemas.context_inference import ContextInferenceProblemRequest, ContextInferenceSubmitRequest
+from app.services import platform_public_bridge
 from app.services.platform_mode_observability import observe_platform_mode_operation
-from app.services.context_inference_service import (
-    create_context_inference_problem,
-    submit_context_inference_report,
+from server_runtime.routes.learning import (
+    _execute_stream_problem,
+    _stream_problem_response,
+    _wants_problem_stream,
 )
 
 router = APIRouter()
 
 
-@router.post("/problem", response_model=ContextInferenceProblemResponse)
+def _current_username(current: User) -> str:
+    username = getattr(current, "username", None)
+    if username:
+        return str(username)
+    return f"user_{getattr(current, 'id', 'unknown')}"
+
+
+def submit_context_inference_report(*, current: User, body: ContextInferenceSubmitRequest, db: Session) -> dict:
+    return platform_public_bridge.submit_mode_answer(
+        mode="context-inference",
+        username=_current_username(current),
+        user_id=current.id,
+        body=body.model_dump(by_alias=True),
+        db=db,
+    )
+
+
+@router.post("/problem")
 def post_context_inference_problem(
     body: ContextInferenceProblemRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
     try:
         with observe_platform_mode_operation(mode="context-inference", operation="problem", user_id=current.id):
-            return create_context_inference_problem(
-                db,
+            if _wants_problem_stream(request):
+                return _stream_problem_response(
+                    request=request,
+                    work=lambda: _execute_stream_problem(
+                        "context_inference_problem",
+                        lambda: platform_public_bridge.request_mode_problem(
+                            mode="context-inference",
+                            username=_current_username(current),
+                            user_id=current.id,
+                            language=body.language,
+                            difficulty=body.difficulty,
+                            db=None,
+                        ),
+                    ),
+                )
+            return platform_public_bridge.request_mode_problem(
+                mode="context-inference",
+                username=_current_username(current),
                 user_id=current.id,
                 language=body.language,
                 difficulty=body.difficulty,
+                db=db,
             )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/submit", response_model=ContextInferenceSubmitResponse | PlatformModeSubmitQueuedResponse)
+@router.post("/submit")
 def post_context_inference_submit(
     body: ContextInferenceSubmitRequest,
     db: Session = Depends(get_db),
@@ -56,12 +87,7 @@ def post_context_inference_submit(
                     "problem_id": body.problem_id,
                     "report": body.report,
                 },
-                inline_submit=lambda: submit_context_inference_report(
-                    db,
-                    user_id=current.id,
-                    problem_id=body.problem_id,
-                    report=body.report,
-                ),
+                inline_submit=lambda: submit_context_inference_report(current=current, body=body, db=db),
             )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

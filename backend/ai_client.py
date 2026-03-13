@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from google import genai
 from google.genai import types
@@ -21,6 +21,9 @@ SYSTEM_PROMPT = (
     "- strengths/improvements 배열에는 구체적인 포인트만 넣고, 없다면 빈 배열을 사용하세요.\n"
     "- summary는 2~3문장으로 핵심 리뷰만 전달하세요."
 )
+
+LEARNING_REPORT_MODEL = "gemini-3.1-pro-preview"
+LEARNING_REPORT_ERROR_CODE = "learning_report_generation_failed"
 
 
 class AIClient:
@@ -695,76 +698,117 @@ class AIClient:
             self.metrics.end_ai_call(token, success=False)
             raise
 
-    def generate_report(self, history_context: str) -> Dict[str, object]:
-        """학습 이력을 바탕으로 종합 리포트를 생성한다."""
+    def _extract_response_text(self, response: Any) -> str:
+        text = (getattr(response, "text", "") or "").strip()
+        if text:
+            return text
+
+        if getattr(response, "candidates", None):
+            parts: list[str] = []
+            for candidate in response.candidates:  # type: ignore[attr-defined]
+                for part in getattr(candidate, "content", {}).get("parts", []):
+                    if isinstance(part, dict):
+                        parts.append(part.get("text", ""))
+            return "\n".join(filter(None, parts)).strip()
+        return ""
+
+    def _generate_learning_report_once(self, contents: str):
         if not self.client:
-            return {
-                "summary": "AI API 키가 설정되지 않아 리포트를 생성할 수 없습니다.",
-                "strengths": [],
-                "improvements": [],
-                "recommendations": ["API 키를 설정해주세요."],
-            }
+            raise RuntimeError(f"{LEARNING_REPORT_ERROR_CODE}: ai_client_not_configured")
+
+        token = self.metrics.start_ai_call(provider="google", operation="learning_report_generation")
+        config = types.GenerateContentConfig(
+            temperature=0.7,
+            thinking_config=types.ThinkingConfig(thinking_level="low"),
+        )
+        try:
+            response = self.client.models.generate_content(
+                model=LEARNING_REPORT_MODEL,
+                contents=contents,
+                config=config,
+            )
+            self.metrics.end_ai_call(token, success=True)
+            return response
+        except Exception:
+            self.metrics.end_ai_call(token, success=False)
+            raise
+
+    def _generate_learning_report_with_retry(self, contents: str):
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                return self._generate_learning_report_once(contents)
+            except Exception as exc:  # pragma: no cover - network dependent
+                last_error = exc
+                if attempt == 0:
+                    continue
+        raise RuntimeError(f"{LEARNING_REPORT_ERROR_CODE}: generation_failed") from last_error
+
+    def generate_learning_solution_report(
+        self,
+        *,
+        history_context: str,
+        metric_snapshot: Dict[str, object],
+    ) -> Dict[str, object]:
+        if not self.client:
+            raise RuntimeError(f"{LEARNING_REPORT_ERROR_CODE}: ai_client_not_configured")
 
         system_prompt = (
-            "당신은 코딩 학습 멘토입니다. 학습자의 최근 문제 풀이 기록을 분석하여 종합적인 피드백을 제공하세요. "
+            "당신은 코딩 학습 코치입니다. 학습자 평가가 아니라 향후 실행 가능한 학습 솔루션을 제시하세요. "
             "반드시 아래 JSON 형식으로만 답변하세요.\n"
-            '{"summary": 문자열, "strengths": 문자열 배열, "improvements": 문자열 배열, "recommendations": 문자열 배열}\n'
-            "- summary: 전체적인 학습 상태와 성과를 격려하는 어조로 3문장 내외 요약.\n"
-            "- strengths: 발견된 구체적인 강점 3가지.\n"
-            "- improvements: 보완이 필요한 구체적인 약점 3가지.\n"
-            "- recommendations: 향후 학습 방향이나 구체적인 실천 조언 3가지."
+            '{"goal": 문자열, "solutionSummary": 문자열, "priorityActions": 문자열 배열, '
+            '"phasePlan": 문자열 배열, "dailyHabits": 문자열 배열, "focusTopics": 문자열 배열, '
+            '"metricsToTrack": 문자열 배열, "checkpoints": 문자열 배열, "riskMitigation": 문자열 배열}\n'
+            "- 모든 항목은 한국어로 작성하세요.\n"
+            "- 학습자 평가/판정 문구 대신 실행 계획 중심으로 작성하세요.\n"
+            "- 각 배열에는 중복 없이 구체적인 실행 항목을 제시하세요."
         )
 
-        contents = f"{system_prompt}\n\n=== 최근 학습 기록 ===\n{history_context}"
+        contents = (
+            f"{system_prompt}\n\n"
+            f"=== 지표 스냅샷 ===\n{json.dumps(metric_snapshot, ensure_ascii=False)}\n\n"
+            f"=== 최근 학습 기록 ===\n{history_context}"
+        )
 
+        response = self._generate_learning_report_with_retry(contents)
+        text = self._extract_response_text(response)
+        if not text:
+            raise RuntimeError(f"{LEARNING_REPORT_ERROR_CODE}: empty_response")
+
+        payload = _extract_json_block(text) or text
         try:
-            response = self._analyze_with_thinking(contents)
-        except Exception as exc:
-            return {
-                "summary": f"리포트 생성 중 오류가 발생했습니다: {exc}",
-                "strengths": [],
-                "improvements": [],
-                "recommendations": [],
-            }
+            data = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{LEARNING_REPORT_ERROR_CODE}: invalid_json") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(f"{LEARNING_REPORT_ERROR_CODE}: invalid_payload")
 
-        text = (getattr(response, "text", "") or "").strip()
-        if not text and getattr(response, "candidates", None):
-             parts = []
-             for candidate in response.candidates:
-                 for part in getattr(candidate, "content", {}).get("parts", []):
-                     if isinstance(part, dict):
-                         parts.append(part.get("text", ""))
-             text = "\n".join(filter(None, parts)).strip()
-
-        parsed = _extract_json_block(text)
-        if not parsed:
-            # Fallback if JSON extraction fails, try to parse raw text or return empty
-            try:
-                data = json.loads(text)
-            except json.JSONDecodeError:
-                 return {
-                    "summary": text[:200] + "...",
-                    "strengths": [],
-                    "improvements": [],
-                    "recommendations": [],
-                }
-        else:
-            try:
-                data = json.loads(parsed)
-            except json.JSONDecodeError:
-                 return {
-                    "summary": "AI 응답 형식이 올바르지 않습니다.",
-                    "strengths": [],
-                    "improvements": [],
-                    "recommendations": [],
-                }
-        
         return {
-            "summary": data.get("summary", "요약 없음"),
-            "strengths": _normalize_points(data.get("strengths")),
-            "improvements": _normalize_points(data.get("improvements")),
-            "recommendations": _normalize_points(data.get("recommendations")),
+            "goal": _normalize_text_field(data.get("goal"), "단기 목표를 재정의하고 학습 루틴을 고정하세요."),
+            "solutionSummary": _normalize_text_field(
+                data.get("solutionSummary"),
+                "최근 기록을 바탕으로 주간 실행 계획을 수립하고 반복 학습 루프를 구축하세요.",
+            ),
+            "priorityActions": _normalize_plan_items(data.get("priorityActions")),
+            "phasePlan": _normalize_plan_items(data.get("phasePlan")),
+            "dailyHabits": _normalize_plan_items(data.get("dailyHabits")),
+            "focusTopics": _normalize_plan_items(data.get("focusTopics")),
+            "metricsToTrack": _normalize_plan_items(data.get("metricsToTrack")),
+            "checkpoints": _normalize_plan_items(data.get("checkpoints")),
+            "riskMitigation": _normalize_plan_items(data.get("riskMitigation")),
         }
+
+    def generate_report(self, history_context: str) -> Dict[str, object]:
+        """Backward-compatible wrapper for callers that still use the legacy name."""
+        return self.generate_learning_solution_report(
+            history_context=history_context,
+            metric_snapshot={
+                "attempts": 0,
+                "accuracy": None,
+                "avgScore": None,
+                "trend": "학습 데이터가 부족합니다.",
+            },
+        )
 
     def evaluate_tier(self, context: str, current_tier: str) -> Dict[str, object]:
         """AI에게 승급/유지/강등 여부를 판단시킨다."""
@@ -889,6 +933,23 @@ def _normalize_points(value) -> List[str]:
     if isinstance(value, str):
         return _split(value.strip())
     return []
+
+
+def _normalize_text_field(value: object, default: str) -> str:
+    text = str(value or "").strip()
+    return text or default
+
+
+def _normalize_plan_items(value: object, *, max_items: int = 7) -> List[str]:
+    rows = _normalize_points(value)
+    deduped: List[str] = []
+    for row in rows:
+        if row in deduped:
+            continue
+        deduped.append(row)
+        if len(deduped) >= max_items:
+            break
+    return deduped
 
 
 def _normalize_score_points(value) -> float | None:

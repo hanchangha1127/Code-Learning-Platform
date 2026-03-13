@@ -1,12 +1,15 @@
 ﻿from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
+from backend.ai_client import AIClient
+from app.db.base import utcnow
 from app.db.models import AIAnalysis, Report, ReportType, Submission, SubmissionStatus, UserProblemStat
+
+_learning_report_ai = AIClient()
 
 
 def _to_int(value: Any) -> int | None:
@@ -175,6 +178,7 @@ def _rank_weak_buckets(breakdown: dict[str, dict[str, Any]]) -> list[dict[str, A
 def _load_recent_submissions(db: Session, user_id: int, problem_count: int) -> list[Submission]:
     return (
         db.query(Submission)
+        .options(joinedload(Submission.problem))
         .filter(Submission.user_id == user_id)
         .order_by(Submission.id.desc())
         .limit(problem_count)
@@ -320,7 +324,36 @@ def _build_actions(
     return strengths, weaknesses, recommendations, weak_difficulties, weak_languages
 
 
-def create_milestone_report(db: Session, user_id: int, problem_count: int) -> Report:
+def _trend_text_from_stats(trend: dict[str, Any]) -> str:
+    label = str(trend.get("label") or "").strip().lower()
+    if label == "improving":
+        return "최근 정확도와 점수 추세가 개선 중입니다."
+    if label == "declining":
+        return "최근 정확도와 점수 추세가 하락 중입니다."
+    if label == "stable":
+        return "최근 학습 추세는 안정적입니다."
+    return "추세를 판단할 데이터가 부족합니다."
+
+
+def _build_learning_history_context(submissions: list[Submission]) -> str:
+    if not submissions:
+        return "최근 제출 이력이 없습니다."
+
+    lines: list[str] = []
+    for idx, submission in enumerate(submissions[:10], 1):
+        problem = submission.problem
+        title = (problem.title if problem is not None else "") or "Untitled"
+        difficulty = _safe_enum_value(problem.difficulty) if problem is not None else "unknown"
+        language = (submission.language or (problem.language if problem is not None else "unknown")).lower()
+        status = _safe_enum_value(submission.status)
+        score = submission.score if submission.score is not None else "N/A"
+        lines.append(
+            f"{idx}. status={status}, score={score}, language={language}, difficulty={difficulty}, title={title}"
+        )
+    return "\n".join(lines)
+
+
+def create_milestone_report(db: Session, user_id: int, problem_count: int) -> dict[str, Any]:
     submissions = _load_recent_submissions(db, user_id, problem_count)
 
     overall = _window_metrics(submissions)
@@ -351,6 +384,18 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> Re
         language_breakdown=language_breakdown,
     )
 
+    metric_snapshot: dict[str, Any] = {
+        "attempts": int(total),
+        "accuracy": overall.get("accuracy"),
+        "avgScore": overall.get("avg_score"),
+        "trend": _trend_text_from_stats(trend),
+    }
+    history_context = _build_learning_history_context(submissions)
+    solution_plan = _learning_report_ai.generate_learning_solution_report(
+        history_context=history_context,
+        metric_snapshot=metric_snapshot,
+    )
+
     stats = {
         **overall,
         "analysis_count": len(analyses),
@@ -362,7 +407,12 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> Re
         "trend": trend,
         "weak_difficulties": weak_difficulties,
         "weak_languages": weak_languages,
+        "solutionPlan": solution_plan,
+        "metricSnapshot": metric_snapshot,
     }
+
+    goal_for_db = str(solution_plan.get("goal") or title).strip() or title
+    summary_for_db = str(solution_plan.get("solutionSummary") or summary).strip() or summary
 
     report = Report(
         user_id=user_id,
@@ -370,15 +420,20 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> Re
         period_start=None,
         period_end=None,
         milestone_problem_count=problem_count,
-        title=title,
-        summary=summary,
-        strengths=strengths,
-        weaknesses=weaknesses,
-        recommendations=recommendations,
+        title=goal_for_db[:200],
+        summary=summary_for_db,
+        strengths=[],
+        weaknesses=[],
+        recommendations=solution_plan.get("priorityActions") if isinstance(solution_plan.get("priorityActions"), list) else [],
         stats=stats,
-        created_at=datetime.utcnow(),
+        created_at=utcnow(),
     )
     db.add(report)
     db.commit()
     db.refresh(report)
-    return report
+    return {
+        "reportId": report.id,
+        "createdAt": report.created_at.isoformat() if report.created_at is not None else utcnow().isoformat(),
+        **solution_plan,
+        "metricSnapshot": metric_snapshot,
+    }

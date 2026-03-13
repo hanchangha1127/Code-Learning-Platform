@@ -1,6 +1,4 @@
 ﻿# app/services/auth_service.py
-from datetime import datetime
-
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
@@ -12,6 +10,7 @@ from app.core.security import (
     refresh_expires_at,
     verify_password,
 )
+from app.db.base import utcnow
 from app.db.models import PreferredDifficulty, User, UserSession, UserSettings, UserStatus
 
 
@@ -64,7 +63,7 @@ def login(db: Session, username: str, password: str) -> tuple[str, str]:
 
 def refresh_tokens(db: Session, refresh_token: str) -> tuple[str, str]:
     token_hash = hash_refresh_token(refresh_token)
-    now = datetime.utcnow()
+    now = utcnow()
 
     session = (
         db.query(UserSession)
@@ -105,7 +104,7 @@ def refresh_tokens(db: Session, refresh_token: str) -> tuple[str, str]:
 
 def logout(db: Session, refresh_token: str) -> None:
     token_hash = hash_refresh_token(refresh_token)
-    now = datetime.utcnow()
+    now = utcnow()
 
     session = (
         db.query(UserSession)

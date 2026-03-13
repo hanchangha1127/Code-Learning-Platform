@@ -1,0 +1,21 @@
+services:
+  mysql:
+    ports:
+      - "3306:3306"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  api:
+    ports:
+      - "80:8000"
+      - "443:8443"
+      - "8443:8443"
+      - "8000:8000"
+    volumes:
+      - .:/app
+
+  worker:
+    volumes:
+      - .:/app

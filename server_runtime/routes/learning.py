@@ -1,8 +1,15 @@
 ﻿from __future__ import annotations
 
+import asyncio
+from concurrent.futures import Future, ThreadPoolExecutor
+import json
 import logging
+import threading
+import time
+from typing import Callable
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 
 from server_runtime.context import learning_service, user_service
 from server_runtime.deps import get_current_username
@@ -22,11 +29,237 @@ from server_runtime.schemas import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+STREAM_HEARTBEAT_SECONDS = 0.25
+STREAM_WORKER_MAX = 8
+STREAM_PENDING_MAX = 64
+_STREAM_EXECUTOR = ThreadPoolExecutor(max_workers=STREAM_WORKER_MAX, thread_name_prefix="problem-stream")
+_STREAM_SLOTS = threading.BoundedSemaphore(STREAM_PENDING_MAX)
+GENERIC_INTERNAL_ERROR_DETAIL = "요청 처리 중 오류가 발생했습니다."
+STREAM_QUEUE_FULL_MESSAGE = "요청이 많아 대기열이 가득 찼습니다."
+STREAM_RETRY_MESSAGE = "요청이 많아 잠시 후 다시 시도해 주세요."
+STREAM_QUEUED_MESSAGE = "문제 생성을 시작했습니다."
+STREAM_GENERATING_MESSAGE = "문제를 생성 중입니다."
+STREAM_RENDERING_MESSAGE = "문제를 표시 중..."
+AUTH_REQUIRED_DETAIL = "인증이 필요합니다."
+LEARNING_REPORT_FAILURE_DETAIL = "학습 리포트 생성에 실패했습니다. 잠시 후 다시 시도해 주세요."
+
+
+class _ProblemStreamError(Exception):
+    """User-facing generation error wrapper for SSE responses."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "internal_error",
+        http_status: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
+        retryable: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.http_status = http_status
+        self.retryable = retryable
+
+    def to_payload(self, *, elapsed_ms: int) -> dict:
+        return {
+            "message": self.message,
+            "code": self.code,
+            "httpStatus": self.http_status,
+            "retryable": self.retryable,
+            "elapsedMs": elapsed_ms,
+        }
+
+
+def _wants_problem_stream(request: Request) -> bool:
+    accept = (request.headers.get("accept") or "").lower()
+    return "text/event-stream" in accept
+
+
+def _sse_event(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _execute_stream_problem(operation: str, callback: Callable[[], dict]) -> dict:
+    try:
+        return callback()
+    except ValueError as exc:
+        raise _ProblemStreamError(
+            str(exc),
+            code="validation_error",
+            http_status=status.HTTP_400_BAD_REQUEST,
+            retryable=False,
+        ) from exc
+    except Exception as exc:
+        logger.exception("%s failed: %s", operation, exc)
+        raise _ProblemStreamError(
+            "request processing failed",
+            code="internal_error",
+            http_status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            retryable=True,
+        ) from exc
+
+
+def _stream_capacity_exceeded_response() -> StreamingResponse:
+    async def _event_stream():
+        yield _sse_event(
+            "status",
+            {
+                "phase": "queued",
+                "message": STREAM_QUEUE_FULL_MESSAGE,
+                "elapsedMs": 0,
+            },
+        )
+        stream_error = _ProblemStreamError(
+            STREAM_RETRY_MESSAGE,
+            code="stream_capacity_exceeded",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            retryable=True,
+        )
+        yield _sse_event("error", stream_error.to_payload(elapsed_ms=0))
+        yield _sse_event("done", {"ok": False, "code": stream_error.code, "elapsedMs": 0})
+
+    return StreamingResponse(
+        _event_stream(),
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _stream_problem_response(
+    *,
+    request: Request,
+    work: Callable[[], dict],
+    queued_message: str = STREAM_QUEUED_MESSAGE,
+    generating_message: str = STREAM_GENERATING_MESSAGE,
+    rendering_message: str = STREAM_RENDERING_MESSAGE,
+) -> StreamingResponse:
+    if not _STREAM_SLOTS.acquire(blocking=False):
+        return _stream_capacity_exceeded_response()
+
+    result_holder: dict[str, dict] = {}
+    error_holder: dict[str, _ProblemStreamError] = {}
+    finished = threading.Event()
+    cancelled = threading.Event()
+    started_at = time.monotonic()
+    future: Future[None] | None = None
+
+    def _worker() -> None:
+        try:
+            payload = work()
+            if cancelled.is_set():
+                logger.info("problem_stream_result_discarded_after_disconnect")
+                return
+            result_holder["payload"] = payload
+        except _ProblemStreamError as exc:
+            if cancelled.is_set():
+                logger.info("problem_stream_error_discarded_after_disconnect code=%s", exc.code)
+                return
+            error_holder["error"] = exc
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.exception("problem_stream_worker_failed: %s", exc)
+            if cancelled.is_set():
+                logger.info("problem_stream_unhandled_error_discarded_after_disconnect")
+                return
+            error_holder["error"] = _ProblemStreamError(
+                GENERIC_INTERNAL_ERROR_DETAIL,
+                code="internal_error",
+                http_status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                retryable=True,
+            )
+        finally:
+            finished.set()
+            _STREAM_SLOTS.release()
+
+    try:
+        future = _STREAM_EXECUTOR.submit(_worker)
+    except RuntimeError:
+        _STREAM_SLOTS.release()
+        return _stream_capacity_exceeded_response()
+
+    async def _event_stream():
+        yield _sse_event(
+            "status",
+            {
+                "phase": "queued",
+                "message": queued_message,
+                "elapsedMs": 0,
+            },
+        )
+
+        while not finished.is_set():
+            if await request.is_disconnected():
+                cancelled.set()
+                if future is not None and not future.done():
+                    future.cancel()
+                logger.info("problem_stream_client_disconnected")
+                return
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            yield _sse_event(
+                "status",
+                {
+                    "phase": "generating",
+                    "message": generating_message,
+                    "elapsedMs": elapsed_ms,
+                },
+            )
+            await asyncio.sleep(STREAM_HEARTBEAT_SECONDS)
+
+        if await request.is_disconnected():
+            cancelled.set()
+            if future is not None and not future.done():
+                future.cancel()
+            logger.info("problem_stream_client_disconnected_after_finish")
+            return
+
+        if cancelled.is_set():
+            logger.info("problem_stream_cancelled_before_emit")
+            return
+
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        stream_error = error_holder.get("error")
+        if stream_error:
+            yield _sse_event("error", stream_error.to_payload(elapsed_ms=elapsed_ms))
+            yield _sse_event("done", {"ok": False, "code": stream_error.code, "elapsedMs": elapsed_ms})
+            return
+
+        payload = result_holder.get("payload", {})
+        yield _sse_event(
+            "status",
+            {
+                "phase": "rendering",
+                "message": rendering_message,
+                "elapsedMs": elapsed_ms,
+            },
+        )
+        yield _sse_event(
+            "payload",
+            {
+                "payload": payload,
+                "elapsedMs": elapsed_ms,
+            },
+        )
+        yield _sse_event("done", {"ok": True, "elapsedMs": elapsed_ms})
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _require_username(username: str) -> None:
     if not username:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="인증이 필요합니다.")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=AUTH_REQUIRED_DETAIL)
 
 
 @router.get("/api/tracks")
@@ -56,9 +289,23 @@ def me(username: str = Depends(get_current_username)) -> dict:
 @router.post("/api/diagnostics/start")
 def start_diagnostic(
     selection: DiagnosticStartRequest,
+    request: Request,
     username: str = Depends(get_current_username),
 ) -> dict:
     _require_username(username)
+    if _wants_problem_stream(request):
+        return _stream_problem_response(
+            request=request,
+            work=lambda: _execute_stream_problem(
+                "start_diagnostic",
+                lambda: learning_service.request_problem(
+                    username,
+                    selection.language_id,
+                    selection.difficulty,
+                ),
+            )
+        )
+
     try:
         return learning_service.request_problem(
             username,
@@ -86,15 +333,29 @@ def submit_explanation(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("submit_explanation failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/code-block/problem")
 def request_code_block_problem(
     payload: ProblemRequest,
+    request: Request,
     username: str = Depends(get_current_username),
 ) -> dict:
     _require_username(username)
+    if _wants_problem_stream(request):
+        return _stream_problem_response(
+            request=request,
+            work=lambda: _execute_stream_problem(
+                "request_code_block_problem",
+                lambda: learning_service.request_code_block_problem(
+                    username,
+                    payload.language_id,
+                    payload.difficulty_id,
+                ),
+            )
+        )
+
     try:
         return learning_service.request_code_block_problem(
             username,
@@ -105,7 +366,7 @@ def request_code_block_problem(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("request_code_block_problem failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/code-block/submit")
@@ -124,7 +385,7 @@ def submit_code_block_answer(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("submit_code_block_answer failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/code-arrange/problem")
@@ -143,7 +404,7 @@ def request_code_arrange_problem(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("request_code_arrange_problem failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/code-arrange/submit")
@@ -162,15 +423,29 @@ def submit_code_arrange_answer(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("submit_code_arrange_answer failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/code-calc/problem")
 def request_code_calc_problem(
     payload: ProblemRequest,
+    request: Request,
     username: str = Depends(get_current_username),
 ) -> dict:
     _require_username(username)
+    if _wants_problem_stream(request):
+        return _stream_problem_response(
+            request=request,
+            work=lambda: _execute_stream_problem(
+                "request_code_calc_problem",
+                lambda: learning_service.request_code_calc_problem(
+                    username,
+                    payload.language_id,
+                    payload.difficulty_id,
+                ),
+            )
+        )
+
     try:
         return learning_service.request_code_calc_problem(
             username,
@@ -181,7 +456,7 @@ def request_code_calc_problem(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("request_code_calc_problem failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/code-calc/submit")
@@ -200,15 +475,29 @@ def submit_code_calc_answer(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("submit_code_calc_answer failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/code-error/problem")
 def request_code_error_problem(
     payload: ProblemRequest,
+    request: Request,
     username: str = Depends(get_current_username),
 ) -> dict:
     _require_username(username)
+    if _wants_problem_stream(request):
+        return _stream_problem_response(
+            request=request,
+            work=lambda: _execute_stream_problem(
+                "request_code_error_problem",
+                lambda: learning_service.request_code_error_problem(
+                    username,
+                    payload.language_id,
+                    payload.difficulty_id,
+                ),
+            )
+        )
+
     try:
         return learning_service.request_code_error_problem(
             username,
@@ -219,7 +508,7 @@ def request_code_error_problem(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("request_code_error_problem failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/code-error/submit")
@@ -238,15 +527,29 @@ def submit_code_error_answer(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("submit_code_error_answer failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/auditor/problem")
 def request_auditor_problem(
     payload: ProblemRequest,
+    request: Request,
     username: str = Depends(get_current_username),
 ) -> dict:
     _require_username(username)
+    if _wants_problem_stream(request):
+        return _stream_problem_response(
+            request=request,
+            work=lambda: _execute_stream_problem(
+                "request_auditor_problem",
+                lambda: learning_service.request_auditor_problem(
+                    username,
+                    payload.language_id,
+                    payload.difficulty_id,
+                ),
+            )
+        )
+
     try:
         return learning_service.request_auditor_problem(
             username,
@@ -257,7 +560,7 @@ def request_auditor_problem(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("request_auditor_problem failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/auditor/submit")
@@ -276,15 +579,29 @@ def submit_auditor_report(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("submit_auditor_report failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/context-inference/problem")
 def request_context_inference_problem(
     payload: ProblemRequest,
+    request: Request,
     username: str = Depends(get_current_username),
 ) -> dict:
     _require_username(username)
+    if _wants_problem_stream(request):
+        return _stream_problem_response(
+            request=request,
+            work=lambda: _execute_stream_problem(
+                "request_context_inference_problem",
+                lambda: learning_service.request_context_inference_problem(
+                    username,
+                    payload.language_id,
+                    payload.difficulty_id,
+                ),
+            )
+        )
+
     try:
         return learning_service.request_context_inference_problem(
             username,
@@ -295,7 +612,7 @@ def request_context_inference_problem(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("request_context_inference_problem failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/context-inference/submit")
@@ -314,15 +631,29 @@ def submit_context_inference_report(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("submit_context_inference_report failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/refactoring-choice/problem")
 def request_refactoring_choice_problem(
     payload: ProblemRequest,
+    request: Request,
     username: str = Depends(get_current_username),
 ) -> dict:
     _require_username(username)
+    if _wants_problem_stream(request):
+        return _stream_problem_response(
+            request=request,
+            work=lambda: _execute_stream_problem(
+                "request_refactoring_choice_problem",
+                lambda: learning_service.request_refactoring_choice_problem(
+                    username,
+                    payload.language_id,
+                    payload.difficulty_id,
+                ),
+            )
+        )
+
     try:
         return learning_service.request_refactoring_choice_problem(
             username,
@@ -333,7 +664,7 @@ def request_refactoring_choice_problem(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("request_refactoring_choice_problem failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/refactoring-choice/submit")
@@ -353,15 +684,29 @@ def submit_refactoring_choice_report(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("submit_refactoring_choice_report failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/code-blame/problem")
 def request_code_blame_problem(
     payload: ProblemRequest,
+    request: Request,
     username: str = Depends(get_current_username),
 ) -> dict:
     _require_username(username)
+    if _wants_problem_stream(request):
+        return _stream_problem_response(
+            request=request,
+            work=lambda: _execute_stream_problem(
+                "request_code_blame_problem",
+                lambda: learning_service.request_code_blame_problem(
+                    username,
+                    payload.language_id,
+                    payload.difficulty_id,
+                ),
+            )
+        )
+
     try:
         return learning_service.request_code_blame_problem(
             username,
@@ -372,7 +717,7 @@ def request_code_blame_problem(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("request_code_blame_problem failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.post("/api/code-blame/submit")
@@ -392,7 +737,7 @@ def submit_code_blame_report(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("submit_code_blame_report failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="요청 처리 중 오류가 발생했습니다.") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
 @router.get("/api/learning/history")
@@ -412,4 +757,13 @@ def memory(username: str = Depends(get_current_username)) -> dict:
 @router.get("/api/report")
 def report(username: str = Depends(get_current_username)) -> dict:
     _require_username(username)
-    return learning_service.learning_report(username)
+    try:
+        return learning_service.learning_report(username)
+    except RuntimeError as exc:
+        if "learning_report_generation_failed" in str(exc):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=LEARNING_REPORT_FAILURE_DETAIL,
+            ) from exc
+        raise
+

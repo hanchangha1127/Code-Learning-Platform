@@ -1,4 +1,5 @@
 ﻿import unittest
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -121,6 +122,28 @@ class AdminShutdownTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json().get("status"), "accepted")
 
+    def test_shutdown_gate_releases_after_failed_shutdown_task(self):
+        client = _build_client()
+        with patch(
+            "server_runtime.admin_api._docker_control_status",
+            return_value={
+                "supported": True,
+                "reason": "ok",
+                "requires_socket_override": False,
+                "detail": "Docker control is available.",
+            },
+        ), patch(
+            "server_runtime.admin_api._shutdown_runtime_stack",
+            side_effect=[False, False],
+        ):
+            first = client.post("/api/admin/shutdown", headers={"X-Admin-Key": "unit-test-admin-key"})
+            second = client.post("/api/admin/shutdown", headers={"X-Admin-Key": "unit-test-admin-key"})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json().get("status"), "accepted")
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json().get("status"), "accepted")
+
     def test_metrics_include_shutdown_capability_fields(self):
         client = _build_client()
         with patch(
@@ -131,16 +154,40 @@ class AdminShutdownTests(unittest.TestCase):
                 "requires_socket_override": True,
                 "detail": "Docker socket is not mounted inside the API container.",
             },
+        ), patch(
+            "server_runtime.admin_api._collect_admin_platform_summaries",
+            return_value=(
+                {
+                    "totals": 12,
+                    "statusCounts": {"pending": 3, "approved": 8, "hidden": 1},
+                    "topPromptVersions": [{"version": "analysis-v2", "count": 5}],
+                    "recentPendingProblems": [{"id": 9, "title": "Trace loop"}],
+                },
+                {
+                    "windowHours": 24,
+                    "total": 7,
+                    "statusCounts": {"success": 4, "failure": 2, "review_required": 1},
+                    "topEventTypes": [{"eventType": "problem_requested", "count": 3}],
+                    "modeSummary": [{"mode": "analysis", "total": 4, "failure": 1, "avgLatencyMs": 132.4}],
+                    "latest": [{"id": 1, "eventType": "submission_processed"}],
+                },
+            ),
         ):
             response = client.get("/api/admin/metrics", headers={"X-Admin-Key": "unit-test-admin-key"})
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         shutdown = ((payload.get("admin") or {}).get("shutdown") or {})
+        content_summary = ((payload.get("admin") or {}).get("contentSummary") or {})
+        ops_events = ((payload.get("admin") or {}).get("opsEvents") or {})
         self.assertEqual(shutdown.get("supported"), False)
         self.assertEqual(shutdown.get("reason"), "docker_socket_not_mounted")
         self.assertEqual(shutdown.get("requires_socket_override"), True)
         self.assertIn("with-docker-socket", shutdown.get("detail", ""))
+        self.assertEqual(content_summary.get("totals"), 12)
+        self.assertEqual(content_summary.get("statusCounts", {}).get("pending"), 3)
+        self.assertEqual(ops_events.get("total"), 7)
+        self.assertEqual(ops_events.get("statusCounts", {}).get("failure"), 2)
 
     def test_admin_key_regression_wrong_and_missing(self):
         client = _build_client()
@@ -151,6 +198,14 @@ class AdminShutdownTests(unittest.TestCase):
         no_key_client = _build_client(admin_key="")
         missing_key_response = no_key_client.get("/api/admin/metrics", headers={"X-Admin-Key": "anything"})
         self.assertEqual(missing_key_response.status_code, 503)
+
+    def test_admin_metrics_accepts_base64_encoded_unicode_header(self):
+        client = _build_client(admin_key="관리자-키")
+        encoded = base64.urlsafe_b64encode("관리자-키".encode("utf-8")).decode("ascii").rstrip("=")
+
+        response = client.get("/api/admin/metrics", headers={"X-Admin-Key-B64": encoded})
+
+        self.assertEqual(response.status_code, 200)
 
     def test_correct_key_recovers_even_after_rate_limit(self):
         client = _build_client()
@@ -209,3 +264,4 @@ class AdminShutdownTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

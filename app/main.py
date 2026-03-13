@@ -8,6 +8,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.me import router as me_router
 from app.api.routes.platform_mode_jobs import router as platform_mode_jobs_router
 from app.api.routes.problems import router as problems_router
+from app.api.routes.public_learning import router as public_learning_router
 from app.api.routes.refactoring_choice import router as refactoring_choice_router
 from app.api.routes.reports import router as reports_router
 from app.api.routes.submissions import router as submissions_router
@@ -31,6 +32,7 @@ async def request_id_middleware(request: Request, call_next):
 app.include_router(health_router)
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(me_router, prefix="/me", tags=["me"])
+app.include_router(public_learning_router, tags=["public-learning"])
 
 app.include_router(problems_router, prefix="/problems", tags=["problems"])
 app.include_router(submissions_router, tags=["submissions"])

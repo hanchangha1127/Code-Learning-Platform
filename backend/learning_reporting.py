@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List
 
 from backend.content import LANGUAGES
@@ -255,31 +256,28 @@ def learning_report(
     correct_count = sum(1 for event in history if event.get("correct") is True)
     accuracy = round((correct_count / attempts) * 100, 1) if attempts else 0.0
 
-    durations: List[float] = []
     recent_window = history[:5]
     previous_window = history[5:10]
     recent_accuracy = accuracy_from_events(recent_window)
     previous_accuracy = accuracy_from_events(previous_window)
 
-    accuracy_change = None
-    if recent_accuracy is not None and previous_accuracy is not None:
-        accuracy_change = round(recent_accuracy - previous_accuracy, 1)
-
     recent_history = history[:10]
-    context_lines = []
+    context_lines: list[str] = []
+    score_values: list[float] = []
     for idx, event in enumerate(recent_history, 1):
         problem_title = event.get("problem_title") or "제목 없음"
         is_correct = "정답" if event.get("correct") else "오답"
         score = event.get("score") or 0
+        try:
+            score_values.append(float(score))
+        except (TypeError, ValueError):
+            pass
         feedback_summary = (event.get("feedback") or {}).get("summary", "")
 
         duration = event.get("duration_seconds")
         if duration is None:
             instance = service._get_problem_instance(storage, event.get("problem_id"))
             duration = duration_seconds((instance or {}).get("created_at"), event.get("created_at"))
-
-        if duration is not None:
-            durations.append(duration)
 
         duration_label = f"{int(duration)}초" if duration is not None else "시간 미기록"
         context_lines.append(
@@ -289,40 +287,22 @@ def learning_report(
         )
 
     history_context = "\n".join(context_lines) if context_lines else "최근 학습 기록이 없습니다."
-    ai_report = service.ai_client.generate_report(history_context)
-
-    languages: Dict[str, int] = {}
-    for event in history:
-        lang = event.get("language")
-        if lang:
-            languages[lang] = languages.get(lang, 0) + 1
-
-    preferred_languages = [
-        {"language": LANGUAGES.get(lang, {"title": lang}).get("title"), "count": count}
-        for lang, count in sorted(languages.items(), key=lambda item: item[1], reverse=True)
-    ]
-
-    avg_duration = round(sum(durations) / len(durations), 2) if durations else None
+    avg_score = round(sum(score_values) / len(score_values), 1) if score_values else None
+    metric_snapshot: Dict[str, Any] = {
+        "attempts": attempts,
+        "accuracy": accuracy if attempts > 0 else None,
+        "avgScore": avg_score,
+        "trend": trend_summary(recent_accuracy, previous_accuracy),
+    }
+    solution_plan = service.ai_client.generate_learning_solution_report(
+        history_context=history_context,
+        metric_snapshot=metric_snapshot,
+    )
 
     return {
-        "username": username,
-        "attempts": attempts,
-        "correctAnswers": correct_count,
-        "accuracy": accuracy,
-        "averageDurationSeconds": avg_duration,
-        "trend": {
-            "recentAttempts": len(recent_window),
-            "recentAccuracy": recent_accuracy,
-            "previousAttempts": len(previous_window),
-            "previousAccuracy": previous_accuracy,
-            "accuracyChange": accuracy_change,
-            "summary": trend_summary(recent_accuracy, previous_accuracy),
-        },
-        "recent_history": history[:5],
-        "common_strengths": [(s, 1) for s in ai_report.get("strengths", [])],
-        "common_improvements": [(i, 1) for i in ai_report.get("improvements", [])],
-        "preferred_languages": preferred_languages[:5],
-        "recommendations": ai_report.get("recommendations", []),
-        "ai_summary": ai_report.get("summary"),
+        "reportId": None,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        **solution_plan,
+        "metricSnapshot": metric_snapshot,
     }
 

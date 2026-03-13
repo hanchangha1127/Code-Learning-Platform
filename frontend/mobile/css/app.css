@@ -1,0 +1,227 @@
+﻿body[data-template-variant="mobile"] .auth-view,
+body[data-template-variant="mobile"] .app,
+body[data-template-variant="mobile"] .dashboard-main {
+  max-width: 100%;
+  margin: 0;
+}
+
+body[data-template-variant="mobile"] .auth-view,
+body[data-template-variant="mobile"] .app {
+  padding: 14px 12px 26px;
+  gap: 14px;
+}
+
+body[data-template-variant="mobile"] .app-header {
+  padding: 14px;
+  gap: 10px;
+}
+
+body[data-template-variant="mobile"] .app-header h1 {
+  font-size: 1.42rem;
+}
+
+body[data-template-variant="mobile"] .auth-shell,
+body[data-template-variant="mobile"] .dashboard-main,
+body[data-template-variant="mobile"] .profile-grid,
+body[data-template-variant="mobile"] .profile-summary,
+body[data-template-variant="mobile"] .profile-settings-panel,
+body[data-template-variant="mobile"] .mobile-mode-shell,
+body[data-template-variant="mobile"] .workspace-grid,
+body[data-template-variant="mobile"] .workspace > .workspace-grid,
+body[data-template-variant="mobile"] .calc-wrapper,
+body[data-template-variant="mobile"] .arrange-wrapper,
+body[data-template-variant="mobile"] .cerr-wrapper,
+body[data-template-variant="mobile"] #code-block-section .cb-wrapper {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+body[data-template-variant="mobile"] .header-actions,
+body[data-template-variant="mobile"] .auth-panel-actions,
+body[data-template-variant="mobile"] .auth-panel-actions .auth-action,
+body[data-template-variant="mobile"] .auth-panel-actions .auth-action button,
+body[data-template-variant="mobile"] .goal-form-row,
+body[data-template-variant="mobile"] .calc-actions,
+body[data-template-variant="mobile"] .arrange-actions,
+body[data-template-variant="mobile"] .cerr-actions,
+body[data-template-variant="mobile"] .cb-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  width: 100%;
+}
+
+body[data-template-variant="mobile"] .header-actions .ghost,
+body[data-template-variant="mobile"] .header-actions .primary,
+body[data-template-variant="mobile"] .header-actions a,
+body[data-template-variant="mobile"] .header-actions button,
+body[data-template-variant="mobile"] .auth-panel-actions .block,
+body[data-template-variant="mobile"] .goal-form-row .primary,
+body[data-template-variant="mobile"] .goal-form-row input,
+body[data-template-variant="mobile"] .profile-action,
+body[data-template-variant="mobile"] .profile-logout,
+body[data-template-variant="mobile"] .cb-option-btn,
+body[data-template-variant="mobile"] .choice-option-card,
+body[data-template-variant="mobile"] .commit-option-card,
+body[data-template-variant="mobile"] .arrange-actions .primary,
+body[data-template-variant="mobile"] .arrange-actions .ghost,
+body[data-template-variant="mobile"] .calc-actions .primary,
+body[data-template-variant="mobile"] .calc-actions .ghost,
+body[data-template-variant="mobile"] .cerr-actions .primary,
+body[data-template-variant="mobile"] .cerr-actions .ghost,
+body[data-template-variant="mobile"] .cb-actions .ghost {
+  width: 100%;
+}
+
+body[data-template-variant="mobile"] .auth-note-grid {
+  display: grid;
+  gap: 12px;
+}
+
+body[data-template-variant="mobile"] .dashboard-main {
+  padding: 0;
+  gap: 14px;
+}
+
+body[data-template-variant="mobile"] .dashboard-highlight-grid,
+body[data-template-variant="mobile"] .dashboard-two-column {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+body[data-template-variant="mobile"] .dashboard-highlight-grid > :first-child {
+  order: 2;
+}
+
+body[data-template-variant="mobile"] .dashboard-highlight-grid > :last-child {
+  order: 1;
+}
+
+body[data-template-variant="mobile"] .preset-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+body[data-template-variant="mobile"] .dashboard-mode-section .feature-grid,
+body[data-template-variant="mobile"] .cb-options,
+body[data-template-variant="mobile"] .choice-options,
+body[data-template-variant="mobile"] .commit-options {
+  grid-template-columns: 1fr;
+}
+
+body[data-template-variant="mobile"] .profile-summary,
+body[data-template-variant="mobile"] .control-panel,
+body[data-template-variant="mobile"] .feedback-panel,
+body[data-template-variant="mobile"] .calc-controls,
+body[data-template-variant="mobile"] .arrange-controls,
+body[data-template-variant="mobile"] .cerr-controls,
+body[data-template-variant="mobile"] .cb-controls {
+  position: static;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  justify-self: stretch;
+  align-self: stretch;
+}
+
+body[data-template-variant="mobile"] #code-block-section .cb-controls,
+body[data-template-variant="mobile"] #code-block-section .cb-board {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+body[data-template-variant="mobile"] .mobile-mode-shell > .control-panel,
+body[data-template-variant="mobile"] .mobile-mode-shell > .calc-controls,
+body[data-template-variant="mobile"] .mobile-mode-shell > .arrange-controls,
+body[data-template-variant="mobile"] .mobile-mode-shell > .cerr-controls,
+body[data-template-variant="mobile"] .mobile-mode-shell > .cb-controls {
+  order: 1;
+}
+
+body[data-template-variant="mobile"] .mobile-mode-shell > .quiz-panel,
+body[data-template-variant="mobile"] .mobile-mode-shell > .calc-board,
+body[data-template-variant="mobile"] .mobile-mode-shell > .arrange-board,
+body[data-template-variant="mobile"] .mobile-mode-shell > .cerr-board,
+body[data-template-variant="mobile"] .mobile-mode-shell > .cb-board {
+  order: 2;
+}
+
+body[data-template-variant="mobile"] .mobile-mode-shell > .feedback-panel {
+  order: 3;
+}
+
+body[data-template-variant="mobile"] .workspace-grid > .control-panel,
+body[data-template-variant="mobile"] .workspace > .workspace-grid > .control-panel,
+body[data-template-variant="mobile"] .calc-wrapper > .calc-controls,
+body[data-template-variant="mobile"] .arrange-wrapper > .arrange-controls,
+body[data-template-variant="mobile"] .cerr-wrapper > .cerr-controls,
+body[data-template-variant="mobile"] #code-block-section .cb-wrapper > .cb-controls {
+  order: 2;
+}
+
+body[data-template-variant="mobile"] .workspace-grid > .quiz-panel,
+body[data-template-variant="mobile"] .workspace > .workspace-grid > .quiz-panel,
+body[data-template-variant="mobile"] .calc-wrapper > .calc-board,
+body[data-template-variant="mobile"] .arrange-wrapper > .arrange-board,
+body[data-template-variant="mobile"] .cerr-wrapper > .cerr-board,
+body[data-template-variant="mobile"] #code-block-section .cb-wrapper > .cb-board {
+  order: 1;
+}
+
+body[data-template-variant="mobile"] .workspace-grid > .feedback-panel,
+body[data-template-variant="mobile"] .workspace > .workspace-grid > .feedback-panel {
+  order: 3;
+}
+
+body[data-template-variant="mobile"] .quiz-header,
+body[data-template-variant="mobile"] .calc-header,
+body[data-template-variant="mobile"] .arrange-header,
+body[data-template-variant="mobile"] .cerr-header,
+body[data-template-variant="mobile"] .cb-header {
+  display: grid;
+  gap: 12px;
+}
+
+body[data-template-variant="mobile"] .quiz-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+body[data-template-variant="mobile"] .code-block,
+body[data-template-variant="mobile"] #cb-code-display,
+body[data-template-variant="mobile"] #calc-code-display,
+body[data-template-variant="mobile"] #arr-answer-code,
+body[data-template-variant="mobile"] #auditor-problem-code,
+body[data-template-variant="mobile"] #ci-problem-snippet,
+body[data-template-variant="mobile"] #cb-error-log,
+body[data-template-variant="mobile"] #problem-code {
+  font-size: 0.85rem;
+  line-height: 1.6;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  white-space: pre;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+body[data-template-variant="mobile"] .modal {
+  padding: 12px;
+}
+
+body[data-template-variant="mobile"] .modal-card,
+body[data-template-variant="mobile"] .modal-card.modal-wide {
+  width: min(100%, 96vw);
+  max-height: 92vh;
+}
+
+body[data-template-variant="mobile"] .toast {
+  left: 12px;
+  right: 12px;
+  max-width: none;
+}

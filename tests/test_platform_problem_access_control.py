@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import unittest
-from datetime import datetime
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -16,6 +15,7 @@ os.environ.setdefault("DB_USER", "appuser")
 
 from app.api.deps import get_db
 from app.api.security_deps import get_current_user
+from app.db.base import utcnow
 from app.db.models import Problem, ProblemDifficulty, ProblemKind, Submission, UserProblemStat
 from app.main import app as platform_backend_app
 from server_runtime.webapp import app
@@ -60,7 +60,7 @@ class _FakeSession:
     def add(self, item) -> None:
         if isinstance(item, Submission) and getattr(item, "id", None) is None:
             item.id = 1
-            item.created_at = datetime.utcnow()
+            item.created_at = utcnow()
             item.updated_at = item.created_at
         self.added.append(item)
 
@@ -69,12 +69,12 @@ class _FakeSession:
 
     def refresh(self, item) -> None:
         if isinstance(item, Submission) and getattr(item, "created_at", None) is None:
-            item.created_at = datetime.utcnow()
+            item.created_at = utcnow()
             item.updated_at = item.created_at
 
 
 def _build_problem(*, problem_id: int, is_published: bool, created_by: int | None) -> Problem:
-    now = datetime.utcnow()
+    now = utcnow()
     problem = Problem(
         id=problem_id,
         kind=ProblemKind.coding,

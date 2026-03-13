@@ -1,125 +1,223 @@
-﻿# 코드 학습 플랫폼 (code)
+# 코드 학습 플랫폼
 
-FastAPI 기반 학습 플랫폼입니다. 현재 프로젝트는 **두 백엔드가 함께 동작하는 혼합 구조**입니다.
+FastAPI 기반 코드 학습 플랫폼입니다. 현재 구현은 하나의 프로세스 안에서 다음 세 축을 함께 제공합니다.
 
-- `run_server.py`(런처) + `server_runtime/webapp.py`(앱 조립) + `server_runtime/routes/*`(라우터) + `backend/*`: JSONL 기반 API/프론트 통합 서버 (`/api/*`)
-- `app/*`: SQL(MySQL) 기반 API (`/platform/*`로 마운트)
+- `run_server.py`
+  - 전체 서버 진입점입니다.
+- `server_runtime`
+  - 루트 FastAPI 셸입니다.
+  - `/health`, `/admin.html`, `/api/admin/*`, 페이지 렌더링, 레거시 `/api` 안내 경로를 담당합니다.
+- `app`
+  - `/platform`에 mount 되는 메인 백엔드입니다.
+  - 인증, 학습 모드, 문제/제출, 리포트, 복습 큐, 사용자 설정을 담당합니다.
 
-## 현재 아키텍처
+핵심 요청 흐름은 `run_server.py -> server_runtime.webapp -> /platform(app.main)` 입니다.
 
-### 1) JSONL 백엔드 (`/api/*`)
-- 실행 엔트리: `run_server.py` (런처)
-- 앱 조립: `server_runtime/webapp.py` (라우터 등록/마운트)
-- 관리자 API: `server_runtime/admin_api.py`
-- 저장소: `data/users/*.jsonl`
-- 기능: Google/Guest 로그인, 학습 모드(analysis, code-block, arrange, code-calc, code-error, auditor, context-inference, refactoring-choice, code-blame), 관리자 패널
-- AI 문제 생성: `backend/problem_generator.py` (Gemini 키 필요)
+## 아키텍처 요약
 
-### 2) SQL 백엔드 (`/platform/*`)
-- 엔트리: `app/main.py` (실행은 `run_server.py`에서 `/platform`로 마운트)
-- 저장소: MySQL (`users`, `problems`, `submissions`, `user_problem_stats`, `reports` 등)
-- 분석 처리: Redis + RQ worker 비동기 큐
-- 리포트: 마일스톤 리포트 고도화(오답유형/난이도별/언어별/추세)
+- `/platform`
+  - 현재의 주 공개 API입니다.
+  - MySQL 기반 사용자/문제/제출/리포트 데이터를 관리합니다.
+  - Redis 기반 큐와 작업 상태를 사용합니다.
+- `/api`
+  - 페이지/헬스/관리 셸과 레거시 호환 계층입니다.
+  - 학습 관련 다수 경로는 `410 Gone`으로 새 `/platform` 경로를 안내합니다.
+- `backend`
+  - 기존 JSONL 기반 학습 엔진과 문제 생성 로직이 남아 있습니다.
+  - `app.services.platform_public_bridge`가 이 계층을 호출하고 결과를 플랫폼 DB에 이중 저장합니다.
 
-### 3) 프런트엔드 엔트리 구조
-- 화면은 페이지별 엔트리 JS(`dashboard.js`, `analysis.js`, `codeblock.js` 등)를 각 HTML에서 직접 로드합니다.
-- `app.html`은 하위호환용 진입점으로 유지되며, 요청 시 `dashboard.html`로 리다이렉트됩니다.
+## 프런트 구조
 
-## 실행 모드
+- 사용자 페이지
+  - `frontend/desktop/*.html`
+  - `frontend/mobile/*.html`
+  - `server_runtime/routes/pages.py`가 User-Agent를 보고 desktop/mobile variant를 선택합니다.
+- 관리자 페이지
+  - `frontend/app/admin.html`
+  - responsive 단일 템플릿으로 렌더링됩니다.
+- 공용 자산
+  - `frontend/shared/css/*`
+  - `frontend/shared/js/*`
 
-### Docker 모드 (권장)
-기본 실행은 Docker Compose를 사용합니다.
+정적 자산은 응답 직전에 `?v=` 버전 쿼리가 자동 주입됩니다. 사용자 페이지 응답에는 `Vary: User-Agent`가 설정됩니다.
+
+## 데이터 저장소
+
+- MySQL
+  - 플랫폼 사용자, 설정, 문제, 제출, AI 분석, 리포트, 복습 큐, 운영 이벤트를 저장합니다.
+- Redis
+  - `rq` 큐 모드에서 분석 작업과 고급 학습 모드 제출 작업을 처리합니다.
+- JSONL
+  - 레거시 사용자 프로필, 학습 이력, 일부 런타임 상태를 저장합니다.
+  - 현재는 브리지/호환 계층으로 유지됩니다.
+
+## 빠른 시작
+
+### 1. 환경 준비
+
+```bash
+pip install -r requirements.txt
+copy .env.example .env
+```
+
+필수 시작 조건:
+
+- `DB_PASSWORD`
+- `JWT_SECRET`
+
+`JWT_SECRET`는 최소 32자여야 합니다.
+
+### 2. 기본 개발 실행
 
 ```bash
 python run_server.py
 ```
 
-또는 백그라운드 실행:
+기본 동작:
 
-```bash
-python run_server.py --detach --no-build --no-open-admin
-```
+- `docker compose`를 백그라운드로 실행합니다.
+- `docker-compose.yml` + `docker-compose.dev.yml` + `docker-compose.docker-socket.yml` 조합을 사용합니다.
+- `mysql`, `redis`, `api`, `worker` 4개 서비스를 기동합니다.
+- readiness를 기다린 뒤 `/admin.html`을 브라우저로 엽니다.
+- Docker socket mount가 기본 활성화되어 관리자 종료 기능을 사용할 수 있습니다.
 
-관리자 패널의 `스택 안전 종료`는 기본 실행에서 동작하도록 Docker 소켓 override가 자동 적용됩니다.
-보안상 종료 권한을 끄고 싶다면 아래 옵션을 사용하세요:
+개발용에서 Docker socket을 끄려면:
 
 ```bash
 python run_server.py --without-docker-socket
 ```
 
-실행 컨테이너:
-- `code-platform-api` (FastAPI)
-- `code-platform-mysql` (MySQL 8)
-- `code-platform-redis` (Redis 7)
-- `code-platform-worker` (RQ worker)
-
-중지:
+브라우저 자동 오픈을 끄려면:
 
 ```bash
-docker compose down
+python run_server.py --no-open-admin
 ```
 
-### 로컬 uvicorn 모드
+```env
+ENABLE_HTTPS=true
+TLS_CERTS_DIR=certs
+HTTPS_BIND_PORT=8443
+HTTPS_PUBLIC_PORT=443
+HTTP_REDIRECT_PORT=8000
+```
+
+HTTPS Compose를 켜면 `80 -> 8000`은 HTTP to HTTPS redirect, `443 -> 8443`은 TLS 앱 서버로 동작합니다. 기본 인증서 경로는 `certs/fullchain.pem`, `certs/privkey.pem` 입니다.
+
+### 3. 운영형 Compose 실행
 
 ```bash
+python run_server.py --compose-mode ops --with-docker-socket
+```
+
+운영형 특징:
+
+- `docker-compose.yml` + `docker-compose.ops.yml` 조합을 사용합니다.
+- `api`와 `worker`는 read-only root filesystem + `tmpfs`로 실행됩니다.
+- 개발용 소스 바인드 마운트가 제거됩니다.
+
+운영형에서 관리자 종료 기능을 끄려면:
+
+```bash
+python run_server.py --compose-mode ops --without-docker-socket
+```
+
+### 4. 로컬 uvicorn 실행
+
+```bash
+alembic upgrade head
 python run_server.py --local --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-주의:
-- 로컬 모드에서는 DB/Redis를 별도로 준비해야 합니다.
-- 인자 없이 실행하면 Docker 모드가 기본입니다.
+```bash
+ENABLE_HTTPS=true TLS_CERTS_DIR=certs python run_server.py --local --host 127.0.0.1 --workers 1
+```
 
-## 주요 엔드포인트
+로컬 모드 주의사항:
 
-### JSONL 백엔드 (`/api/*`, server_runtime/routes/*)
-- `GET /health`
-- `GET /api/auth/google/start`
-- `GET /api/auth/google/callback`
-- `GET /api/auth/guest/start`
-- `POST /api/auth/register` (비활성, 410)
-- `POST /api/auth/login` (비활성, 410)
-- `POST /api/auth/guest`
-- `GET /api/tracks`
-- `GET /api/languages`
-- `GET /api/profile`
-- `GET /api/me`
-- `POST /api/diagnostics/start`
-- `POST /api/problem/submit`
-- `POST /api/code-block/problem`
-- `POST /api/code-block/submit`
-- `POST /api/code-arrange/problem`
-- `POST /api/code-arrange/submit`
-- `POST /api/code-calc/problem`
-- `POST /api/code-calc/submit`
-- `POST /api/code-error/problem`
-- `POST /api/code-error/submit`
-- `POST /api/auditor/problem`
-- `POST /api/auditor/submit`
-- `POST /api/context-inference/problem`
-- `POST /api/context-inference/submit`
-- `POST /api/refactoring-choice/problem`
-- `POST /api/refactoring-choice/submit`
-- `POST /api/code-blame/problem`
-- `POST /api/code-blame/submit`
-- `GET /api/learning/history`
-- `GET /api/learning/memory`
-- `GET /api/report`
-- `GET /api/admin/metrics`
-- `POST /api/admin/shutdown`
+- MySQL/Redis는 별도로 준비해야 합니다.
+- 컨테이너와 달리 Alembic 마이그레이션을 수동 적용해야 합니다.
+- `.env.example` 기준 기본 큐 모드는 `inline`입니다.
 
-### SQL 백엔드 (`/platform/*`, app)
-- `GET /platform/health`
+### 5. 컨테이너 실행 시 마이그레이션
+
+컨테이너 모드에서는 `entrypoint.sh`가 다음 순서로 자동 처리합니다.
+
+1. MySQL 대기
+2. `alembic upgrade head`
+3. `python -m server_runtime.runtime_server`
+
+## 인증과 세션
+
+### 기본 제공 인증
+
+- Google OAuth
+  - 시작: `GET /platform/auth/google/start`
+  - 콜백: `GET /platform/auth/google/callback`
+- 게스트 로그인
+  - `POST /platform/auth/guest`
+  - IP 기준 분당 12회 rate limit
+- 로그아웃
+  - `POST /platform/auth/logout`
+
+### 선택적 비밀번호 인증
+
+다음 경로는 기본 비활성입니다.
+
 - `POST /platform/auth/signup`
 - `POST /platform/auth/login`
 - `POST /platform/auth/refresh`
-- `POST /platform/auth/logout`
-- `GET /platform/problems`
-- `GET /platform/problems/{problem_id}`
-- `POST /platform/problems/{problem_id}/submit`
-- `POST /platform/submissions/{submission_id}/analyze`
-- `GET /platform/submissions/{submission_id}/status`
-- `GET /platform/submissions/{submission_id}/analyses`
-- `POST /platform/reports/milestone`
+
+활성화하려면 `.env`에 다음 값을 설정합니다.
+
+```env
+ALLOW_PLATFORM_PASSWORD_AUTH=true
+```
+
+### 세션 쿠키
+
+- 쿠키명: `code_learning_access`
+- 속성: `HttpOnly`, `SameSite=Lax`, `Path=/`
+- `APP_ENV`가 개발 계열이 아니면 `Secure=true`
+
+### Google OAuth 환경변수
+
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `GOOGLE_OAUTH_ALLOWED_REDIRECT_URIS`
+- `ENABLE_HTTPS=true` local direct TLS를 쓰면 `https://localhost:8443/platform/auth/google/callback` 도 허용 목록에 추가해야 합니다.
+
+프록시 뒤에서 운영할 때는 다음 헤더가 올바르게 전달되어야 합니다.
+
+- `X-Forwarded-Proto`
+- `X-Forwarded-Host`
+- 필요 시 `X-Forwarded-Port`
+
+## 학습 모드
+
+현재 제공 모드:
+
+- 코드 분석
+- 코드 블록
+- 코드 배치
+- 코드 계산
+- 코드 오류
+- 감사관 모드
+- 맥락 추론
+- 최적의 선택
+- 범인 찾기
+
+`/platform`은 모든 모드의 문제 생성과 제출 경로를 제공합니다.
+
+- `POST /platform/analysis/problem`
+- `POST /platform/analysis/submit`
+- `POST /platform/codeblock/problem`
+- `POST /platform/codeblock/submit`
+- `POST /platform/arrange/problem`
+- `POST /platform/arrange/submit`
+- `POST /platform/codecalc/problem`
+- `POST /platform/codecalc/submit`
+- `POST /platform/codeerror/problem`
+- `POST /platform/codeerror/submit`
 - `POST /platform/auditor/problem`
 - `POST /platform/auditor/submit`
 - `POST /platform/context-inference/problem`
@@ -128,271 +226,104 @@ python run_server.py --local --host 127.0.0.1 --port 8000 --workers 1
 - `POST /platform/refactoring-choice/submit`
 - `POST /platform/code-blame/problem`
 - `POST /platform/code-blame/submit`
-- `GET /platform/mode-jobs/{job_id}` (mode submit queue status)
 
-## 분석 큐 (Redis + RQ)
+고급 모드 제출(`auditor`, `context-inference`, `refactoring-choice`, `code-blame`)은 `ANALYSIS_QUEUE_MODE=rq`일 때 queued 응답을 반환할 수 있습니다. 이 경우 상태 조회는 다음 경로를 사용합니다.
 
-분석 시작 API(`/platform/submissions/{id}/analyze`)는 기본적으로 큐에 작업을 넣고 즉시 반환합니다.
+- `GET /platform/mode-jobs/{job_id}`
 
-- 응답 필드: `analysis_id`, `message`, `job_id`
-- 워커가 `app.services.analysis_service.run_analysis_background` 실행
+## 주요 공개 경로
 
-관련 설정(`.env`):
+### 공통 / 사용자
 
-```env
-ANALYSIS_QUEUE_MODE=inline   # local 기본값: inline
-ANALYSIS_QUEUE_NAME=analysis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_DB=0
-```
+- `GET /health`
+- `GET /platform/health`
+- `GET /platform/languages`
+- `GET /platform/profile`
+- `GET /platform/me`
+- `GET /platform/me/settings`
+- `PUT /platform/me/settings`
+- `GET /platform/me/goal`
+- `PUT /platform/me/goal`
+- `GET /platform/home`
+- `GET /platform/report`
+- `POST /platform/reports/milestone`
+- `GET /platform/learning/history`
+- `GET /platform/learning/memory`
+- `GET /platform/learning/review-queue`
+- `GET /platform/review-queue/{item_id}/resume`
 
-Docker에서는 `ANALYSIS_QUEUE_MODE=rq`, `REDIS_HOST=redis`로 오버라이드됩니다.
+### 문제 / 제출 / 분석
 
+- `GET /platform/problems`
+- `GET /platform/problems/{problem_id}`
+- `POST /platform/problems/{problem_id}/submit`
+- `POST /platform/submissions/{submission_id}/analyze`
+- `GET /platform/submissions/{submission_id}/status`
+- `GET /platform/submissions/{submission_id}/analyses`
 
-Platform mode submit queue behavior (auditor/context-inference/refactoring-choice/code-blame):
+### 관리자
 
-- queue response fields: `queued`, `message`, `jobId`
-- queue job status: `GET /platform/mode-jobs/{job_id}`
-- when finished, `result` includes the original submit response payload
-## 리포트 고도화 (Milestone)
+- `GET /api/admin/metrics`
+- `POST /api/admin/shutdown`
 
-`POST /platform/reports/milestone` 결과 `stats`에 다음 정보가 포함됩니다.
+## 레거시 `/api` 경로
 
-- 기본: `total`, `passed`, `failed`, `error`, `pending`, `processing`, `avg_score`, `accuracy`
-- 오답 분석: `wrong_type_breakdown`, `top_wrong_types`
-- 세부 성과: `difficulty_breakdown`, `language_breakdown`
-- 추세: `trend` (`label`, `accuracy_delta`, `avg_score_delta`, recent/previous window)
-- 취약 구간: `weak_difficulties`, `weak_languages`
+`/api`는 현재도 다음 역할을 가집니다.
 
-오답 유형 통계는 `user_problem_stats.wrong_answer_types` JSON 컬럼에 누적됩니다.
+- `/admin.html`과 관리자 API
+- `/health`
+- 페이지 렌더링 셸
+- 일부 레거시 인증 호환 경로
 
-## 마이그레이션
+하지만 학습 관련 기존 공개 계약은 더 이상 주 사용 경로가 아닙니다. 예를 들어 다음 경로들은 `410 Gone`으로 `/platform` 새 경로를 안내합니다.
 
-```bash
-alembic -c alembic.ini upgrade head
-```
+- `/api/profile`
+- `/api/languages`
+- `/api/report`
+- `/api/diagnostics/start`
+- `/api/problem/submit`
+- `/api/code-block/problem`
+- `/api/code-arrange/problem`
+- `/api/code-calc/problem`
+- `/api/code-error/problem`
+- `/api/auditor/problem`
+- `/api/context-inference/problem`
+- `/api/refactoring-choice/problem`
+- `/api/code-blame/problem`
 
-현재 헤드:
-- `c3b7d2e9f14a` (`problems.kind`에 `code_blame` enum 추가)
+`/api/auth/*` 경로는 런타임 셸 호환 때문에 일부 남아 있지만, 문서상 주 인증 경로는 `/platform/auth/*`를 기준으로 봐야 합니다.
 
-직전 주요 리비전:
-- `a1f5d8e7c9ab` (`problems.kind`에 `refactoring_choice` enum 추가)
-- `9c2a7f54b3de` (`problems.kind`에 `context_inference` enum 추가)
-- `4f1d5e9b2c31` (`problems.kind`에 `auditor` enum 추가)
-- `d7a6c9b14e2f` (user_problem_stats에 `wrong_answer_types` 추가)
+## 테스트
 
-## 개발 의존성 설치
-
-```bash
-pip install -r requirements.txt
-```
-
-추가된 주요 의존성:
-- `rq>=1.16`
-- `redis>=5,<6`
-
-## 보안 주의
-
-`.env`의 값들은 개발용 예시입니다. 운영 시 다음 항목은 반드시 안전한 시크릿으로 교체하세요.
-- `JWT_SECRET`
-- `ADMIN_PANEL_KEY`
-- `DB_PASSWORD`
-- OAuth client secret/API keys
-
-운영 보안 체크리스트:
-- `DB_PASSWORD`, `JWT_SECRET`는 필수값으로 설정되어야 하며, 빈 값/약한 기본값으로 실행되지 않도록 구성되어 있습니다.
-- `docker-compose.docker-socket.yml`(또는 런처 기본 동작)의 `/var/run/docker.sock:/var/run/docker.sock` 마운트는 컨테이너에 호스트 Docker 제어 권한을 줍니다.
-- 가능하면 운영 환경에서는 Docker 소켓 마운트를 제거하거나, 별도 권한 분리된 관리 채널로 종료 기능을 대체하세요.
-- 시크릿은 `.env` 평문 대신 Docker/Kubernetes secret 또는 파일 기반 주입(`*_FILE`) 사용을 권장합니다.
-- 로그/에러 응답에 시크릿 값이 출력되지 않도록 운영 로그 레벨과 예외 메시지를 제한하세요.
-
-## 현재 한계
-
-- JSONL(`/api/*`)과 SQL(`/platform/*`)의 계정/학습 데이터가 아직 완전히 통합되지 않았습니다.
-- JSONL 저장소는 파일 기반이라 다중 인스턴스/고가용성 운영에는 한계가 있습니다.
-
-## 트러블슈팅
-
-### 1) PowerShell에서 venv 활성화가 막힐 때
-증상:
-- `Activate.ps1` 실행 시 `PSSecurityException` 발생
-
-해결:
-- 활성화 없이 venv의 python을 직접 실행하세요.
-
-```powershell
-.venv\Scripts\python.exe run_server.py
-```
-
-또는(현재 세션만 정책 완화):
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-```
-
-### 2) Docker 모드와 로컬 모드가 헷갈릴 때
-기준:
-- `python run_server.py` => Docker Compose 모드
-- `python run_server.py --local` => 로컬 uvicorn 모드
-
-확인:
-
-```powershell
-docker compose ps
-```
-
-### 3) MySQL은 내려갔는데 API 컨테이너가 남아 있을 때
-정상 종료 명령:
-
-```powershell
-docker compose down --remove-orphans
-```
-
-강제 정리(필요 시):
-
-```powershell
-docker rm -f code-platform-api code-platform-worker code-platform-mysql code-platform-redis
-```
-
-### 4) AI API 키를 못 읽을 때
-점검 순서:
-- `.env`에 `AI_API_KEY`(또는 사용하는 provider 키)가 실제로 설정되어 있는지 확인
-- Docker 모드면 `env_file: .env`가 반영되도록 재시작
-
-```powershell
-docker compose up -d --build
-```
-
-- 로컬 모드면 같은 셸에서 실행했는지 확인하고, 필요하면 아래처럼 직접 주입
-
-```powershell
-$env:AI_API_KEY="your-key"
-.venv\Scripts\python.exe run_server.py --local
-```
-
-### 5) 분석 큐 작업이 처리되지 않을 때
-증상:
-- `/platform/submissions/{id}/analyze` 호출 후 상태가 오래 `pending/processing`
-
-확인:
-
-```powershell
-docker compose logs worker --tail=200
-docker compose logs redis --tail=100
-```
-
-점검:
-- `ANALYSIS_QUEUE_MODE=rq`(Docker), `REDIS_HOST=redis`
-- 로컬 테스트는 `ANALYSIS_QUEUE_MODE=inline`으로 즉시 실행 가능
-
-### 6) 관리자 API가 503(Admin key not configured)를 반환할 때
-원인:
-- `ADMIN_PANEL_KEY`가 설정되지 않은 상태입니다.
-
-해결:
-- `.env`에 키를 설정한 뒤 재시작하세요.
-- 관리자 API는 쿼리스트링이 아니라 `X-Admin-Key` 헤더로 인증합니다.
-
-```powershell
-docker compose up -d --build
-```
-
-### 7) 관리자 패널에서 "스택 안전 종료"가 안 될 때
-증상:
-- 버튼이 비활성화되거나 종료 API가 `503`과 함께 `docker_socket_not_mounted`, `docker_control_unavailable` 등을 반환
-
-원인:
-- `--without-docker-socket`로 실행했거나, base compose 파일만으로 실행되어 소켓이 미마운트된 상태입니다.
-
-해결:
-- 기본 런처로 재시작하거나, socket override를 명시해 실행하세요.
+### 전체 Python 테스트
 
 ```bash
-python run_server.py
+python -m unittest discover -s tests -v
 ```
 
-또는 compose를 직접 실행:
+### 문서/계약 관련 핵심 테스트
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.docker-socket.yml up -d --build
+python -m unittest tests.test_mode_api_platform_parity tests.test_auth_unification tests.test_pages_template_variant tests.test_launcher_defaults -v
 ```
 
-## Observability
-
-- Every `/platform/*` request gets `X-Request-Id` in response headers.
-- Platform mode logs (`problem`, `submit`, `submit_background`) include `request_id`.
-- Queue dispatch and enqueue-failure logs also include `request_id`.
-
-## Auth Token Unification
-
-`/api/*` and `/platform/*` now use JWT access tokens consistently.
-
-- `/api/auth/guest` and `/api/auth/google/callback` issue platform JWT tokens.
-- The same token can call both `/api/*` and `/platform/*` endpoints.
-- Legacy JSONL session tokens (`username:randomhex`) are supported only during the migration window.
-
-Legacy token settings (`.env`):
-
-```env
-CODE_PLATFORM_ALLOW_LEGACY_JSONL_TOKENS=true
-CODE_PLATFORM_LEGACY_TOKEN_SUNSET_DATE=2026-03-31
-```
-
-Recommended migration timeline:
-- `2026-02-09` to `2026-03-31`: allow legacy tokens and force users to re-login gradually.
-- `2026-04-01` onward: set `CODE_PLATFORM_ALLOW_LEGACY_JSONL_TOKENS=false`.
-
-When `/api` accepts a legacy token, these response headers are added:
-- `X-Auth-Legacy-Token: true`
-- `X-Auth-Legacy-Sunset-Date: 2026-03-31`
-
-## 테스트/검증
-
-현재 저장소에는 GitHub Actions workflow 파일(`.github/workflows/ci.yml`)이 포함되어 있지 않습니다.
-로컬 검증 명령:
-- `python -m compileall backend app server_runtime`
-- `python -m unittest discover -s tests -q`
-
-Added integration-focused tests in `tests/test_auth_unification.py`:
-- `/api/auth/guest` token issuance path
-- JWT-based `/api/me` access path
-- Legacy token deprecation headers
-- Platform JWT dependency check (`app.api.security_deps.get_current_user`)
-
-## Extra Security Checklist
-
-- Do not use weak/default `ADMIN_PANEL_KEY` values (for example: `change-this-admin-key`).
-- Launcher (`python run_server.py`) now prints a warning if Docker socket mount is detected.
-- Include `CODE_PLATFORM_ALLOW_LEGACY_JSONL_TOKENS` transition in your operation runbook.
-
-
-## Docker Socket Override
-
-Launcher 기본 실행(`python run_server.py`)은 관리자 패널의 전체 스택 종료를 위해
-`docker-compose.docker-socket.yml` override를 자동으로 사용합니다.
-
-Compose를 직접 실행할 때 동일 동작이 필요하면 override 파일을 함께 사용하세요:
+### JS 문법 확인
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.docker-socket.yml up -d --build
+Get-ChildItem frontend/shared/js/*.js | ForEach-Object { node --check $_.FullName }
 ```
 
-Equivalent launcher command:
+### 브라우저 스모크 테스트
 
 ```bash
-python run_server.py --with-docker-socket
+npm install
+npx playwright install chromium
+npx playwright test
 ```
 
-소켓 마운트를 비활성화하려면:
+## 문서
 
-```bash
-python run_server.py --without-docker-socket
-```
-
-소켓이 비활성화된 상태에서는 `/api/admin/shutdown`이 `503` 가이드를 반환합니다.
-
-## Secrets And Build Context
-
-- `.dockerignore` now excludes `.env` and `.env.*` from Docker build context.
-- Use `.env.example` as a template and keep real secrets only in local `.env` (or secret manager).
+- [아키텍처](./docs/architecture.md)
+- [환경변수](./docs/environment.md)
+- [운영 런북](./docs/runbook.md)
+- [트러블슈팅](./docs/troubleshooting.md)

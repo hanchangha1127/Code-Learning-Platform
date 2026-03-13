@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from fastapi import HTTPException, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from backend.admin_metrics import get_admin_metrics
 from backend.config import get_settings
@@ -26,26 +26,20 @@ admin_metrics = get_admin_metrics()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = (PROJECT_ROOT / "frontend").resolve()
-INDEX_FILE = FRONTEND_DIR / "index.html"
-DASHBOARD_FILE = FRONTEND_DIR / "dashboard.html"
-PROFILE_FILE = FRONTEND_DIR / "profile.html"
-ANALYSIS_FILE = FRONTEND_DIR / "analysis.html"
-CODEBLOCK_FILE = FRONTEND_DIR / "codeblock.html"
-ARRANGE_FILE = FRONTEND_DIR / "arrange.html"
-CODECALC_FILE = FRONTEND_DIR / "codecalc.html"
-CODEERROR_FILE = FRONTEND_DIR / "codeerror.html"
-AUDITOR_FILE = FRONTEND_DIR / "auditor.html"
-CONTEXT_INFERENCE_FILE = FRONTEND_DIR / "context-inference.html"
-REFACTORING_CHOICE_FILE = FRONTEND_DIR / "refactoring-choice.html"
-CODE_BLAME_FILE = FRONTEND_DIR / "code-blame.html"
 ADMIN_FILE = FRONTEND_DIR / "admin.html"
 
 TOKEN_STORAGE_KEY = "code-learning-token"
+TOKEN_STORAGE_MARKER = "cookie-session"
+ACCESS_TOKEN_COOKIE_NAME = "code_learning_access"
 GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_OAUTH_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 GOOGLE_OAUTH_SCOPES = "openid email profile"
 OAUTH_STATE_TTL_SECONDS = 600
+GOOGLE_OAUTH_REDIRECT_URI_INVALID_DETAIL = (
+    "계산된 Google OAuth redirect URI가 허용 목록에 없습니다. "
+    "GOOGLE_OAUTH_ALLOWED_REDIRECT_URIS와 프록시(X-Forwarded-Proto/Host) 설정을 확인하세요."
+)
 
 
 def request_client_id(request: Request) -> str:
@@ -65,13 +59,88 @@ def require_google_oauth_settings() -> tuple[str, str]:
     return client_id, client_secret
 
 
+def _normalized_redirect_uri(value: str | None) -> str | None:
+    candidate = (value or "").strip()
+    if not candidate:
+        return None
+
+    parsed = urllib.parse.urlsplit(candidate)
+    scheme = parsed.scheme.lower()
+    host = parsed.netloc.strip().lower()
+    if scheme not in {"http", "https"} or not host:
+        return None
+
+    return urllib.parse.urlunsplit((scheme, host, parsed.path or "", "", ""))
+
+
+def _allowed_google_oauth_redirect_uris() -> tuple[str, ...]:
+    configured = tuple(
+        normalized
+        for normalized in (
+            _normalized_redirect_uri(value) for value in settings.google_oauth_allowed_redirect_uris
+        )
+        if normalized
+    )
+    if configured:
+        return configured
+
+    legacy = _normalized_redirect_uri(settings.google_oauth_redirect_uri)
+    if legacy:
+        return (legacy,)
+
+    return ()
+
+
+def resolve_google_oauth_redirect_uri(request: Request, callback_route_name: str = "google_callback") -> str:
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip().lower()
+    forwarded_port = (request.headers.get("x-forwarded-port") or "").split(",", 1)[0].strip()
+
+    scheme = forwarded_proto if forwarded_proto in {"http", "https"} else (request.url.scheme or "http").lower()
+    host = forwarded_host or (request.headers.get("host") or request.url.netloc or "").strip().lower()
+    if forwarded_port and host and ":" not in host:
+        host = f"{host}:{forwarded_port}"
+
+    path = urllib.parse.urlsplit(str(request.url_for(callback_route_name))).path
+    candidate = _normalized_redirect_uri(urllib.parse.urlunsplit((scheme, host, path, "", "")))
+    allowed = _allowed_google_oauth_redirect_uris()
+    if candidate and candidate in allowed:
+        return candidate
+
+    detail = GOOGLE_OAUTH_REDIRECT_URI_INVALID_DETAIL
+    if candidate:
+        detail = f"{detail} 계산값: {candidate}"
+    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=detail)
+
+
 def _state_signature(payload: str) -> str:
     secret = (settings.google_oauth_client_secret or "").encode("utf-8")
     return hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def _normalize_next_path(next_path: str | None) -> str:
+    default_path = "/dashboard.html"
+    if not isinstance(next_path, str):
+        return default_path
+
+    candidate = next_path.strip()
+    if not candidate:
+        return default_path
+    if not candidate.startswith("/"):
+        return default_path
+    if candidate.startswith("//"):
+        return default_path
+    if "\\" in candidate:
+        return default_path
+
+    parsed = urllib.parse.urlsplit(candidate)
+    if parsed.scheme or parsed.netloc:
+        return default_path
+    return candidate
+
+
 def encode_state(next_path: str) -> str:
-    payload = {"ts": int(time.time()), "next": next_path}
+    payload = {"ts": int(time.time()), "next": _normalize_next_path(next_path)}
     raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
     encoded = base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
     signature = _state_signature(encoded)
@@ -102,16 +171,17 @@ def decode_state(state: str) -> str:
     if abs(time.time() - ts) > OAUTH_STATE_TTL_SECONDS:
         raise ValueError("OAuth state가 만료되었습니다. 다시 로그인해주세요.")
 
-    next_path = data.get("next") or "/dashboard.html"
-    if not isinstance(next_path, str) or not next_path.startswith("/") or "://" in next_path:
-        next_path = "/dashboard.html"
-    return next_path
+    return _normalize_next_path(data.get("next"))
 
 
-def build_google_auth_url(request: Request, next_path: str) -> str:
+def build_google_auth_url(
+    request: Request,
+    next_path: str,
+    callback_route_name: str = "google_callback",
+) -> str:
     client_id, _ = require_google_oauth_settings()
-    redirect_uri = settings.google_oauth_redirect_uri or str(request.url_for("google_callback"))
-    state = encode_state(next_path)
+    redirect_uri = resolve_google_oauth_redirect_uri(request, callback_route_name)
+    state = encode_state(_normalize_next_path(next_path))
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -154,9 +224,34 @@ def fetch_google_userinfo(access_token: str) -> dict:
         raise ValueError(f"Google 사용자 정보 조회에 실패했습니다: {exc}") from exc
 
 
+def _secure_cookie_enabled() -> bool:
+    app_env = str(settings.app_env or "").strip().lower()
+    return app_env not in {"dev", "development", "local", "test"}
+
+
+def set_access_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=ACCESS_TOKEN_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=_secure_cookie_enabled(),
+        samesite="lax",
+        path="/",
+    )
+
+
+def clear_access_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=ACCESS_TOKEN_COOKIE_NAME,
+        path="/",
+        samesite="lax",
+        secure=_secure_cookie_enabled(),
+    )
+
+
 def oauth_success_page(token: str, next_path: str) -> HTMLResponse:
-    token_js = json.dumps(token)
-    next_js = json.dumps(next_path)
+    marker_js = json.dumps(TOKEN_STORAGE_MARKER)
+    next_js = json.dumps(_normalize_next_path(next_path))
     key_js = json.dumps(TOKEN_STORAGE_KEY)
     content = f"""<!DOCTYPE html>
 <html lang=\"ko\">
@@ -168,12 +263,15 @@ def oauth_success_page(token: str, next_path: str) -> HTMLResponse:
 <body>
   <p>로그인 처리 중입니다...</p>
   <script>
-    localStorage.setItem({key_js}, {token_js});
+    localStorage.setItem({key_js}, {marker_js});
     window.location.replace({next_js});
   </script>
 </body>
 </html>"""
-    return HTMLResponse(content, status_code=status.HTTP_200_OK)
+    response = HTMLResponse(content, status_code=status.HTTP_200_OK)
+    response.headers["Cache-Control"] = "no-store"
+    set_access_cookie(response, token)
+    return response
 
 
 def oauth_error_page(message: str) -> HTMLResponse:

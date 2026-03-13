@@ -9,8 +9,6 @@
       MYSQL_USER: "${DB_USER:-appuser}"
       MYSQL_PASSWORD: "${DB_PASSWORD:?DB_PASSWORD is required}"
       TZ: Asia/Seoul
-    ports:
-      - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -24,8 +22,6 @@
     container_name: code-platform-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -67,13 +63,17 @@
       OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o-mini}"
       GOOGLE_API_KEY_FILE: "${GOOGLE_API_KEY_FILE:-}"
       AI_API_KEY_FILE: "${AI_API_KEY_FILE:-}"
+      ENABLE_HTTPS: "${ENABLE_HTTPS:-false}"
+      HTTPS_BIND_PORT: "${HTTPS_BIND_PORT:-8443}"
+      HTTPS_PUBLIC_PORT: "${HTTPS_PUBLIC_PORT:-443}"
+      HTTP_REDIRECT_PORT: "${HTTP_REDIRECT_PORT:-8000}"
+      TLS_CERTS_DIR: "/certs"
+      SSL_CERTFILE: "${SSL_CERTFILE:-}"
+      SSL_KEYFILE: "${SSL_KEYFILE:-}"
       TZ: Asia/Seoul
       UVICORN_WORKERS: 1
-    ports:
-      - "8000:8000"
     volumes:
-      - .:/app
-
+      - ${TLS_CERTS_DIR:-./certs}:/certs:ro
   worker:
     build: .
     container_name: code-platform-worker
@@ -102,8 +102,6 @@
       OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o-mini}"
       TZ: Asia/Seoul
     entrypoint: ["python", "-m", "app.worker"]
-    volumes:
-      - .:/app
 
 volumes:
   mysql_data:

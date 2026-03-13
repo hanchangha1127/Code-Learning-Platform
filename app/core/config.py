@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     JWT_ALG: str = "HS256"
     ACCESS_TOKEN_EXPIRES_MIN: int = 30
     REFRESH_TOKEN_EXPIRES_DAYS: int = 14
+    ALLOW_PLATFORM_PASSWORD_AUTH: bool = False
 
     AI_PROVIDER: str = "mock"
     AI_API_KEY: str | None = None

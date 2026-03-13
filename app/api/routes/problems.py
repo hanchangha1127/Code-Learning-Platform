@@ -6,6 +6,7 @@ from app.api.security_deps import get_current_user
 from app.db.models import ProblemDifficulty, User
 from app.schemas.problem import ProblemListResponse, ProblemRead
 from app.services.problem_service import get_problem_for_user, list_problems
+from app.services.user_service import get_valid_preferred_language
 
 router = APIRouter()
 
@@ -21,7 +22,7 @@ def get_problems(
 ):
     # Use user preferences as defaults when explicit query params are missing.
     if not language and current.settings:
-        language = current.settings.preferred_language
+        language = get_valid_preferred_language(getattr(current.settings, "preferred_language", None))
 
     if not difficulty and current.settings and current.settings.preferred_difficulty is not None:
         preferred = current.settings.preferred_difficulty

@@ -1,0 +1,281 @@
+﻿body[data-template-variant="desktop"] .auth-view,
+body[data-template-variant="desktop"] .app,
+body[data-template-variant="desktop"] .dashboard-main {
+  max-width: 1380px;
+  margin: 0 auto;
+}
+
+body[data-template-variant="desktop"] .auth-view {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 24px);
+  padding: 32px 30px 50px;
+}
+
+body[data-template-variant="desktop"] .app {
+  padding: 28px 28px 46px;
+  gap: 22px;
+}
+
+body[data-template-variant="desktop"] .app-header {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 20px 22px;
+}
+
+body[data-template-variant="desktop"] .header-actions {
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+body[data-template-variant="desktop"] .auth-shell {
+  display: grid;
+  width: min(1280px, 100%);
+  grid-template-columns: minmax(0, 1fr) minmax(540px, 0.98fr);
+  gap: 24px;
+  align-items: stretch;
+}
+
+body[data-template-variant="desktop"] .auth-hero-card,
+body[data-template-variant="desktop"] .auth-panel {
+  min-height: 620px;
+}
+
+body[data-template-variant="desktop"] .auth-panel-actions {
+  display: grid;
+  gap: 12px;
+}
+
+body[data-template-variant="desktop"] .auth-panel-actions .auth-action,
+body[data-template-variant="desktop"] .auth-panel-actions .auth-action button,
+body[data-template-variant="desktop"] .auth-panel-actions .block {
+  width: 100%;
+}
+
+body[data-template-variant="desktop"] .auth-note-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+body[data-template-variant="desktop"] .dashboard-shell .app-header,
+body[data-template-variant="desktop"] .dashboard-main {
+  max-width: 1280px;
+}
+
+body[data-template-variant="desktop"] .dashboard-main {
+  display: grid;
+  gap: 20px;
+  padding: 0;
+}
+
+body[data-template-variant="desktop"] .dashboard-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.24fr) minmax(320px, 0.76fr);
+  gap: 22px;
+  align-items: start;
+}
+
+body[data-template-variant="desktop"] .dashboard-highlight-grid,
+body[data-template-variant="desktop"] .dashboard-two-column {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+
+body[data-template-variant="desktop"] .dashboard-panel,
+body[data-template-variant="desktop"] .home-stat-card {
+  min-height: 0;
+  align-self: start;
+}
+
+body[data-template-variant="desktop"] .home-stat-card {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+}
+
+body[data-template-variant="desktop"] .dashboard-side-note,
+body[data-template-variant="desktop"] .dashboard-highlight-grid > *,
+body[data-template-variant="desktop"] .dashboard-two-column > * {
+  align-self: start;
+}
+
+body[data-template-variant="desktop"] .dashboard-goal-card .goal-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+body[data-template-variant="desktop"] .dashboard-goal-card .goal-form-row .primary {
+  min-width: 96px;
+}
+
+body[data-template-variant="desktop"] .preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+body[data-template-variant="desktop"] .dashboard-mode-section .feature-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+
+body[data-template-variant="desktop"] .dashboard-mode-section .feature-card {
+  min-height: 0;
+}
+
+body[data-template-variant="desktop"] .profile-grid {
+  display: grid;
+  grid-template-columns: minmax(340px, 0.9fr) minmax(0, 1.35fr);
+  gap: 22px;
+  align-items: start;
+}
+
+body[data-template-variant="desktop"] .profile-summary,
+body[data-template-variant="desktop"] .control-panel,
+body[data-template-variant="desktop"] .feedback-panel,
+body[data-template-variant="desktop"] .calc-controls,
+body[data-template-variant="desktop"] .arrange-controls,
+body[data-template-variant="desktop"] .cerr-controls,
+body[data-template-variant="desktop"] .cb-controls {
+  position: static;
+  top: auto;
+  align-self: start;
+}
+
+body[data-template-variant="desktop"] .mode-shell--three {
+  display: grid;
+  grid-template-columns: minmax(310px, 0.82fr) minmax(0, 1.78fr) minmax(330px, 0.92fr);
+  gap: 18px;
+  align-items: start;
+}
+
+body[data-template-variant="desktop"] .mode-shell--two {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.86fr) minmax(0, 1.84fr);
+  gap: 18px;
+  align-items: start;
+}
+
+body[data-template-variant="desktop"] .mode-shell--codeblock {
+  display: grid;
+  grid-template-columns: minmax(380px, 0.98fr) minmax(0, 1.72fr);
+  gap: 20px;
+  align-items: start;
+}
+
+body[data-template-variant="desktop"] #code-block-section .cb-controls {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+}
+
+body[data-template-variant="desktop"] .mode-shell--three .quiz-header,
+body[data-template-variant="desktop"] .mode-shell--two .calc-header,
+body[data-template-variant="desktop"] .mode-shell--two .arrange-header,
+body[data-template-variant="desktop"] .mode-shell--two .cerr-header,
+body[data-template-variant="desktop"] .mode-shell--codeblock .cb-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+body[data-template-variant="desktop"] .quiz-meta,
+body[data-template-variant="desktop"] .calc-actions,
+body[data-template-variant="desktop"] .arrange-actions,
+body[data-template-variant="desktop"] .cerr-actions,
+body[data-template-variant="desktop"] .cb-actions,
+body[data-template-variant="desktop"] .dashboard-action-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+body[data-template-variant="desktop"] .cb-options {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+body[data-template-variant="desktop"] .commit-options {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+body[data-template-variant="desktop"] .choice-options {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+body[data-template-variant="desktop"] .code-block,
+body[data-template-variant="desktop"] #cb-code-display,
+body[data-template-variant="desktop"] #calc-code-display,
+body[data-template-variant="desktop"] #arr-answer-code,
+body[data-template-variant="desktop"] #auditor-problem-code,
+body[data-template-variant="desktop"] #ci-problem-snippet,
+body[data-template-variant="desktop"] #cb-error-log,
+body[data-template-variant="desktop"] #problem-code {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  white-space: pre;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+body[data-template-variant="desktop"] .modal-card {
+  width: min(680px, 92vw);
+}
+
+body[data-template-variant="desktop"] .modal-card.modal-wide {
+  width: min(1160px, 94vw);
+}
+
+@media (max-width: 1240px) {
+  body[data-template-variant="desktop"] .auth-shell,
+  body[data-template-variant="desktop"] .dashboard-hero,
+  body[data-template-variant="desktop"] .dashboard-highlight-grid,
+  body[data-template-variant="desktop"] .dashboard-two-column,
+  body[data-template-variant="desktop"] .profile-grid {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-template-variant="desktop"] .mode-shell--three {
+    grid-template-columns: minmax(290px, 0.84fr) minmax(0, 1.46fr);
+  }
+
+  body[data-template-variant="desktop"] .feedback-panel {
+    position: static;
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 980px) {
+  body[data-template-variant="desktop"] .mode-shell--three,
+  body[data-template-variant="desktop"] .mode-shell--two,
+  body[data-template-variant="desktop"] .mode-shell--codeblock {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-template-variant="desktop"] .control-panel,
+  body[data-template-variant="desktop"] .profile-summary,
+  body[data-template-variant="desktop"] .calc-controls,
+  body[data-template-variant="desktop"] .arrange-controls,
+  body[data-template-variant="desktop"] .cerr-controls,
+  body[data-template-variant="desktop"] .cb-controls {
+    position: static;
+  }
+
+  body[data-template-variant="desktop"] .dashboard-mode-section .feature-grid,
+  body[data-template-variant="desktop"] .cb-options,
+  body[data-template-variant="desktop"] .choice-options,
+  body[data-template-variant="desktop"] .commit-options {
+    grid-template-columns: 1fr;
+  }
+}

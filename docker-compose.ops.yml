@@ -1,0 +1,15 @@
+services:
+  api:
+    ports:
+      - "80:8000"
+      - "443:8443"
+      - "8443:8443"
+      - "8000:8000"
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  worker:
+    read_only: true
+    tmpfs:
+      - /tmp

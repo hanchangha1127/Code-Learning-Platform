@@ -1,10 +1,10 @@
 ﻿from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.db.base import utcnow
 from app.db.models import SubmissionStatus, UserProblemStat
 
 
@@ -67,6 +67,19 @@ def _classify_wrong_answer_type(
     return "unknown_error"
 
 
+def classify_wrong_answer_type(
+    status: SubmissionStatus | str,
+    *,
+    analysis_summary: str | None = None,
+    analysis_detail: Any = None,
+) -> str | None:
+    return _classify_wrong_answer_type(
+        _normalize_status(status),
+        analysis_summary=analysis_summary,
+        analysis_detail=analysis_detail,
+    )
+
+
 def _normalize_wrong_answer_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {"total_wrong": 0, "types": {}}
@@ -122,7 +135,7 @@ def update_user_problem_stat(
     if increment_attempt:
         stat.attempts += 1
 
-    now = datetime.utcnow()
+    now = utcnow()
     stat.last_submitted_at = now
 
     normalized_status = _normalize_status(status)

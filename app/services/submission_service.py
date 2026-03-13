@@ -1,7 +1,6 @@
-﻿from datetime import datetime
-
 from sqlalchemy.orm import Session
 
+from app.db.base import utcnow
 from app.db.models import Problem, Submission, SubmissionStatus, UserProblemStat
 from app.services.problem_service import can_user_access_problem
 
@@ -34,7 +33,7 @@ def create_submission(
         {"user_id": user_id, "problem_id": problem_id},
     )
 
-    now = datetime.utcnow()
+    now = utcnow()
 
     if stat is None:
         stat = UserProblemStat(

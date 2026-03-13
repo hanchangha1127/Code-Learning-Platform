@@ -51,7 +51,7 @@ class CodeBlameSubmitRequest(BaseModel):
         min_length=1,
         max_length=2,
     )
-    report: str
+    report: str = Field(..., min_length=1, max_length=8000)
 
     @field_validator("selected_commits")
     @classmethod

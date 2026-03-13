@@ -14,6 +14,18 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _default_profile(username: str) -> Dict[str, Any]:
     now = _utcnow()
     return {
@@ -331,7 +343,7 @@ class UserService:
         )
         return token
 
-    def get_user_by_token(self, token: str) -> Optional[str]:
+    def get_user_by_token(self, token: str, max_age_seconds: int | None = None) -> Optional[str]:
         username, sep, _ = token.partition(":")
         if sep != ":":
             return None
@@ -342,6 +354,21 @@ class UserService:
         session = storage.find_one(lambda item: item.get("type") == "session" and item.get("token") == token)
         if not session:
             return None
+
+        if max_age_seconds is not None:
+            max_age = max(int(max_age_seconds), 0)
+            if max_age <= 0:
+                return None
+            created_raw = session.get("created_at")
+            created_at = _parse_iso(created_raw if isinstance(created_raw, str) else None)
+            if created_at is None:
+                return None
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
+            if age_seconds > max_age:
+                return None
+
         user_record = storage.find_one(lambda item: item.get("type") == "user")
         if user_record and user_record.get("guest") is True:
             if self._guest_expired(user_record):

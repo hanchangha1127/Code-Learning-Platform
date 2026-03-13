@@ -124,7 +124,7 @@ class AuditorSubmitRequest(BaseModel):
         min_length=1,
         max_length=128,
     )
-    report: str = Field(...)
+    report: str = Field(..., min_length=1, max_length=8000)
 
 
 class ContextInferenceSubmitRequest(BaseModel):
@@ -135,7 +135,7 @@ class ContextInferenceSubmitRequest(BaseModel):
         min_length=1,
         max_length=128,
     )
-    report: str = Field(...)
+    report: str = Field(..., min_length=1, max_length=8000)
 
 
 class RefactoringChoiceSubmitRequest(BaseModel):
@@ -152,7 +152,7 @@ class RefactoringChoiceSubmitRequest(BaseModel):
         min_length=1,
         max_length=8,
     )
-    report: str = Field(...)
+    report: str = Field(..., min_length=1, max_length=8000)
 
     @field_validator("selected_option")
     @classmethod
@@ -174,7 +174,7 @@ class CodeBlameSubmitRequest(BaseModel):
         min_length=1,
         max_length=2,
     )
-    report: str = Field(...)
+    report: str = Field(..., min_length=1, max_length=8000)
 
     @field_validator("selected_commits")
     @classmethod

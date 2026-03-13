@@ -44,7 +44,11 @@ class PreferredDifficulty(str, Enum):
 
 class ProblemKind(str, Enum):
     coding = "coding"
+    analysis = "analysis"
     code_block = "code_block"
+    code_arrange = "code_arrange"
+    code_calc = "code_calc"
+    code_error = "code_error"
     auditor = "auditor"
     context_inference = "context_inference"
     refactoring_choice = "refactoring_choice"
@@ -76,6 +80,18 @@ class ReportType(str, Enum):
     weekly = "weekly"
     monthly = "monthly"
     milestone = "milestone"
+
+
+class ProblemContentStatus(str, Enum):
+    pending = "pending"
+    approved = "approved"
+    hidden = "hidden"
+
+
+class ReviewQueueStatus(str, Enum):
+    pending = "pending"
+    completed = "completed"
+    dismissed = "dismissed"
 
 
 # ------------------------
@@ -134,6 +150,19 @@ class User(TimestampMixin, Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    learning_goal: Mapped["UserLearningGoal | None"] = relationship(
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    review_queue_items: Mapped[list["ReviewQueueItem"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    ops_events: Mapped[list["PlatformOpsEvent"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class UserSettings(TimestampMixin, Base):
@@ -183,8 +212,12 @@ class UserSession(TimestampMixin, Base):
 
 class Problem(TimestampMixin, Base):
     __tablename__ = "problems"
+    __table_args__ = (
+        sa.Index("ix_problems_external_id", "external_id"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     kind: Mapped[ProblemKind] = mapped_column(
         SAEnum(ProblemKind, name="problem_kind"),
@@ -200,6 +233,8 @@ class Problem(TimestampMixin, Base):
     language: Mapped[str] = mapped_column(String(30), nullable=False)
 
     starter_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    problem_payload: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+    answer_payload: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
 
     # Code-block problem options and answer index.
     options: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
@@ -207,6 +242,16 @@ class Problem(TimestampMixin, Base):
 
     # Reference solution (not exposed by default in public APIs).
     reference_solution: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    prompt_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    content_status: Mapped[ProblemContentStatus] = mapped_column(
+        SAEnum(ProblemContentStatus, name="problem_content_status"),
+        nullable=False,
+        server_default=ProblemContentStatus.pending.value,
+    )
+    is_curated_sample: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="0"
+    )
 
     is_published: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="1"
@@ -231,6 +276,9 @@ class Problem(TimestampMixin, Base):
     stats: Mapped[list["UserProblemStat"]] = relationship(
         back_populates="problem",
         cascade="all, delete-orphan",
+    )
+    review_queue_items: Mapped[list["ReviewQueueItem"]] = relationship(
+        back_populates="problem",
     )
 
 
@@ -257,6 +305,7 @@ class Submission(TimestampMixin, Base):
 
     language: Mapped[str] = mapped_column(String(30), nullable=False)
     code: Mapped[str] = mapped_column(Text, nullable=False)
+    submission_payload: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
 
     status: Mapped[SubmissionStatus] = mapped_column(
         SAEnum(SubmissionStatus, name="submission_status"),
@@ -270,6 +319,9 @@ class Submission(TimestampMixin, Base):
     analyses: Mapped[list["AIAnalysis"]] = relationship(
         back_populates="submission",
         cascade="all, delete-orphan",
+    )
+    review_queue_items: Mapped[list["ReviewQueueItem"]] = relationship(
+        back_populates="submission",
     )
 
 
@@ -302,6 +354,7 @@ class AIAnalysis(TimestampMixin, Base):
 
     result_summary: Mapped[str] = mapped_column(Text, nullable=False)
     result_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_payload: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="analyses")
     submission: Mapped["Submission | None"] = relationship(back_populates="analyses")
@@ -343,6 +396,95 @@ class UserProblemStat(Base):
 
     user: Mapped["User"] = relationship(back_populates="problem_stats")
     problem: Mapped["Problem"] = relationship(back_populates="stats")
+
+
+class UserLearningGoal(TimestampMixin, Base):
+    __tablename__ = "user_learning_goals"
+
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    weekly_target_sessions: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="12"
+    )
+    daily_target_sessions: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="10"
+    )
+    focus_modes: Mapped[list | dict | None] = mapped_column(JSON, nullable=True)
+    focus_topics: Mapped[list | dict | None] = mapped_column(JSON, nullable=True)
+
+    user: Mapped["User"] = relationship(back_populates="learning_goal")
+
+
+class ReviewQueueItem(TimestampMixin, Base):
+    __tablename__ = "review_queue_items"
+    __table_args__ = (
+        sa.Index("ix_review_queue_user_due", "user_id", "status", "due_at"),
+        sa.Index("ix_review_queue_problem", "problem_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    problem_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("problems.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    submission_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("submissions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_problem_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    mode: Mapped[str] = mapped_column(String(50), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    weakness_tag: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    due_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="50")
+    status: Mapped[ReviewQueueStatus] = mapped_column(
+        SAEnum(ReviewQueueStatus, name="review_queue_status"),
+        nullable=False,
+        server_default=ReviewQueueStatus.pending.value,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    payload: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+
+    user: Mapped["User"] = relationship(back_populates="review_queue_items")
+    problem: Mapped["Problem | None"] = relationship(back_populates="review_queue_items")
+    submission: Mapped["Submission | None"] = relationship(back_populates="review_queue_items")
+
+
+class PlatformOpsEvent(TimestampMixin, Base):
+    __tablename__ = "platform_ops_events"
+    __table_args__ = (
+        sa.Index("ix_platform_ops_event_type_created", "event_type", "created_at"),
+        sa.Index("ix_platform_ops_request_id", "request_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    mode: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payload: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+
+    user: Mapped["User | None"] = relationship(back_populates="ops_events")
 
 
 class Report(TimestampMixin, Base):

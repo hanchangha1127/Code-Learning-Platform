@@ -1,13 +1,12 @@
 ﻿from __future__ import annotations
 
-from datetime import datetime
-
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.api.security_deps import get_current_user
 from app.core.config import settings
+from app.db.base import utcnow
 from app.db.models import Submission, SubmissionStatus, User
 from app.schemas.analysis import AIAnalysisRead, AnalyzeStartResponse, SubmissionStatusResponse
 from app.schemas.submission import SubmissionRead, SubmitRequest
@@ -31,7 +30,7 @@ def _is_processing_stale(submission: Submission) -> bool:
     if started_at is None:
         return False
 
-    age_seconds = (datetime.utcnow() - started_at).total_seconds()
+    age_seconds = (utcnow() - started_at).total_seconds()
     return age_seconds >= stale_seconds
 
 

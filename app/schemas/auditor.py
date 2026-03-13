@@ -32,7 +32,7 @@ class AuditorSubmitRequest(BaseModel):
         min_length=1,
         max_length=128,
     )
-    report: str
+    report: str = Field(..., min_length=1, max_length=8000)
 
 
 class AuditorFeedback(BaseModel):

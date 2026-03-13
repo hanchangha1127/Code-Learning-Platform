@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from app.db.models import PreferredDifficulty
 
 class UserRead(BaseModel):
@@ -17,3 +17,8 @@ class UserSettingsRead(BaseModel):
 class UserSettingsUpdate(BaseModel):
     preferred_language: str
     preferred_difficulty: PreferredDifficulty
+
+    @field_validator("preferred_language")
+    @classmethod
+    def normalize_preferred_language(cls, value: str) -> str:
+        return str(value or "").strip().lower()
