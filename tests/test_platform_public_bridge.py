@@ -126,6 +126,31 @@ class PlatformPublicBridgeTests(unittest.TestCase):
         self.assertEqual(fake_db.commits, 0)
         self.assertEqual(fake_db.rollbacks, 1)
 
+    def test_request_mode_problem_can_defer_persistence_after_payload_is_ready(self) -> None:
+        fake_db = FakeSqlSession()
+        emitted_payloads: list[dict] = []
+
+        with (
+            patch.object(platform_public_bridge, "_request_runtime_problem", return_value={"problemId": "code-block-7"}),
+            patch.object(platform_public_bridge, "_defer_problem_follow_up") as mock_follow_up,
+        ):
+            payload = platform_public_bridge.request_mode_problem(
+                mode="code-block",
+                username="bridge-user",
+                user_id=1,
+                language="python",
+                difficulty="beginner",
+                db=fake_db,
+                defer_persistence=True,
+                on_payload_ready=emitted_payloads.append,
+            )
+
+        self.assertEqual(payload["problemId"], "code-block-7")
+        self.assertEqual(emitted_payloads, [payload])
+        self.assertEqual(fake_db.commits, 0)
+        self.assertEqual(fake_db.rollbacks, 0)
+        mock_follow_up.assert_called_once()
+
     def test_submit_mode_answer_keeps_success_when_ops_event_recording_fails(self) -> None:
         fake_db = FakeSqlSession()
 
@@ -158,6 +183,44 @@ class PlatformPublicBridgeTests(unittest.TestCase):
             platform_public_bridge._latest_submission_analysis([same_time_low, same_time_high]),
             same_time_high,
         )
+
+    def test_problem_starter_code_can_render_files_payload(self) -> None:
+        payload = {
+            "files": [
+                {"path": "frontend/page.tsx", "content": "export function Page() { return null; }"},
+                {"path": "backend/api.py", "content": "def handler():\n    return None"},
+            ]
+        }
+
+        starter = platform_public_bridge._problem_starter_code(payload)
+
+        self.assertIn("File: frontend/page.tsx", starter)
+        self.assertIn("export function Page()", starter)
+        self.assertIn("File: backend/api.py", starter)
+        self.assertIn("def handler()", starter)
+
+    def test_submit_runtime_answer_supports_advanced_analysis_modes(self) -> None:
+        with patch.object(
+            platform_public_bridge.learning_service,
+            "submit_single_file_analysis_report",
+            return_value={"correct": True, "score": 88.0},
+        ) as mock_submit:
+            result = platform_public_bridge._submit_runtime_answer(
+                "single-file-analysis",
+                username="bridge-user",
+                body={"problemId": "sfa-1", "report": "analysis report"},
+            )
+
+        self.assertEqual(result["score"], 88.0)
+        mock_submit.assert_called_once_with("bridge-user", "sfa-1", "analysis report")
+
+    def test_submission_code_uses_report_for_advanced_analysis_modes(self) -> None:
+        code = platform_public_bridge._submission_code(
+            "fullstack-analysis",
+            {"problemId": "fsa-1", "report": "trace the request flow"},
+        )
+
+        self.assertEqual(code, "trace the request flow")
 
 
 if __name__ == "__main__":

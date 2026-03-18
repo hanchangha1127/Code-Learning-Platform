@@ -70,6 +70,42 @@ class PlatformModeJobStatusTests(unittest.TestCase):
             },
         )
 
+    def test_returns_finished_job_result_for_owner_when_status_is_bytes(self) -> None:
+        fake_job = _FakeJob(
+            status=b"finished",
+            args=("auditor", 7, {"problem_id": "p1"}),
+            result={"verdict": "passed", "score": 88},
+            meta={"user_id": 7},
+        )
+        with (
+            patch("app.api.routes.platform_mode_jobs.is_rq_enabled", return_value=True),
+            patch("app.api.routes.platform_mode_jobs.get_redis_connection", return_value=object()),
+            patch("app.api.routes.platform_mode_jobs.Job.fetch", return_value=fake_job),
+        ):
+            response = self.client.get("/mode-jobs/job-bytes")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "finished")
+        self.assertEqual(response.json()["finished"], True)
+
+    def test_returns_failed_job_error_when_exc_info_is_bytes(self) -> None:
+        fake_job = _FakeJob(
+            status=b"failed",
+            args=("auditor", 7, {"problem_id": "p1"}),
+            exc_info=b"Traceback...\nValueError: boom",
+            meta={"user_id": 7},
+        )
+        with (
+            patch("app.api.routes.platform_mode_jobs.is_rq_enabled", return_value=True),
+            patch("app.api.routes.platform_mode_jobs.get_redis_connection", return_value=object()),
+            patch("app.api.routes.platform_mode_jobs.Job.fetch", return_value=fake_job),
+        ):
+            response = self.client.get("/mode-jobs/job-failed-bytes")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "failed")
+        self.assertEqual(response.json()["error"], "ValueError: boom")
+
     def test_returns_404_when_job_owner_mismatch(self) -> None:
         fake_job = _FakeJob(status="started", args=("auditor", 3, {"problem_id": "p1"}), meta={"user_id": 3})
         with (

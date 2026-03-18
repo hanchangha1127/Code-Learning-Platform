@@ -24,10 +24,38 @@
     return Math.floor(Math.random() * (safeMax - safeMin + 1)) + safeMin;
   }
 
-  async function typeText(target, text, { minDelay = 10, maxDelay = 16 } = {}) {
+  function prefersReducedMotion() {
+    return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function streamAnimationsEnabled() {
+    const bodySetting =
+      typeof document !== "undefined" ? document.body?.dataset?.problemStreamAnimation : undefined;
+    const globalSetting = window.CodeProblemStreamConfig?.animation;
+    const setting = bodySetting || globalSetting;
+    if (setting === "on") {
+      return !prefersReducedMotion();
+    }
+    if (setting === "off") {
+      return false;
+    }
+    return false;
+  }
+
+  function shouldAnimateStep({ force = false, valueLength = 0, lineCount = 0 } = {}) {
+    if (!force && !streamAnimationsEnabled()) {
+      return false;
+    }
+    if (valueLength > 240 || lineCount > 24) {
+      return false;
+    }
+    return true;
+  }
+
+  async function typeText(target, text, { minDelay = 2, maxDelay = 4, force = false } = {}) {
     if (!target) return;
     const value = String(text ?? "");
-    if (value.length > 1200) {
+    if (!shouldAnimateStep({ force, valueLength: value.length }) || value.length > 1200) {
       target.textContent = value;
       return;
     }
@@ -39,10 +67,14 @@
     }
   }
 
-  async function revealLines(target, text, { lineDelay = 70 } = {}) {
+  async function revealLines(target, text, { lineDelay = 20, force = false } = {}) {
     if (!target) return;
     const value = String(text ?? "");
     const lines = value.split("\n");
+    if (!shouldAnimateStep({ force, valueLength: value.length, lineCount: lines.length })) {
+      target.textContent = value;
+      return;
+    }
     target.textContent = "";
     for (let i = 0; i < lines.length; i += 1) {
       target.textContent = lines.slice(0, i + 1).join("\n");
@@ -56,7 +88,8 @@
     target,
     items,
     {
-      itemDelay = 70,
+      itemDelay = 20,
+      force = false,
       renderItem = (item) => {
         const li = document.createElement("li");
         li.textContent = String(item ?? "");
@@ -67,6 +100,15 @@
     if (!target) return;
     target.innerHTML = "";
     const list = Array.isArray(items) ? items : [];
+    if (!shouldAnimateStep({ force, lineCount: list.length })) {
+      for (const item of list) {
+        const node = renderItem(item);
+        if (node) {
+          target.appendChild(node);
+        }
+      }
+      return;
+    }
     for (const item of list) {
       const node = renderItem(item);
       if (node) {
@@ -154,6 +196,7 @@
     onStatus = null,
     onPayload = null,
     onDone = null,
+    returnOnPayload = true,
     signal = undefined,
   }) {
     const authClient = window.CodeAuth || null;
@@ -234,6 +277,7 @@
     let streamErrorPayload = null;
     let donePayload = null;
     let trailingReadError = null;
+    let returnAfterPayload = false;
 
     const processEvent = (eventName, data) => {
       streamStarted = true;
@@ -244,6 +288,7 @@
       if (eventName === "payload") {
         receivedPayload = data && typeof data === "object" && "payload" in data ? data.payload : data;
         if (typeof onPayload === "function") onPayload(receivedPayload, data);
+        returnAfterPayload = returnOnPayload && receivedPayload !== undefined;
         return;
       }
       if (eventName === "error") {
@@ -270,6 +315,14 @@
           if (!chunk.trim()) continue;
           const parsed = parseSseChunk(chunk);
           processEvent(parsed.event, parsed.data);
+        }
+        if (returnAfterPayload) {
+          try {
+            await reader.cancel();
+          } catch {
+            // Ignore reader shutdown issues after receiving the final payload.
+          }
+          return receivedPayload;
         }
       }
     } catch (streamReadError) {
@@ -300,6 +353,10 @@
     if (buffer.trim()) {
       const parsed = parseSseChunk(buffer);
       processEvent(parsed.event, parsed.data);
+    }
+
+    if (returnOnPayload && receivedPayload !== undefined) {
+      return receivedPayload;
     }
 
     if (streamErrorPayload) {

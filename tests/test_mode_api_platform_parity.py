@@ -63,6 +63,9 @@ class PlatformModeContractTests(unittest.TestCase):
             ("/platform/context-inference/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "ctx-1", "title": "Context problem", "snippet": "pass", "prompt": "Infer the missing context."}),
             ("/platform/refactoring-choice/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "ref-1", "title": "Choice problem", "options": []}),
             ("/platform/code-blame/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "blame-1", "title": "Blame problem", "commits": []}),
+            ("/platform/single-file-analysis/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "sfa-1", "title": "Single file analysis", "files": [{"id": "one", "path": "app/main.py", "name": "main.py", "language": "python", "role": "entrypoint", "content": "print('ok')"}]}),
+            ("/platform/multi-file-analysis/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "mfa-1", "title": "Multi file analysis", "files": [{"id": "one", "path": "app/main.py", "name": "main.py", "language": "python", "role": "controller", "content": "print('ok')"}, {"id": "two", "path": "app/service.py", "name": "service.py", "language": "python", "role": "service", "content": "print('service')"}]}),
+            ("/platform/fullstack-analysis/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "fsa-1", "title": "Fullstack analysis", "files": [{"id": "frontend", "path": "frontend/page.tsx", "name": "page.tsx", "language": "tsx", "role": "frontend", "content": "export function Page() { return null; }"}, {"id": "backend", "path": "backend/api.py", "name": "api.py", "language": "python", "role": "backend", "content": "def handler():\n    return None"}]}),
         ]
 
         for path, body, payload in scenarios:
@@ -86,6 +89,9 @@ class PlatformModeContractTests(unittest.TestCase):
             ("/platform/context-inference/submit", {"problemId": "ctx-1", "report": "report"}, {"correct": True, "score": 90, "feedback": {"summary": "Solid review"}}),
             ("/platform/refactoring-choice/submit", {"problemId": "ref-1", "selectedOption": "A", "report": "report"}, {"correct": True, "score": 90, "feedback": {"summary": "Solid review"}}),
             ("/platform/code-blame/submit", {"problemId": "blame-1", "selectedCommits": ["B"], "report": "report"}, {"correct": True, "score": 90, "feedback": {"summary": "Solid review"}}),
+            ("/platform/single-file-analysis/submit", {"problemId": "sfa-1", "report": "report"}, {"correct": True, "score": 90, "feedback": {"summary": "Solid review"}, "referenceReport": "reference", "passThreshold": 70}),
+            ("/platform/multi-file-analysis/submit", {"problemId": "mfa-1", "report": "report"}, {"correct": True, "score": 90, "feedback": {"summary": "Solid review"}, "referenceReport": "reference", "passThreshold": 70}),
+            ("/platform/fullstack-analysis/submit", {"problemId": "fsa-1", "report": "report"}, {"correct": True, "score": 90, "feedback": {"summary": "Solid review"}, "referenceReport": "reference", "passThreshold": 70}),
         ]
 
         for path, body, payload in scenarios:

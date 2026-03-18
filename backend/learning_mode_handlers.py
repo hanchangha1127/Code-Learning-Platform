@@ -51,6 +51,8 @@ CODE_BLAME_FACET_TAXONOMY = POLICY_CODE_BLAME_FACET_TAXONOMY
 CODE_BLAME_CANDIDATE_COUNT_BY_DIFFICULTY = POLICY_CODE_BLAME_CANDIDATE_COUNT_BY_DIFFICULTY
 CODE_BLAME_CULPRIT_COUNT_WEIGHTS = POLICY_CODE_BLAME_CULPRIT_COUNT_WEIGHTS
 
+ADVANCED_ANALYSIS_PASS_THRESHOLD = MODE_PASS_THRESHOLD
+
 
 def select_context_inference_type(difficulty_id: str) -> str:
     return _shared_select_context_inference_type(
@@ -126,6 +128,56 @@ def _normalize_code_blame_facets(value: object) -> list[str]:
         min_count=3,
         max_count=4,
     )
+
+
+def _slug_token(value: object, fallback: str) -> str:
+    text = str(value or "").strip().lower()
+    cleaned = "".join(ch if ch.isalnum() else "-" for ch in text)
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    cleaned = cleaned.strip("-")
+    return cleaned or fallback
+
+
+def _normalize_advanced_analysis_files(
+    value: object,
+    *,
+    min_count: int,
+    max_count: int,
+    default_language: str,
+    default_role: str,
+) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    if isinstance(value, list):
+        for index, entry in enumerate(value, start=1):
+            if not isinstance(entry, dict):
+                continue
+            path = str(entry.get("path") or entry.get("name") or "").strip()
+            name = str(entry.get("name") or "").strip()
+            if not path and name:
+                path = name
+            if not name and path:
+                name = path.split("/")[-1]
+            if not path:
+                path = f"src/file_{index}.txt"
+            if not name:
+                name = path.split("/")[-1]
+            language = str(entry.get("language") or default_language).strip().lower() or default_language
+            role = str(entry.get("role") or default_role).strip() or default_role
+            content = str(entry.get("content") or entry.get("code") or "").rstrip()
+            if not content:
+                continue
+            normalized.append(
+                {
+                    "id": str(entry.get("id") or _slug_token(path, f"file-{index}")),
+                    "path": path,
+                    "name": name,
+                    "language": language,
+                    "role": role,
+                    "content": content,
+                }
+            )
+    return normalized[: max(1, int(max_count or 1))]
 
 
 def request_problem(
@@ -658,6 +710,400 @@ def submit_auditor_report(
         "referenceReport": reference_report,
         "passThreshold": int(AUDITOR_PASS_THRESHOLD),
     }
+
+
+def request_single_file_analysis_problem(
+    service: Any,
+    username: str,
+    language_id: str,
+    difficulty_id: str,
+    *,
+    default_track_id: str,
+    difficulty_choices: Dict[str, Dict[str, str]],
+    utcnow: Callable[[], str],
+) -> Dict[str, Any]:
+    track_id = default_track_id
+    if language_id not in LANGUAGES:
+        raise ValueError("지원하지 않는 언어입니다.")
+    if difficulty_id not in difficulty_choices:
+        raise ValueError("지원하지 않는 난이도입니다.")
+
+    storage = service._get_user_storage(username)
+    history_context = service._single_file_analysis_history_context(storage)
+    problem_id = generate_token("sfile")
+
+    generated = service.problem_generator.generate_single_file_analysis_problem_sync(
+        problem_id=problem_id,
+        track_id=track_id,
+        language_id=language_id,
+        difficulty=difficulty_choices[difficulty_id]["generator"],
+        mode="single-file-analysis",
+        history_context=history_context,
+    )
+
+    files = _normalize_advanced_analysis_files(
+        generated.get("files"),
+        min_count=1,
+        max_count=1,
+        default_language=language_id,
+        default_role="entrypoint",
+    )
+    checklist = _normalize_str_list(generated.get("checklist"))[:4]
+    summary = str(generated.get("summary") or "").strip()
+    prompt = str(generated.get("prompt") or "").strip()
+    workspace = str(generated.get("workspace") or "").strip() or "single-file-analysis.workspace"
+    reference_report = str(generated.get("reference_report") or "").strip()
+
+    storage.append(
+        {
+            "type": "single_file_analysis_instance",
+            "problem_id": problem_id,
+            "track": track_id,
+            "language": language_id,
+            "mode": "single-file-analysis",
+            "difficulty": difficulty_id,
+            "title": generated.get("title"),
+            "summary": summary,
+            "prompt": prompt,
+            "workspace": workspace,
+            "checklist": checklist,
+            "files": files,
+            "reference_report": reference_report,
+            "created_at": utcnow(),
+        }
+    )
+
+    return {
+        "problemId": problem_id,
+        "title": generated.get("title") or "단일 파일 분석 문제",
+        "mode": "single-file-analysis",
+        "summary": summary,
+        "language": language_id,
+        "difficulty": difficulty_id,
+        "workspace": workspace,
+        "files": files,
+        "prompt": prompt,
+        "checklist": checklist,
+    }
+
+
+def request_multi_file_analysis_problem(
+    service: Any,
+    username: str,
+    language_id: str,
+    difficulty_id: str,
+    *,
+    default_track_id: str,
+    difficulty_choices: Dict[str, Dict[str, str]],
+    utcnow: Callable[[], str],
+) -> Dict[str, Any]:
+    track_id = default_track_id
+    if language_id not in LANGUAGES:
+        raise ValueError("지원하지 않는 언어입니다.")
+    if difficulty_id not in difficulty_choices:
+        raise ValueError("지원하지 않는 난이도입니다.")
+
+    storage = service._get_user_storage(username)
+    history_context = service._multi_file_analysis_history_context(storage)
+    problem_id = generate_token("mfile")
+
+    generated = service.problem_generator.generate_multi_file_analysis_problem_sync(
+        problem_id=problem_id,
+        track_id=track_id,
+        language_id=language_id,
+        difficulty=difficulty_choices[difficulty_id]["generator"],
+        mode="multi-file-analysis",
+        history_context=history_context,
+    )
+
+    files = _normalize_advanced_analysis_files(
+        generated.get("files"),
+        min_count=2,
+        max_count=6,
+        default_language=language_id,
+        default_role="module",
+    )
+    checklist = _normalize_str_list(generated.get("checklist"))[:5]
+    summary = str(generated.get("summary") or "").strip()
+    prompt = str(generated.get("prompt") or "").strip()
+    workspace = str(generated.get("workspace") or "").strip() or "multi-file-analysis.workspace"
+    reference_report = str(generated.get("reference_report") or "").strip()
+
+    storage.append(
+        {
+            "type": "multi_file_analysis_instance",
+            "problem_id": problem_id,
+            "track": track_id,
+            "language": language_id,
+            "mode": "multi-file-analysis",
+            "difficulty": difficulty_id,
+            "title": generated.get("title"),
+            "summary": summary,
+            "prompt": prompt,
+            "workspace": workspace,
+            "checklist": checklist,
+            "files": files,
+            "reference_report": reference_report,
+            "created_at": utcnow(),
+        }
+    )
+
+    return {
+        "problemId": problem_id,
+        "title": generated.get("title") or "다중 파일 분석 문제",
+        "mode": "multi-file-analysis",
+        "summary": summary,
+        "language": language_id,
+        "difficulty": difficulty_id,
+        "workspace": workspace,
+        "files": files,
+        "prompt": prompt,
+        "checklist": checklist,
+    }
+
+
+def request_fullstack_analysis_problem(
+    service: Any,
+    username: str,
+    language_id: str,
+    difficulty_id: str,
+    *,
+    default_track_id: str,
+    difficulty_choices: Dict[str, Dict[str, str]],
+    utcnow: Callable[[], str],
+) -> Dict[str, Any]:
+    track_id = default_track_id
+    if language_id not in LANGUAGES:
+        raise ValueError("지원하지 않는 언어입니다.")
+    if difficulty_id not in difficulty_choices:
+        raise ValueError("지원하지 않는 난이도입니다.")
+
+    storage = service._get_user_storage(username)
+    history_context = service._fullstack_analysis_history_context(storage)
+    problem_id = generate_token("fstack")
+
+    generated = service.problem_generator.generate_fullstack_analysis_problem_sync(
+        problem_id=problem_id,
+        track_id=track_id,
+        language_id=language_id,
+        difficulty=difficulty_choices[difficulty_id]["generator"],
+        mode="fullstack-analysis",
+        history_context=history_context,
+    )
+
+    files = _normalize_advanced_analysis_files(
+        generated.get("files"),
+        min_count=3,
+        max_count=8,
+        default_language=language_id,
+        default_role="backend",
+    )
+    checklist = _normalize_str_list(generated.get("checklist"))[:5]
+    summary = str(generated.get("summary") or "").strip()
+    prompt = str(generated.get("prompt") or "").strip()
+    workspace = str(generated.get("workspace") or "").strip() or "fullstack-analysis.workspace"
+    reference_report = str(generated.get("reference_report") or "").strip()
+
+    storage.append(
+        {
+            "type": "fullstack_analysis_instance",
+            "problem_id": problem_id,
+            "track": track_id,
+            "language": language_id,
+            "mode": "fullstack-analysis",
+            "difficulty": difficulty_id,
+            "title": generated.get("title"),
+            "summary": summary,
+            "prompt": prompt,
+            "workspace": workspace,
+            "checklist": checklist,
+            "files": files,
+            "reference_report": reference_report,
+            "created_at": utcnow(),
+        }
+    )
+
+    return {
+        "problemId": problem_id,
+        "title": generated.get("title") or "풀스택 코드 분석 문제",
+        "mode": "fullstack-analysis",
+        "summary": summary,
+        "language": language_id,
+        "difficulty": difficulty_id,
+        "workspace": workspace,
+        "files": files,
+        "prompt": prompt,
+        "checklist": checklist,
+    }
+
+
+def _submit_advanced_analysis_report(
+    service: Any,
+    username: str,
+    problem_id: str,
+    report: str,
+    *,
+    instance_type: str,
+    event_type: str,
+    mode: str,
+    missing_problem_message: str,
+    utcnow: Callable[[], str],
+) -> Dict[str, Any]:
+    normalized_report = (report or "").strip()
+    if not normalized_report:
+        raise ValueError("리포트를 입력해주세요.")
+    if len(normalized_report) > 12000:
+        raise ValueError("리포트 길이는 12000자를 초과할 수 없습니다.")
+
+    storage = service._get_user_storage(username)
+    instance = storage.find_one(
+        lambda item: item.get("type") == instance_type and item.get("problem_id") == problem_id
+    )
+    if not instance:
+        raise ValueError(missing_problem_message)
+
+    files = _normalize_advanced_analysis_files(
+        instance.get("files"),
+        min_count=1,
+        max_count=8,
+        default_language=str(instance.get("language") or "python"),
+        default_role="module",
+    )
+    reference_report = str(instance.get("reference_report") or "").strip()
+    checklist = _normalize_str_list(instance.get("checklist"))[:5]
+    summary = str(instance.get("summary") or "").strip()
+    prompt = str(instance.get("prompt") or "").strip()
+
+    try:
+        evaluation = service.ai_client.analyze_advanced_analysis_report(
+            mode=mode,
+            files=files,
+            prompt=prompt,
+            report=normalized_report,
+            reference_report=reference_report,
+            language=str(instance.get("language") or ""),
+            difficulty=str(instance.get("difficulty") or ""),
+            summary=summary,
+            checklist=checklist,
+        )
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        evaluation = {
+            "summary": "AI 채점 중 오류가 발생해 기본 실패 응답을 반환했습니다. 잠시 후 다시 시도해주세요.",
+            "strengths": [],
+            "improvements": ["리포트 내용을 유지한 채 재시도해주세요."],
+            "score": 0.0,
+            "correct": False,
+            "error_detail": str(exc),
+        }
+
+    score_raw = evaluation.get("score") if isinstance(evaluation, dict) else 0.0
+    try:
+        score = float(score_raw) if score_raw is not None else 0.0
+    except (TypeError, ValueError):
+        score = 0.0
+    score = max(0.0, min(100.0, score))
+
+    is_passed = score >= ADVANCED_ANALYSIS_PASS_THRESHOLD
+    verdict = "passed" if is_passed else "failed"
+    feedback = {
+        "summary": str((evaluation or {}).get("summary") or ""),
+        "strengths": _normalize_str_list((evaluation or {}).get("strengths")),
+        "improvements": _normalize_str_list((evaluation or {}).get("improvements")),
+    }
+    analysis_error_detail = str((evaluation or {}).get("error_detail") or "")
+
+    storage.append(
+        {
+            "type": event_type,
+            "problem_id": problem_id,
+            "track": instance.get("track"),
+            "language": instance.get("language"),
+            "mode": mode,
+            "difficulty": instance.get("difficulty"),
+            "report": normalized_report,
+            "score": score,
+            "correct": is_passed,
+            "verdict": verdict,
+            "feedback": feedback,
+            "reference_report": reference_report,
+            "pass_threshold": ADVANCED_ANALYSIS_PASS_THRESHOLD,
+            "analysis_error_detail": analysis_error_detail,
+            "created_at": utcnow(),
+        }
+    )
+    service._update_tier_if_needed(storage, username)
+
+    return {
+        "correct": is_passed,
+        "score": score,
+        "verdict": verdict,
+        "feedback": feedback,
+        "referenceReport": reference_report,
+        "passThreshold": int(ADVANCED_ANALYSIS_PASS_THRESHOLD),
+    }
+
+
+def submit_single_file_analysis_report(
+    service: Any,
+    username: str,
+    problem_id: str,
+    report: str,
+    *,
+    utcnow: Callable[[], str],
+) -> Dict[str, Any]:
+    return _submit_advanced_analysis_report(
+        service,
+        username,
+        problem_id,
+        report,
+        instance_type="single_file_analysis_instance",
+        event_type="single_file_analysis_event",
+        mode="single-file-analysis",
+        missing_problem_message="해당 단일 파일 분석 문제를 찾지 못했습니다.",
+        utcnow=utcnow,
+    )
+
+
+def submit_multi_file_analysis_report(
+    service: Any,
+    username: str,
+    problem_id: str,
+    report: str,
+    *,
+    utcnow: Callable[[], str],
+) -> Dict[str, Any]:
+    return _submit_advanced_analysis_report(
+        service,
+        username,
+        problem_id,
+        report,
+        instance_type="multi_file_analysis_instance",
+        event_type="multi_file_analysis_event",
+        mode="multi-file-analysis",
+        missing_problem_message="해당 다중 파일 분석 문제를 찾지 못했습니다.",
+        utcnow=utcnow,
+    )
+
+
+def submit_fullstack_analysis_report(
+    service: Any,
+    username: str,
+    problem_id: str,
+    report: str,
+    *,
+    utcnow: Callable[[], str],
+) -> Dict[str, Any]:
+    return _submit_advanced_analysis_report(
+        service,
+        username,
+        problem_id,
+        report,
+        instance_type="fullstack_analysis_instance",
+        event_type="fullstack_analysis_event",
+        mode="fullstack-analysis",
+        missing_problem_message="해당 풀스택 코드 분석 문제를 찾지 못했습니다.",
+        utcnow=utcnow,
+    )
 
 
 def request_context_inference_problem(

@@ -28,6 +28,9 @@ PAGE_FILES: dict[str, str] = {
     "context-inference": "context-inference.html",
     "refactoring-choice": "refactoring-choice.html",
     "code-blame": "code-blame.html",
+    "single-file-analysis": "single-file-analysis.html",
+    "multi-file-analysis": "multi-file-analysis.html",
+    "fullstack-analysis": "fullstack-analysis.html",
 }
 
 
@@ -142,3 +145,18 @@ def refactoring_choice_page(request: Request) -> Response:
 @router.get("/code-blame.html", include_in_schema=False)
 def code_blame_page(request: Request) -> Response:
     return _render_page_or_404(request, "code-blame", detail="Code blame page not found")
+
+
+@router.get("/single-file-analysis.html", include_in_schema=False)
+def single_file_analysis_page(request: Request) -> Response:
+    return _render_page_or_404(request, "single-file-analysis", detail="Single file analysis page not found")
+
+
+@router.get("/multi-file-analysis.html", include_in_schema=False)
+def multi_file_analysis_page(request: Request) -> Response:
+    return _render_page_or_404(request, "multi-file-analysis", detail="Multi file analysis page not found")
+
+
+@router.get("/fullstack-analysis.html", include_in_schema=False)
+def fullstack_analysis_page(request: Request) -> Response:
+    return _render_page_or_404(request, "fullstack-analysis", detail="Fullstack analysis page not found")

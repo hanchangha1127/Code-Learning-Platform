@@ -101,7 +101,49 @@
 
       <section class="card dashboard-panel dashboard-mode-section">
         <div class="dashboard-panel-head"><div><h3>학습 모드</h3><p>원하는 모드로 바로 이동하거나 추천 모드부터 이어서 학습하세요.</p></div></div>
-        <div id="feature-grid" class="feature-grid"></div>
+        <div id="dashboard-mode-tabs" class="dashboard-mode-tabs" role="tablist" aria-label="학습 모드 전환">
+          <button
+            id="dashboard-mode-tab-general"
+            type="button"
+            class="dashboard-mode-tab is-active"
+            data-mode-tab="general"
+            role="tab"
+            aria-selected="true"
+            aria-controls="dashboard-mode-panel-general"
+          >
+            일반모드
+          </button>
+          <button
+            id="dashboard-mode-tab-advanced"
+            type="button"
+            class="dashboard-mode-tab"
+            data-mode-tab="advanced"
+            role="tab"
+            aria-selected="false"
+            aria-controls="dashboard-mode-panel-advanced"
+          >
+            고급모드
+          </button>
+        </div>
+        <div
+          id="dashboard-mode-panel-general"
+          class="dashboard-mode-panel is-active"
+          data-mode-panel="general"
+          role="tabpanel"
+          aria-labelledby="dashboard-mode-tab-general"
+        >
+          <div id="feature-grid" class="feature-grid"></div>
+        </div>
+        <div
+          id="dashboard-mode-panel-advanced"
+          class="dashboard-mode-panel"
+          data-mode-panel="advanced"
+          role="tabpanel"
+          aria-labelledby="dashboard-mode-tab-advanced"
+          hidden
+        >
+          <div id="advanced-feature-grid" class="feature-grid"></div>
+        </div>
       </section>
     </main>
   </section>

@@ -82,6 +82,31 @@ class LearningSolutionReportModelTests(unittest.TestCase):
         self.assertEqual(mocked.call_count, 2)
         self.assertEqual(result["goal"], _valid_plan_payload()["goal"])
 
+    def test_includes_detail_records_in_prompt(self) -> None:
+        ai = AIClient()
+        fake_models = _FakeModels(_valid_plan_payload())
+        ai.client = SimpleNamespace(models=fake_models)
+        ai.metrics = _FakeMetrics()
+
+        ai.generate_learning_solution_report(
+            history_context="1. [오답] 문제 A",
+            metric_snapshot={"attempts": 2, "accuracy": 50.0, "avgScore": 60.0, "trend": "stable"},
+            detail_records=[
+                {
+                    "title": "문제 A",
+                    "result": "incorrect",
+                    "learnerResponse": "선택: B",
+                    "expectedAnswer": "선택: A",
+                    "evaluation": {"wrongType": "logic_error", "comparison": "정답은 A인데 B를 선택했습니다."},
+                }
+            ],
+        )
+
+        contents = fake_models.calls[0]["contents"]
+        self.assertIn("=== 문제별 세부 내역 ===", contents)
+        self.assertIn("문제 A", contents)
+        self.assertIn("logic_error", contents)
+
     def test_raises_after_retry_exhausted(self) -> None:
         ai = AIClient()
         ai.client = object()

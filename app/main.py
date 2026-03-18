@@ -1,6 +1,7 @@
 ﻿from fastapi import FastAPI, Request
 
 from app.api.routes.auth import router as auth_router
+from app.api.routes.advanced_analysis import router as advanced_analysis_router
 from app.api.routes.auditor import router as auditor_router
 from app.api.routes.code_blame import router as code_blame_router
 from app.api.routes.context_inference import router as context_inference_router
@@ -33,6 +34,7 @@ app.include_router(health_router)
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(me_router, prefix="/me", tags=["me"])
 app.include_router(public_learning_router, tags=["public-learning"])
+app.include_router(advanced_analysis_router, tags=["advanced-analysis"])
 
 app.include_router(problems_router, prefix="/problems", tags=["problems"])
 app.include_router(submissions_router, tags=["submissions"])

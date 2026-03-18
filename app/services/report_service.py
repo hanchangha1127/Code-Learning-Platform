@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 from backend.ai_client import AIClient
 from app.db.base import utcnow
 from app.db.models import AIAnalysis, Report, ReportType, Submission, SubmissionStatus, UserProblemStat
+from app.services.problem_stat_service import classify_wrong_answer_type
 
 _learning_report_ai = AIClient()
 
@@ -335,7 +336,515 @@ def _trend_text_from_stats(trend: dict[str, Any]) -> str:
     return "추세를 판단할 데이터가 부족합니다."
 
 
-def _build_learning_history_context(submissions: list[Submission]) -> str:
+def _clip_detail_text(value: Any, limit: int = 600) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(limit - 18, 0)].rstrip()}...(truncated)"
+
+
+def _normalize_detail_list(value: Any, *, limit: int = 6, item_limit: int = 180) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    rows: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            normalized = _clip_detail_text(
+                item.get("label")
+                or item.get("optionId")
+                or item.get("path")
+                or item.get("title")
+                or item.get("summary")
+                or item.get("diff")
+                or item,
+                item_limit,
+            )
+        else:
+            normalized = _clip_detail_text(item, item_limit)
+        if not normalized or normalized in rows:
+            continue
+        rows.append(normalized)
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _mode_from_problem_kind(kind: Any) -> str:
+    value = _safe_enum_value(kind).strip().lower()
+    return {
+        "analysis": "analysis",
+        "coding": "analysis",
+        "code_block": "code-block",
+        "code_arrange": "code-arrange",
+        "code_calc": "code-calc",
+        "code_error": "code-error",
+        "auditor": "auditor",
+        "context_inference": "context-inference",
+        "refactoring_choice": "refactoring-choice",
+        "code_blame": "code-blame",
+    }.get(value, value or "analysis")
+
+
+def _mode_label(mode: str) -> str:
+    return {
+        "analysis": "코드 설명",
+        "code-block": "빈칸 채우기",
+        "code-arrange": "코드 정렬",
+        "code-calc": "출력 예측",
+        "code-error": "오류 찾기",
+        "auditor": "감사관",
+        "context-inference": "맥락 추론",
+        "refactoring-choice": "리팩토링 선택",
+        "code-blame": "코드 블레임",
+    }.get(mode, mode or "unknown")
+
+
+def _latest_analyses_by_submission(analyses: list[AIAnalysis]) -> dict[int, AIAnalysis]:
+    rows: dict[int, AIAnalysis] = {}
+    for analysis in analyses:
+        submission_id = getattr(analysis, "submission_id", None)
+        if submission_id is None or submission_id in rows:
+            continue
+        rows[int(submission_id)] = analysis
+    return rows
+
+
+def _load_problem_stats_map(
+    db: Session,
+    user_id: int,
+    problem_ids: list[int],
+) -> dict[int, UserProblemStat]:
+    if not problem_ids:
+        return {}
+    rows = (
+        db.query(UserProblemStat)
+        .filter(
+            UserProblemStat.user_id == user_id,
+            UserProblemStat.problem_id.in_(problem_ids),
+        )
+        .all()
+    )
+    return {int(row.problem_id): row for row in rows}
+
+
+def _collect_wrong_type_counter_from_stats(stats_map: dict[int, UserProblemStat]) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    for row in stats_map.values():
+        counter.update(_extract_wrong_type_counts(row.wrong_answer_types))
+    return counter
+
+
+def _extract_feedback_summary(analysis: AIAnalysis | None) -> str | None:
+    if analysis is None:
+        return None
+    result_payload = analysis.result_payload if isinstance(analysis.result_payload, dict) else {}
+    feedback = result_payload.get("feedback") if isinstance(result_payload.get("feedback"), dict) else {}
+    return (
+        _clip_detail_text(feedback.get("summary"), 280)
+        or _clip_detail_text(analysis.result_summary, 280)
+        or _clip_detail_text(analysis.result_detail, 280)
+    )
+
+
+def _extract_reference_answer(
+    *,
+    mode: str,
+    problem_payload: dict[str, Any],
+    answer_payload: dict[str, Any],
+    problem: Any,
+    result_payload: dict[str, Any],
+) -> str | None:
+    if mode == "code-block":
+        options = problem_payload.get("options")
+        answer_index = problem_payload.get("answer_index")
+        if not isinstance(options, list) and isinstance(getattr(problem, "options", None), list):
+            options = getattr(problem, "options")
+        if answer_index is None:
+            answer_index = getattr(problem, "answer_index", None)
+        try:
+            normalized_index = int(answer_index) if answer_index is not None else None
+        except (TypeError, ValueError):
+            normalized_index = None
+        if isinstance(options, list) and normalized_index is not None and 0 <= normalized_index < len(options):
+            return _clip_detail_text(options[normalized_index], 220)
+
+    if mode == "code-calc":
+        return _clip_detail_text(answer_payload.get("expected_output") or problem_payload.get("expected_output"), 220)
+
+    if mode == "code-error":
+        correct_index = answer_payload.get("wrong_block_index") or problem_payload.get("wrong_block_index")
+        try:
+            return f"{int(correct_index) + 1}번 블록"
+        except (TypeError, ValueError):
+            return None
+
+    if mode == "code-arrange":
+        correct_order = answer_payload.get("correct_order") or problem_payload.get("correct_order")
+        if isinstance(correct_order, list) and correct_order:
+            return "정답 순서: " + " -> ".join(str(item) for item in correct_order[:8])
+
+    if mode == "refactoring-choice":
+        best_option = _clip_detail_text(
+            result_payload.get("bestOption")
+            or result_payload.get("best_option")
+            or answer_payload.get("best_option")
+            or problem_payload.get("best_option"),
+            40,
+        )
+        if best_option:
+            return f"권장 선택지: {best_option}"
+
+    if mode == "code-blame":
+        culprit_commits = _normalize_detail_list(
+            result_payload.get("culpritCommits")
+            or result_payload.get("culprit_commits")
+            or answer_payload.get("culprit_commits")
+            or problem_payload.get("culprit_commits"),
+            limit=4,
+            item_limit=40,
+        )
+        if culprit_commits:
+            return "범인 커밋: " + ", ".join(culprit_commits)
+
+    reference_report = (
+        result_payload.get("referenceReport")
+        or result_payload.get("reference_report")
+        or answer_payload.get("reference_report")
+        or problem_payload.get("reference_report")
+        or getattr(problem, "reference_solution", None)
+    )
+    return _clip_detail_text(reference_report, 700)
+
+
+def _extract_learner_response(
+    *,
+    mode: str,
+    submission: Submission,
+    submission_payload: dict[str, Any],
+    problem_payload: dict[str, Any],
+) -> str | None:
+    if mode == "code-block":
+        selected = submission_payload.get("selectedOption")
+        if selected is None:
+            selected = submission_payload.get("selected_option")
+        options = problem_payload.get("options")
+        try:
+            selected_index = int(selected) if selected is not None else None
+        except (TypeError, ValueError):
+            selected_index = None
+        if isinstance(options, list) and selected_index is not None and 0 <= selected_index < len(options):
+            return _clip_detail_text(f"선택: {options[selected_index]}", 220)
+        if selected is not None:
+            return _clip_detail_text(f"선택 옵션: {selected}", 220)
+        return None
+
+    if mode == "code-arrange":
+        order = submission_payload.get("order")
+        if isinstance(order, list) and order:
+            return _clip_detail_text("제출 순서: " + " -> ".join(str(item) for item in order[:8]), 260)
+        return None
+
+    if mode == "code-calc":
+        value = submission_payload.get("output") or submission_payload.get("outputText") or submission_payload.get("output_text")
+        if value is None:
+            value = submission.code
+        return _clip_detail_text(value, 220)
+
+    if mode == "code-error":
+        selected = submission_payload.get("selectedIndex")
+        if selected is None:
+            selected = submission_payload.get("selected_index")
+        try:
+            return f"{int(selected) + 1}번 블록"
+        except (TypeError, ValueError):
+            return _clip_detail_text(selected, 80)
+
+    if mode == "code-blame":
+        commits = _normalize_detail_list(
+            submission_payload.get("selectedCommits") or submission_payload.get("selected_commits"),
+            limit=4,
+            item_limit=40,
+        )
+        report = _clip_detail_text(submission_payload.get("report") or submission.code, 700)
+        if commits and report:
+            return f"선택 커밋: {', '.join(commits)}\n리포트: {report}"
+        if commits:
+            return "선택 커밋: " + ", ".join(commits)
+        return report
+
+    if mode == "refactoring-choice":
+        selected_option = _clip_detail_text(
+            submission_payload.get("selectedOption") or submission_payload.get("selected_option"),
+            40,
+        )
+        report = _clip_detail_text(submission_payload.get("report") or submission.code, 700)
+        if selected_option and report:
+            return f"선택지: {selected_option}\n리포트: {report}"
+        if selected_option:
+            return f"선택지: {selected_option}"
+        return report
+
+    return _clip_detail_text(submission.code, 900)
+
+
+def _build_submission_comparison(
+    *,
+    mode: str,
+    submission: Submission,
+    submission_payload: dict[str, Any],
+    problem_payload: dict[str, Any],
+    answer_payload: dict[str, Any],
+    result_payload: dict[str, Any],
+    wrong_type: str | None,
+    feedback_summary: str | None,
+) -> str | None:
+    is_correct = submission.status == SubmissionStatus.passed
+
+    if mode == "code-block":
+        selected = _extract_learner_response(
+            mode=mode,
+            submission=submission,
+            submission_payload=submission_payload,
+            problem_payload=problem_payload,
+        )
+        expected = _extract_reference_answer(
+            mode=mode,
+            problem_payload=problem_payload,
+            answer_payload=answer_payload,
+            problem=submission.problem,
+            result_payload=result_payload,
+        )
+        if selected and expected and not is_correct:
+            return f"{selected}를 골랐지만 정답은 {expected}였습니다."
+        if selected and expected and is_correct:
+            return f"{expected}를 정확히 골랐습니다."
+
+    if mode == "code-calc":
+        submitted = _clip_detail_text(
+            submission_payload.get("output") or submission_payload.get("outputText") or submission_payload.get("output_text") or submission.code,
+            220,
+        )
+        expected = _clip_detail_text(answer_payload.get("expected_output") or problem_payload.get("expected_output"), 220)
+        if submitted and expected and not is_correct:
+            return f"예상 출력 '{expected}' 대신 '{submitted}'를 제출했습니다."
+        if submitted and expected and is_correct:
+            return f"출력 '{submitted}'를 정확히 예측했습니다."
+
+    if mode == "code-error":
+        selected = _extract_learner_response(
+            mode=mode,
+            submission=submission,
+            submission_payload=submission_payload,
+            problem_payload=problem_payload,
+        )
+        expected = _extract_reference_answer(
+            mode=mode,
+            problem_payload=problem_payload,
+            answer_payload=answer_payload,
+            problem=submission.problem,
+            result_payload=result_payload,
+        )
+        if selected and expected and not is_correct:
+            return f"{selected}을 골랐지만 실제 오류 블록은 {expected}였습니다."
+        if selected and expected and is_correct:
+            return f"오류 블록 {expected}을 정확히 찾았습니다."
+
+    if mode == "refactoring-choice":
+        selected = _clip_detail_text(submission_payload.get("selectedOption") or submission_payload.get("selected_option"), 40)
+        best_option = _clip_detail_text(
+            result_payload.get("bestOption")
+            or result_payload.get("best_option")
+            or answer_payload.get("best_option")
+            or problem_payload.get("best_option"),
+            40,
+        )
+        if selected and best_option and selected != best_option:
+            return f"사용자는 {selected}를 골랐고 권장 선택지는 {best_option}였습니다."
+        if selected and best_option:
+            return f"권장 선택지 {best_option}를 정확히 골랐습니다."
+
+    if mode == "code-blame":
+        selected_commits = _normalize_detail_list(
+            submission_payload.get("selectedCommits") or submission_payload.get("selected_commits"),
+            limit=4,
+            item_limit=40,
+        )
+        culprit_commits = _normalize_detail_list(
+            result_payload.get("culpritCommits")
+            or result_payload.get("culprit_commits")
+            or answer_payload.get("culprit_commits")
+            or problem_payload.get("culprit_commits"),
+            limit=4,
+            item_limit=40,
+        )
+        if selected_commits and culprit_commits and set(selected_commits) != set(culprit_commits):
+            return (
+                f"사용자는 {', '.join(selected_commits)}를 지목했지만 "
+                f"실제 범인 커밋은 {', '.join(culprit_commits)}였습니다."
+            )
+        if culprit_commits and is_correct:
+            return f"범인 커밋 {', '.join(culprit_commits)}를 정확히 지목했습니다."
+
+    if feedback_summary:
+        return feedback_summary
+    if wrong_type:
+        return f"대표 오답 유형은 {wrong_type}입니다."
+    return None
+
+
+def _build_learning_detail_records(
+    submissions: list[Submission],
+    *,
+    analyses_by_submission: dict[int, AIAnalysis],
+    stats_by_problem: dict[int, UserProblemStat],
+) -> list[dict[str, Any]]:
+    detail_records: list[dict[str, Any]] = []
+    for idx, submission in enumerate(submissions[:10], 1):
+        problem = submission.problem
+        problem_payload = problem.problem_payload if problem and isinstance(problem.problem_payload, dict) else {}
+        answer_payload = problem.answer_payload if problem and isinstance(problem.answer_payload, dict) else {}
+        submission_payload = submission.submission_payload if isinstance(submission.submission_payload, dict) else {}
+        analysis = analyses_by_submission.get(int(submission.id))
+        result_payload = analysis.result_payload if analysis and isinstance(analysis.result_payload, dict) else {}
+        feedback = result_payload.get("feedback") if isinstance(result_payload.get("feedback"), dict) else {}
+        stat = stats_by_problem.get(int(submission.problem_id))
+        wrong_payload = stat.wrong_answer_types if stat and isinstance(stat.wrong_answer_types, dict) else {}
+
+        mode = _mode_from_problem_kind(problem.kind if problem is not None else "analysis")
+        question_context: dict[str, Any] = {}
+        prompt = _clip_detail_text(problem_payload.get("prompt") or (problem.description if problem is not None else ""), 700)
+        if prompt:
+            question_context["prompt"] = prompt
+        starter_code = _clip_detail_text(
+            problem_payload.get("starter_code")
+            or problem_payload.get("code")
+            or (problem.starter_code if problem is not None else ""),
+            900,
+        )
+        if starter_code:
+            question_context["codeOrContext"] = starter_code
+        scenario = _clip_detail_text(problem_payload.get("scenario"), 400)
+        if scenario:
+            question_context["scenario"] = scenario
+        error_log = _clip_detail_text(problem_payload.get("errorLog") or problem_payload.get("error_log"), 500)
+        if error_log:
+            question_context["errorLog"] = error_log
+        options = _normalize_detail_list(problem_payload.get("options"), limit=6, item_limit=220)
+        if options:
+            question_context["options"] = options
+        commits = _normalize_detail_list(problem_payload.get("commits"), limit=4, item_limit=220)
+        if commits:
+            question_context["commits"] = commits
+
+        learner_response = _extract_learner_response(
+            mode=mode,
+            submission=submission,
+            submission_payload=submission_payload,
+            problem_payload=problem_payload,
+        )
+        expected_answer = _extract_reference_answer(
+            mode=mode,
+            problem_payload=problem_payload,
+            answer_payload=answer_payload,
+            problem=problem,
+            result_payload=result_payload,
+        )
+        wrong_type = wrong_payload.get("last_wrong_type")
+        if not isinstance(wrong_type, str):
+            wrong_type = classify_wrong_answer_type(
+                submission.status,
+                analysis_summary=analysis.result_summary if analysis else None,
+                analysis_detail=analysis.result_detail if analysis else None,
+            )
+        comparison = _build_submission_comparison(
+            mode=mode,
+            submission=submission,
+            submission_payload=submission_payload,
+            problem_payload=problem_payload,
+            answer_payload=answer_payload,
+            result_payload=result_payload,
+            wrong_type=wrong_type,
+            feedback_summary=_extract_feedback_summary(analysis),
+        )
+
+        evaluation: dict[str, Any] = {}
+        feedback_summary = (
+            _clip_detail_text(feedback.get("summary"), 280)
+            or _clip_detail_text(analysis.result_summary if analysis else "", 280)
+            or _clip_detail_text(analysis.result_detail if analysis else "", 280)
+        )
+        if feedback_summary:
+            evaluation["feedbackSummary"] = feedback_summary
+        strengths = _normalize_detail_list(feedback.get("strengths"))
+        if strengths:
+            evaluation["strengths"] = strengths
+        improvements = _normalize_detail_list(feedback.get("improvements"))
+        if improvements:
+            evaluation["improvements"] = improvements
+        found_types = _normalize_detail_list(result_payload.get("foundTypes") or result_payload.get("found_types"))
+        if found_types:
+            evaluation["matchedPoints"] = found_types
+        missed_types = _normalize_detail_list(result_payload.get("missedTypes") or result_payload.get("missed_types"))
+        if missed_types:
+            evaluation["missedPoints"] = missed_types
+        if wrong_type:
+            evaluation["wrongType"] = wrong_type
+        wrong_type_counts = wrong_payload.get("types") if isinstance(wrong_payload.get("types"), dict) else {}
+        if wrong_type_counts:
+            evaluation["wrongTypeCounts"] = wrong_type_counts
+        option_reviews = _normalize_detail_list(result_payload.get("optionReviews") or result_payload.get("option_reviews"))
+        if option_reviews:
+            evaluation["optionReviews"] = option_reviews
+        commit_reviews = _normalize_detail_list(result_payload.get("commitReviews") or result_payload.get("commit_reviews"))
+        if commit_reviews:
+            evaluation["commitReviews"] = commit_reviews
+        if comparison:
+            evaluation["comparison"] = comparison
+        reference_report = _clip_detail_text(
+            result_payload.get("referenceReport")
+            or result_payload.get("reference_report")
+            or (problem.reference_solution if problem is not None else None),
+            700,
+        )
+        if reference_report:
+            evaluation["referenceExplanation"] = reference_report
+
+        record: dict[str, Any] = {
+            "attempt": idx,
+            "submissionId": int(submission.id),
+            "mode": mode,
+            "modeLabel": _mode_label(mode),
+            "title": _clip_detail_text(problem.title if problem is not None else "", 160) or "Untitled",
+            "result": _safe_enum_value(submission.status),
+            "questionContext": question_context,
+            "evaluation": evaluation,
+        }
+        if learner_response:
+            record["learnerResponse"] = learner_response
+        if expected_answer:
+            record["expectedAnswer"] = expected_answer
+        if submission.score is not None:
+            record["score"] = submission.score
+        difficulty = _safe_enum_value(problem.difficulty) if problem is not None else None
+        if difficulty:
+            record["difficulty"] = difficulty
+        language = (submission.language or (problem.language if problem is not None else "unknown")).lower()
+        if language:
+            record["language"] = language
+        if submission.created_at is not None:
+            record["submittedAt"] = submission.created_at.isoformat()
+        detail_records.append(record)
+    return detail_records
+
+
+def _build_learning_history_context(
+    submissions: list[Submission],
+    *,
+    analyses_by_submission: dict[int, AIAnalysis],
+    stats_by_problem: dict[int, UserProblemStat],
+) -> str:
     if not submissions:
         return "최근 제출 이력이 없습니다."
 
@@ -347,9 +856,22 @@ def _build_learning_history_context(submissions: list[Submission]) -> str:
         language = (submission.language or (problem.language if problem is not None else "unknown")).lower()
         status = _safe_enum_value(submission.status)
         score = submission.score if submission.score is not None else "N/A"
-        lines.append(
-            f"{idx}. status={status}, score={score}, language={language}, difficulty={difficulty}, title={title}"
-        )
+        analysis = analyses_by_submission.get(int(submission.id))
+        stat = stats_by_problem.get(int(submission.problem_id))
+        wrong_payload = stat.wrong_answer_types if stat and isinstance(stat.wrong_answer_types, dict) else {}
+        wrong_type = wrong_payload.get("last_wrong_type")
+        if not isinstance(wrong_type, str):
+            wrong_type = classify_wrong_answer_type(
+                submission.status,
+                analysis_summary=analysis.result_summary if analysis else None,
+                analysis_detail=analysis.result_detail if analysis else None,
+            )
+        feedback_summary = _extract_feedback_summary(analysis) or "요약 없음"
+        line = f"{idx}. status={status}, score={score}, language={language}, difficulty={difficulty}, title={title}"
+        if wrong_type:
+            line += f", wrongType={wrong_type}"
+        lines.append(line)
+        lines.append(f"   feedback={feedback_summary}")
     return "\n".join(lines)
 
 
@@ -361,9 +883,11 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> di
 
     sub_ids = [s.id for s in submissions]
     analyses = _load_recent_analyses(db, user_id, sub_ids)
+    analyses_by_submission = _latest_analyses_by_submission(analyses)
 
     problem_ids = sorted({s.problem_id for s in submissions})
-    wrong_type_counter = _collect_wrong_type_counter(db, user_id, problem_ids)
+    stats_by_problem = _load_problem_stats_map(db, user_id, problem_ids)
+    wrong_type_counter = _collect_wrong_type_counter_from_stats(stats_by_problem)
 
     top_wrong_types = [
         {"type": wrong_type, "count": count}
@@ -390,10 +914,20 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> di
         "avgScore": overall.get("avg_score"),
         "trend": _trend_text_from_stats(trend),
     }
-    history_context = _build_learning_history_context(submissions)
+    history_context = _build_learning_history_context(
+        submissions,
+        analyses_by_submission=analyses_by_submission,
+        stats_by_problem=stats_by_problem,
+    )
+    detail_records = _build_learning_detail_records(
+        submissions,
+        analyses_by_submission=analyses_by_submission,
+        stats_by_problem=stats_by_problem,
+    )
     solution_plan = _learning_report_ai.generate_learning_solution_report(
         history_context=history_context,
         metric_snapshot=metric_snapshot,
+        detail_records=detail_records,
     )
 
     stats = {
@@ -409,6 +943,7 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> di
         "weak_languages": weak_languages,
         "solutionPlan": solution_plan,
         "metricSnapshot": metric_snapshot,
+        "detailRecords": detail_records,
     }
 
     goal_for_db = str(solution_plan.get("goal") or title).strip() or title

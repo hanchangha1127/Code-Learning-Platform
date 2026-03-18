@@ -287,7 +287,7 @@ async function handleLoadProblem() {
     showToast(error.message || "문제 생성에 실패했습니다. 다시 시도해 주세요.");
   } finally {
     if (elements.loadStatus) {
-      elements.loadStatus.textContent = "새 문제가 필요하면 다시 문제 받기를 눌러주세요.";
+    elements.loadStatus.textContent = "다른 문제가 필요하면 다시 문제 받기를 눌러주세요.";
     }
     setLoadingState(elements.loadBtn, false);
   }

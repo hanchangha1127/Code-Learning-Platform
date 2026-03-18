@@ -2,6 +2,7 @@
 
 from pydantic import ValidationError
 
+from app.schemas.advanced_analysis import AdvancedAnalysisSubmitRequest
 from app.schemas.auth import SignUpRequest
 from app.schemas.auditor import AuditorSubmitRequest
 from app.schemas.submission import SubmitRequest
@@ -31,6 +32,17 @@ class SchemaValidationTests(unittest.TestCase):
     def test_auditor_report_accepts_max_length(self):
         req = AuditorSubmitRequest(problemId="p1", report="a" * 8000)
         self.assertEqual(len(req.report), 8000)
+
+    def test_advanced_analysis_submit_accepts_problem_id_aliases(self):
+        first = AdvancedAnalysisSubmitRequest(problemId="p1", report="report")
+        second = AdvancedAnalysisSubmitRequest(problem_id="p2", report="report")
+
+        self.assertEqual(first.problem_id, "p1")
+        self.assertEqual(second.problem_id, "p2")
+
+    def test_advanced_analysis_submit_rejects_over_max_length(self):
+        with self.assertRaises(ValidationError):
+            AdvancedAnalysisSubmitRequest(problemId="p1", report="a" * 12001)
 
 
 if __name__ == "__main__":

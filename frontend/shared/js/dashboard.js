@@ -4,6 +4,32 @@ const authClient = window.CodeAuth || null;
 const DEFAULT_DAILY_TARGET = 10;
 
 const features = [];
+const advancedFeatures = [
+  normalizeFeature({
+    id: "single-file-analysis",
+    title: "단일 파일 분석",
+    description: "하나의 핵심 파일을 읽기 전용 IDE 화면에서 끝까지 분석해 보세요.",
+    icon: "🧠",
+    link: "/single-file-analysis.html",
+    badge: "",
+  }, 0, "advanced-feature"),
+  normalizeFeature({
+    id: "multi-file-analysis",
+    title: "다중 파일 분석",
+    description: "2~6개 파일을 오가며 호출 흐름과 책임 분리를 추적해 보세요.",
+    icon: "🗂️",
+    link: "/multi-file-analysis.html",
+    badge: "",
+  }, 1, "advanced-feature"),
+  normalizeFeature({
+    id: "fullstack-analysis",
+    title: "풀스택 코드 분석",
+    description: "3~8개 파일과 백엔드/프론트엔드 흐름을 함께 해석해 보세요.",
+    icon: "🌐",
+    link: "/fullstack-analysis.html",
+    badge: "",
+  }, 2, "advanced-feature"),
+];
 const elements = {};
 const state = {
   token: null,
@@ -11,6 +37,7 @@ const state = {
   home: null,
   goal: null,
   isGeneratingReport: false,
+  activeModeTab: "general",
 };
 
 const apiRequest = window.CodeApiClient.create({
@@ -21,6 +48,7 @@ const apiRequest = window.CodeApiClient.create({
 
 function cacheDom() {
   elements.featureGrid = document.getElementById("feature-grid");
+  elements.advancedFeatureGrid = document.getElementById("advanced-feature-grid");
   elements.userChip = document.getElementById("dashboard-user");
   elements.logoutBtn = document.getElementById("dashboard-logout-btn");
   elements.heroTitle = document.getElementById("dashboard-hero-title");
@@ -39,6 +67,8 @@ function cacheDom() {
   elements.weeklyReportCard = document.getElementById("dashboard-weekly-report-card");
   elements.reportStatus = document.getElementById("dashboard-report-status");
   elements.notificationList = document.getElementById("dashboard-notification-list");
+  elements.modeTabs = Array.from(document.querySelectorAll("[data-mode-tab]"));
+  elements.modePanels = Array.from(document.querySelectorAll("[data-mode-panel]"));
 }
 
 async function init() {
@@ -48,6 +78,8 @@ async function init() {
 
   bindEvents();
   seedDefaultFeatures();
+  renderModePanels();
+  renderAdvancedFeatures();
   renderLoadingState();
 
   try {
@@ -74,6 +106,16 @@ function bindEvents() {
   elements.goalForm?.addEventListener("submit", handleGoalSubmit);
   elements.goalPresets?.addEventListener("click", handleGoalPresetClick);
   elements.weeklyReportCard?.addEventListener("click", handleWeeklyReportCardClick);
+  elements.modeTabs?.forEach((button) => button.addEventListener("click", handleModeTabClick));
+}
+
+function handleModeTabClick(event) {
+  const nextMode = event.currentTarget?.dataset?.modeTab;
+  if (!nextMode || nextMode === state.activeModeTab) {
+    return;
+  }
+  state.activeModeTab = nextMode;
+  renderModePanels();
 }
 
 function handleGoalPresetClick(event) {
@@ -453,16 +495,7 @@ function seedDefaultFeatures() {
 }
 
 function registerFeature(feature) {
-  const defaults = {
-    id: `feature-${features.length}`,
-    title: "새 기능",
-    description: "",
-    icon: "✨",
-    link: "#",
-    disabled: false,
-    badge: "",
-  };
-  features.push({ ...defaults, ...feature });
+  features.push(normalizeFeature(feature, features.length));
 }
 
 function applyFeatureBadges(recommendedModes) {
@@ -477,41 +510,78 @@ function applyFeatureBadges(recommendedModes) {
 }
 
 function renderFeatures() {
-  if (!elements.featureGrid) return;
-  elements.featureGrid.innerHTML = "";
+  renderFeatureList(elements.featureGrid, features);
+}
 
-  features.forEach((feature) => {
-    const card = document.createElement(feature.disabled ? "div" : "a");
-    card.className = "feature-card";
-    if (!feature.disabled) {
-      card.href = feature.link;
-    } else {
-      card.classList.add("disabled");
-      card.setAttribute("aria-disabled", "true");
-    }
+function renderAdvancedFeatures() {
+  renderFeatureList(elements.advancedFeatureGrid, advancedFeatures);
+}
 
-    if (feature.badge) {
-      const badge = document.createElement("span");
-      badge.className = "badge soft";
-      badge.textContent = feature.badge;
-      card.appendChild(badge);
-    }
+function renderFeatureList(container, list) {
+  if (!container) return;
+  container.innerHTML = "";
+  list.forEach((feature) => container.appendChild(buildFeatureCard(feature)));
+}
 
-    const icon = document.createElement("div");
-    icon.className = "feature-icon";
-    icon.textContent = feature.icon;
-    icon.setAttribute("aria-hidden", "true");
+function buildFeatureCard(feature) {
+  const card = document.createElement(feature.disabled ? "div" : "a");
+  card.className = "feature-card";
+  if (!feature.disabled) {
+    card.href = feature.link;
+  } else {
+    card.classList.add("disabled");
+    card.setAttribute("aria-disabled", "true");
+  }
 
-    const title = document.createElement("h3");
-    title.textContent = feature.title;
+  if (feature.badge) {
+    const badge = document.createElement("span");
+    badge.className = "badge soft";
+    badge.textContent = feature.badge;
+    card.appendChild(badge);
+  }
 
-    const desc = document.createElement("p");
-    desc.textContent = feature.description;
+  const icon = document.createElement("div");
+  icon.className = "feature-icon";
+  icon.textContent = feature.icon;
+  icon.setAttribute("aria-hidden", "true");
 
-    card.appendChild(icon);
-    card.appendChild(title);
-    card.appendChild(desc);
-    elements.featureGrid.appendChild(card);
+  const title = document.createElement("h3");
+  title.textContent = feature.title;
+
+  const desc = document.createElement("p");
+  desc.textContent = feature.description;
+
+  card.appendChild(icon);
+  card.appendChild(title);
+  card.appendChild(desc);
+  return card;
+}
+
+function normalizeFeature(feature, index, prefix = "feature") {
+  const defaults = {
+    id: `${prefix}-${index}`,
+    title: "학습 기능",
+    description: "",
+    icon: "✨",
+    link: "#",
+    disabled: false,
+    badge: "",
+  };
+  return { ...defaults, ...feature };
+}
+
+function renderModePanels() {
+  elements.modeTabs?.forEach((button) => {
+    const isActive = button.dataset.modeTab === state.activeModeTab;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+    button.tabIndex = isActive ? 0 : -1;
+  });
+
+  elements.modePanels?.forEach((panel) => {
+    const isActive = panel.dataset.modePanel === state.activeModeTab;
+    panel.classList.toggle("is-active", isActive);
+    panel.hidden = !isActive;
   });
 }
 

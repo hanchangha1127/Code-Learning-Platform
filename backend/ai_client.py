@@ -34,9 +34,13 @@ class AIClient:
         raw_key = settings.google_api_key or settings.ai_api_key
         api_key = raw_key.strip() if raw_key and raw_key.strip() else None
         self.model = settings.google_model
+        self.timeout_ms = max(settings.google_timeout_seconds, 1) * 1000
         self.client = None
         if api_key:
-            self.client = genai.Client(api_key=api_key)
+            self.client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(timeout=self.timeout_ms),
+            )
         self.metrics = get_admin_metrics()
 
     def analyze(self, prompt: str) -> Dict[str, object]:
@@ -667,6 +671,124 @@ class AIClient:
             "missed_types": missed_types,
         }
 
+    def analyze_advanced_analysis_report(
+        self,
+        *,
+        mode: str,
+        files: list[dict[str, Any]],
+        prompt: str,
+        report: str,
+        reference_report: str,
+        language: str,
+        difficulty: str,
+        summary: str,
+        checklist: list[str],
+    ) -> Dict[str, object]:
+        normalized_files = [item for item in files if isinstance(item, dict)]
+        normalized_checklist = [str(item or "").strip() for item in checklist if str(item or "").strip()]
+        mode_label = {
+            "single-file-analysis": "단일 파일 분석",
+            "multi-file-analysis": "다중 파일 분석",
+            "fullstack-analysis": "풀스택 코드 분석",
+        }.get(str(mode or "").strip().lower(), "고급 코드 분석")
+
+        if not self.client:
+            report_length = len((report or "").strip())
+            if report_length >= 420:
+                score = 76.0
+            elif report_length >= 240:
+                score = 64.0
+            else:
+                score = 48.0
+            return {
+                "summary": "AI API 키가 없어 기본 채점 로직으로 평가했습니다.",
+                "strengths": ["분석 대상과 코드 흐름을 서술형 리포트로 정리했습니다."] if report_length >= 240 else [],
+                "improvements": [
+                    "호출 흐름, 상태 변화, 예외 또는 경계 조건을 더 구체적으로 설명하세요.",
+                    "파일 간 책임 분리와 근거 코드를 함께 적으면 점수를 높일 수 있습니다.",
+                ],
+                "score": score,
+                "correct": score >= 70.0,
+            }
+
+        file_sections: list[str] = []
+        for index, item in enumerate(normalized_files, start=1):
+            file_path = str(item.get("path") or item.get("name") or f"file_{index}").strip()
+            file_role = str(item.get("role") or "module").strip()
+            file_language = str(item.get("language") or language or "").strip()
+            file_content = str(item.get("content") or item.get("code") or "").rstrip()
+            file_sections.append(f"[{index}] {file_path} ({file_role}, {file_language})\n{file_content}")
+
+        contents = (
+            "당신은 시니어 소프트웨어 아키텍처 리뷰어입니다. 사용자의 고급 코드 분석 리포트를 채점하세요.\n"
+            "반드시 JSON으로만 답변하세요.\n"
+            '{"summary": 문자열, "strengths": 문자열 배열, "improvements": 문자열 배열, "score": 숫자, "correct": 불리언}\n'
+            "- 모든 문장은 한국어로 작성하세요.\n"
+            "- score는 0~100 점수입니다.\n"
+            "- correct는 score>=70 기준으로 판단하세요.\n"
+            "- 채점 기준은 아래 네 항목을 합산합니다.\n"
+            "  1) 코드/호출 흐름 이해 40점\n"
+            "  2) 상태 변화와 책임 분리 설명 30점\n"
+            "  3) 예외, 경계, 리스크 지적 20점\n"
+            "  4) 설명의 구조화와 명료성 10점\n\n"
+            f"모드: {mode_label}\n"
+            f"언어: {language}\n"
+            f"난이도: {difficulty}\n"
+            f"문제 요약: {summary}\n"
+            f"문제 지시:\n{prompt}\n\n"
+            f"분석 체크리스트: {json.dumps(normalized_checklist, ensure_ascii=False)}\n\n"
+            f"대상 파일들:\n{'\n\n'.join(file_sections)}\n\n"
+            f"사용자 리포트:\n{report}\n\n"
+            f"모범 분석 리포트:\n{reference_report}\n"
+        )
+
+        try:
+            response = self._analyze_with_thinking(contents)
+        except Exception as exc:
+            return {
+                "summary": f"AI 호출에 실패했습니다: {exc}",
+                "strengths": [],
+                "improvements": ["잠시 후 다시 시도하세요."],
+                "score": 0.0,
+                "correct": False,
+            }
+
+        message_text = self._extract_response_text(response)
+        if not message_text:
+            return {
+                "summary": "AI 응답이 비어 있습니다.",
+                "strengths": [],
+                "improvements": [],
+                "score": 0.0,
+                "correct": False,
+            }
+
+        parsed_candidate = _extract_json_block(message_text)
+        if parsed_candidate:
+            try:
+                structured = json.loads(parsed_candidate)
+            except json.JSONDecodeError:
+                structured = {"summary": message_text}
+        else:
+            try:
+                structured = json.loads(message_text)
+            except json.JSONDecodeError:
+                structured = {"summary": message_text}
+
+        score_value = _normalize_score_points(structured.get("score"))
+        if score_value is None:
+            score_value = 0.0
+        correct_value = structured.get("correct")
+        correct = bool(correct_value) if correct_value is not None else score_value >= 70.0
+
+        return {
+            "summary": str(structured.get("summary") or message_text).strip(),
+            "strengths": _normalize_points(structured.get("strengths")),
+            "improvements": _normalize_points(structured.get("improvements")),
+            "score": score_value,
+            "correct": correct,
+        }
+
     def _analyze_with_thinking(self, contents: str):
         if not self.client:  # pragma: no cover
             raise RuntimeError("AI 클라이언트가 초기화되지 않았습니다.")
@@ -749,6 +871,7 @@ class AIClient:
         *,
         history_context: str,
         metric_snapshot: Dict[str, object],
+        detail_records: List[Dict[str, object]] | None = None,
     ) -> Dict[str, object]:
         if not self.client:
             raise RuntimeError(f"{LEARNING_REPORT_ERROR_CODE}: ai_client_not_configured")
@@ -764,10 +887,20 @@ class AIClient:
             "- 각 배열에는 중복 없이 구체적인 실행 항목을 제시하세요."
         )
 
+        normalized_details = _sanitize_learning_report_detail(detail_records or [])
+        detail_section = (
+            json.dumps(normalized_details, ensure_ascii=False)
+            if normalized_details not in (None, "", [], {})
+            else "[]"
+        )
         contents = (
             f"{system_prompt}\n\n"
             f"=== 지표 스냅샷 ===\n{json.dumps(metric_snapshot, ensure_ascii=False)}\n\n"
-            f"=== 최근 학습 기록 ===\n{history_context}"
+            f"=== 최근 학습 기록 ===\n{history_context}\n\n"
+            "=== 문제별 세부 내역 ===\n"
+            f"{detail_section}\n\n"
+            "- 문제별 세부 내역에는 학습자가 무엇을 제출했고, 어떤 점을 맞췄으며, 어떤 점을 놓쳤는지가 담겨 있습니다.\n"
+            "- 반복되는 오답 패턴과 이미 잘하고 있는 방식 모두를 근거로 실행 계획을 작성하세요."
         )
 
         response = self._generate_learning_report_with_retry(contents)
@@ -1126,4 +1259,50 @@ def _normalize_found_types(value: object, expected: set[str]) -> list[str]:
             continue
         rows.append(trap_type)
     return rows
+
+
+def _truncate_learning_report_text(value: object, limit: int) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(limit - 18, 0)].rstrip()}...(truncated)"
+
+
+def _sanitize_learning_report_detail(value: object, *, depth: int = 0) -> object:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+
+    if isinstance(value, str):
+        return _truncate_learning_report_text(value, 700 if depth == 0 else 400)
+
+    if isinstance(value, dict):
+        normalized: dict[str, object] = {}
+        for idx, (key, item) in enumerate(value.items()):
+            if idx >= 20:
+                normalized["_truncated"] = True
+                break
+            key_text = _truncate_learning_report_text(key, 80)
+            if not key_text:
+                continue
+            normalized_item = _sanitize_learning_report_detail(item, depth=depth + 1)
+            if normalized_item in (None, "", [], {}):
+                continue
+            normalized[key_text] = normalized_item
+        return normalized
+
+    if isinstance(value, (list, tuple, set)):
+        rows: list[object] = []
+        for idx, item in enumerate(value):
+            if idx >= 12:
+                rows.append("...(truncated)")
+                break
+            normalized_item = _sanitize_learning_report_detail(item, depth=depth + 1)
+            if normalized_item in (None, "", [], {}):
+                continue
+            rows.append(normalized_item)
+        return rows
+
+    return _truncate_learning_report_text(value, 300)
 

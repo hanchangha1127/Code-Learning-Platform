@@ -399,6 +399,72 @@ def _normalize_code_blame_commit_reviews(value: Any, option_ids: list[str]) -> l
     return normalized
 
 
+def _normalize_advanced_analysis_files(
+    value: Any,
+    *,
+    min_count: int,
+    max_count: int,
+    default_language: str,
+    default_role: str = "module",
+) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    if isinstance(value, list):
+        for index, entry in enumerate(value, start=1):
+            if not isinstance(entry, dict):
+                continue
+            path = str(entry.get("path") or entry.get("name") or "").strip()
+            name = str(entry.get("name") or "").strip()
+            if not path and name:
+                path = name
+            if not name and path:
+                name = path.split("/")[-1]
+            if not path:
+                extension = "py" if default_language == "python" else "ts"
+                path = f"src/file_{index}.{extension}"
+            if not name:
+                name = path.split("/")[-1]
+
+            language = str(entry.get("language") or default_language).strip().lower() or default_language
+            role = str(entry.get("role") or default_role).strip() or default_role
+            content = str(entry.get("content") or entry.get("code") or "").rstrip()
+            if language in {"python", "javascript", "java", "c"}:
+                content = _strip_comments(content, language).rstrip()
+            if not content:
+                continue
+
+            normalized.append(
+                {
+                    "path": path,
+                    "name": name,
+                    "language": language,
+                    "role": role,
+                    "content": content,
+                }
+            )
+
+    capped = normalized[: max(1, int(max_count or 1))]
+    if len(capped) >= max(1, int(min_count or 1)):
+        return capped
+
+    fallback_count = max(1, int(min_count or 1))
+    fallback_files: list[dict[str, str]] = []
+    extension = "py" if default_language == "python" else "ts"
+    for index in range(fallback_count):
+        path = f"src/fallback_{index + 1}.{extension}"
+        fallback_files.append(
+            {
+                "path": path,
+                "name": path.split("/")[-1],
+                "language": default_language,
+                "role": default_role,
+                "content": "def analyze_me(value):\n    return value\n"
+                if default_language == "python"
+                else "export function analyzeMe(value) {\n  return value;\n}\n",
+            }
+        )
+    return fallback_files
+
+
 class ProblemGenerator:
     """Google Gemini API를 호출해 맞춤 문제를 생성한다."""
 
@@ -407,9 +473,13 @@ class ProblemGenerator:
         raw_key = settings.google_api_key or settings.ai_api_key
         self.api_key = raw_key.strip() if raw_key and raw_key.strip() else None
         self.model = settings.google_model
+        self.timeout_ms = max(settings.google_timeout_seconds, 1) * 1000
         self.client = None
         if self.api_key:
-            self.client = genai.Client(api_key=self.api_key)
+            self.client = genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(timeout=self.timeout_ms),
+            )
         self.metrics = get_admin_metrics()
     def generate_sync(
         self,
@@ -1233,6 +1303,316 @@ class ProblemGenerator:
             "language": language_id,
         }
 
+    def generate_single_file_analysis_problem_sync(
+        self,
+        problem_id: str,
+        track_id: str,
+        language_id: str,
+        difficulty: str,
+        mode: str,
+        history_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self.client:
+            raise ValueError("AI API 설정이 없어 실행할 수 없습니다.")
+
+        history_block = ""
+        if history_context:
+            history_block = (
+                "최근 단일 파일 분석 문제 기록입니다. 동일한 파일 구조와 질문을 피하고 새로운 문제를 생성하세요.\n"
+                f"{history_context}\n"
+            )
+
+        contents = (
+            "당신은 코드 학습 플랫폼의 단일 파일 분석 문제 생성기입니다.\n"
+            "반드시 JSON으로만 답변하세요.\n"
+            '{"title": 문자열, "summary": 문자열, "prompt": 문자열, "workspace": 문자열, '
+            '"checklist": 문자열 배열, '
+            '"files": [{"path": 문자열, "name": 문자열, "language": 문자열, "role": 문자열, "content": 문자열}], '
+            '"reference_report": 문자열, '
+            '"difficulty": 문자열}\n\n'
+            f"문제 ID: {problem_id}\n"
+            f"트랙: {track_id}\n"
+            f"주 언어: {language_id}\n"
+            f"난이도: {difficulty}\n"
+            f"{history_block}"
+            "요구사항:\n"
+            "- files는 정확히 1개만 제공하세요.\n"
+            "- content는 14~40줄 사이의 실제 코드처럼 보이는 단일 파일이어야 합니다.\n"
+            "- prompt는 이 파일을 읽고 어떤 로직/상태/예외 흐름을 설명해야 하는지 한국어로 지시하세요.\n"
+            "- checklist는 분석 포인트 3~4개를 한국어 문자열 배열로 작성하세요.\n"
+            "- reference_report는 제출 직후 공개할 모범 분석 리포트를 한국어로 작성하세요.\n"
+            "- summary는 문제 시나리오를 1~2문장으로 요약하세요.\n"
+            "- 코드에는 정답을 직접 노출하는 주석을 넣지 마세요.\n"
+        )
+
+        try:
+            response = self._generate_with_thinking(contents)
+        except Exception as exc:  # pragma: no cover
+            raise ValueError(f"AI API 호출 실패: {exc}") from exc
+
+        text = (getattr(response, "text", "") or "").strip()
+        if not text and getattr(response, "candidates", None):
+            parts = []
+            for candidate in response.candidates:
+                for part in getattr(candidate, "content", {}).get("parts", []):
+                    if isinstance(part, dict):
+                        parts.append(part.get("text", ""))
+            text = "\n".join(filter(None, parts)).strip()
+
+        if not text:
+            raise ValueError("AI 응답이 비어 있습니다.")
+
+        try:
+            data = json.loads(_extract_json_blob(text))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"AI 응답 파싱 실패: {exc}") from exc
+
+        files = _normalize_advanced_analysis_files(
+            data.get("files"),
+            min_count=1,
+            max_count=1,
+            default_language=language_id,
+            default_role="entrypoint",
+        )
+        checklist = [
+            str(item or "").strip()
+            for item in (data.get("checklist") or [])
+            if str(item or "").strip()
+        ][:4]
+        if len(checklist) < 3:
+            checklist = [
+                "핵심 진입 함수와 반환 값을 추적하세요.",
+                "상태 변경과 예외 처리 분기를 정리하세요.",
+                "테스트가 필요한 경계 조건을 요약하세요.",
+            ]
+        reference_report = str(data.get("reference_report") or "").strip()
+        if not reference_report:
+            reference_report = (
+                "이 파일의 핵심 진입 함수부터 반환 지점까지 제어 흐름을 순서대로 설명하고, "
+                "상태가 바뀌는 지점과 예외 처리 분기를 함께 정리하세요."
+            )
+
+        return {
+            "problem_id": problem_id,
+            "title": str(data.get("title") or "").strip() or "단일 파일 분석 문제",
+            "summary": str(data.get("summary") or "").strip() or "단일 파일의 핵심 제어 흐름을 설명하세요.",
+            "prompt": str(data.get("prompt") or "").strip() or "코드를 읽고 핵심 제어 흐름을 설명하세요.",
+            "workspace": str(data.get("workspace") or "").strip() or "single-file-analysis.workspace",
+            "checklist": checklist,
+            "files": files,
+            "reference_report": reference_report,
+            "mode": mode,
+            "difficulty": data.get("difficulty", difficulty),
+            "language": language_id,
+        }
+
+    def generate_multi_file_analysis_problem_sync(
+        self,
+        problem_id: str,
+        track_id: str,
+        language_id: str,
+        difficulty: str,
+        mode: str,
+        history_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self.client:
+            raise ValueError("AI API 설정이 없어 실행할 수 없습니다.")
+
+        history_block = ""
+        if history_context:
+            history_block = (
+                "최근 다중 파일 분석 문제 기록입니다. 동일한 호출 흐름과 구성요소를 피하고 새 시나리오를 생성하세요.\n"
+                f"{history_context}\n"
+            )
+
+        contents = (
+            "당신은 코드 학습 플랫폼의 다중 파일 분석 문제 생성기입니다.\n"
+            "반드시 JSON으로만 답변하세요.\n"
+            '{"title": 문자열, "summary": 문자열, "prompt": 문자열, "workspace": 문자열, '
+            '"checklist": 문자열 배열, '
+            '"files": [{"path": 문자열, "name": 문자열, "language": 문자열, "role": 문자열, "content": 문자열}], '
+            '"reference_report": 문자열, '
+            '"difficulty": 문자열}\n\n'
+            f"문제 ID: {problem_id}\n"
+            f"트랙: {track_id}\n"
+            f"언어: {language_id}\n"
+            f"난이도: {difficulty}\n"
+            f"{history_block}"
+            "요구사항:\n"
+            "- files는 2~6개 사이로 생성하세요.\n"
+            "- 모든 파일은 같은 언어 계열을 사용하세요.\n"
+            "- 파일 역할은 controller/service/repository/helper/entity 중 실제에 맞게 작성하세요.\n"
+            "- prompt는 파일 간 호출 흐름과 책임 분리를 설명하게 지시하세요.\n"
+            "- checklist는 분석 포인트 3~5개를 한국어 배열로 작성하세요.\n"
+            "- reference_report는 제출 직후 공개할 모범 분석 리포트를 한국어로 작성하세요.\n"
+            "- 코드에는 정답을 직접 노출하는 주석을 넣지 마세요.\n"
+        )
+
+        try:
+            response = self._generate_with_thinking(contents)
+        except Exception as exc:  # pragma: no cover
+            raise ValueError(f"AI API 호출 실패: {exc}") from exc
+
+        text = (getattr(response, "text", "") or "").strip()
+        if not text and getattr(response, "candidates", None):
+            parts = []
+            for candidate in response.candidates:
+                for part in getattr(candidate, "content", {}).get("parts", []):
+                    if isinstance(part, dict):
+                        parts.append(part.get("text", ""))
+            text = "\n".join(filter(None, parts)).strip()
+
+        if not text:
+            raise ValueError("AI 응답이 비어 있습니다.")
+
+        try:
+            data = json.loads(_extract_json_blob(text))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"AI 응답 파싱 실패: {exc}") from exc
+
+        files = _normalize_advanced_analysis_files(
+            data.get("files"),
+            min_count=2,
+            max_count=6,
+            default_language=language_id,
+            default_role="module",
+        )
+        checklist = [
+            str(item or "").strip()
+            for item in (data.get("checklist") or [])
+            if str(item or "").strip()
+        ][:5]
+        if len(checklist) < 3:
+            checklist = [
+                "진입점에서 실제 비즈니스 로직까지 호출 순서를 정리하세요.",
+                "파일별 책임과 결합 지점을 분리해서 설명하세요.",
+                "중복 책임이나 테스트 취약 구간을 찾으세요.",
+            ]
+        reference_report = str(data.get("reference_report") or "").strip()
+        if not reference_report:
+            reference_report = (
+                "파일 간 호출 흐름을 진입점부터 순서대로 정리하고, 각 파일의 책임과 결합 지점을 구분해 설명하세요. "
+                "특히 controller, service, repository 사이에서 데이터가 어떻게 이동하는지 포함하세요."
+            )
+
+        return {
+            "problem_id": problem_id,
+            "title": str(data.get("title") or "").strip() or "다중 파일 분석 문제",
+            "summary": str(data.get("summary") or "").strip() or "여러 파일 사이의 호출 흐름을 추적하세요.",
+            "prompt": str(data.get("prompt") or "").strip() or "파일 간 호출 흐름과 책임 분리를 설명하세요.",
+            "workspace": str(data.get("workspace") or "").strip() or "multi-file-analysis.workspace",
+            "checklist": checklist,
+            "files": files,
+            "reference_report": reference_report,
+            "mode": mode,
+            "difficulty": data.get("difficulty", difficulty),
+            "language": language_id,
+        }
+
+    def generate_fullstack_analysis_problem_sync(
+        self,
+        problem_id: str,
+        track_id: str,
+        language_id: str,
+        difficulty: str,
+        mode: str,
+        history_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self.client:
+            raise ValueError("AI API 설정이 없어 실행할 수 없습니다.")
+
+        history_block = ""
+        if history_context:
+            history_block = (
+                "최근 풀스택 분석 문제 기록입니다. 동일한 화면/API 흐름을 피하고 새로운 엔드투엔드 시나리오를 생성하세요.\n"
+                f"{history_context}\n"
+            )
+
+        contents = (
+            "당신은 코드 학습 플랫폼의 풀스택 코드 분석 문제 생성기입니다.\n"
+            "반드시 JSON으로만 답변하세요.\n"
+            '{"title": 문자열, "summary": 문자열, "prompt": 문자열, "workspace": 문자열, '
+            '"checklist": 문자열 배열, '
+            '"files": [{"path": 문자열, "name": 문자열, "language": 문자열, "role": 문자열, "content": 문자열}], '
+            '"reference_report": 문자열, '
+            '"difficulty": 문자열}\n\n'
+            f"문제 ID: {problem_id}\n"
+            f"트랙: {track_id}\n"
+            f"주 백엔드 언어: {language_id}\n"
+            f"난이도: {difficulty}\n"
+            f"{history_block}"
+            "요구사항:\n"
+            "- files는 3~8개 사이로 생성하세요.\n"
+            "- frontend 역할 파일과 backend 역할 파일을 모두 포함하세요.\n"
+            "- frontend는 typescript/tsx/javascript 중 하나를, backend는 주 백엔드 언어를 사용하세요.\n"
+            "- prompt는 사용자 액션이 API 호출과 상태 반영으로 이어지는 전체 흐름을 설명하게 지시하세요.\n"
+            "- checklist는 이벤트 시작점, API 경유, 상태 반영, 장애 지점 분석을 포함한 4~5개 포인트로 작성하세요.\n"
+            "- reference_report는 제출 직후 공개할 모범 분석 리포트를 한국어로 작성하세요.\n"
+            "- 코드에는 정답을 직접 노출하는 주석을 넣지 마세요.\n"
+        )
+
+        try:
+            response = self._generate_with_thinking(contents)
+        except Exception as exc:  # pragma: no cover
+            raise ValueError(f"AI API 호출 실패: {exc}") from exc
+
+        text = (getattr(response, "text", "") or "").strip()
+        if not text and getattr(response, "candidates", None):
+            parts = []
+            for candidate in response.candidates:
+                for part in getattr(candidate, "content", {}).get("parts", []):
+                    if isinstance(part, dict):
+                        parts.append(part.get("text", ""))
+            text = "\n".join(filter(None, parts)).strip()
+
+        if not text:
+            raise ValueError("AI 응답이 비어 있습니다.")
+
+        try:
+            data = json.loads(_extract_json_blob(text))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"AI 응답 파싱 실패: {exc}") from exc
+
+        files = _normalize_advanced_analysis_files(
+            data.get("files"),
+            min_count=3,
+            max_count=8,
+            default_language=language_id,
+            default_role="backend",
+        )
+        checklist = [
+            str(item or "").strip()
+            for item in (data.get("checklist") or [])
+            if str(item or "").strip()
+        ][:5]
+        if len(checklist) < 4:
+            checklist = [
+                "사용자 액션이 어디서 시작되는지 확인하세요.",
+                "API 호출과 서버 진입점을 연결해서 설명하세요.",
+                "응답이 상태와 UI에 어떻게 반영되는지 추적하세요.",
+                "장애가 생길 수 있는 경계와 복구 포인트를 정리하세요.",
+            ]
+        reference_report = str(data.get("reference_report") or "").strip()
+        if not reference_report:
+            reference_report = (
+                "사용자 액션이 프런트엔드에서 어떻게 시작되고 API 호출을 거쳐 서버 처리와 데이터 저장으로 이어지는지 설명하세요. "
+                "그 뒤 응답이 상태와 UI에 어떻게 반영되는지, 실패 시 어떤 경계와 복구 포인트가 있는지도 포함하세요."
+            )
+
+        return {
+            "problem_id": problem_id,
+            "title": str(data.get("title") or "").strip() or "풀스택 코드 분석 문제",
+            "summary": str(data.get("summary") or "").strip() or "프런트엔드와 백엔드 사이의 전체 호출 흐름을 분석하세요.",
+            "prompt": str(data.get("prompt") or "").strip() or "사용자 액션부터 UI 반영까지의 전체 흐름을 설명하세요.",
+            "workspace": str(data.get("workspace") or "").strip() or "fullstack-analysis.workspace",
+            "checklist": checklist,
+            "files": files,
+            "reference_report": reference_report,
+            "mode": mode,
+            "difficulty": data.get("difficulty", difficulty),
+            "language": language_id,
+        }
+
     async def generate(
         self,
         problem_id: str,
@@ -1400,6 +1780,63 @@ class ProblemGenerator:
             candidate_count,
             culprit_count,
             decision_facets,
+            history_context,
+        )
+
+    async def generate_single_file_analysis_problem(
+        self,
+        problem_id: str,
+        track_id: str,
+        language_id: str,
+        difficulty: str,
+        mode: str,
+        history_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self.generate_single_file_analysis_problem_sync,
+            problem_id,
+            track_id,
+            language_id,
+            difficulty,
+            mode,
+            history_context,
+        )
+
+    async def generate_multi_file_analysis_problem(
+        self,
+        problem_id: str,
+        track_id: str,
+        language_id: str,
+        difficulty: str,
+        mode: str,
+        history_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self.generate_multi_file_analysis_problem_sync,
+            problem_id,
+            track_id,
+            language_id,
+            difficulty,
+            mode,
+            history_context,
+        )
+
+    async def generate_fullstack_analysis_problem(
+        self,
+        problem_id: str,
+        track_id: str,
+        language_id: str,
+        difficulty: str,
+        mode: str,
+        history_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self.generate_fullstack_analysis_problem_sync,
+            problem_id,
+            track_id,
+            language_id,
+            difficulty,
+            mode,
             history_context,
         )
 

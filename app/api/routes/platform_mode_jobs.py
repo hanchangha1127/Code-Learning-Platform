@@ -13,7 +13,10 @@ router = APIRouter()
 
 
 def _normalized_status(raw_status: str) -> str:
-    token = str(raw_status or "").strip().lower()
+    if isinstance(raw_status, bytes):
+        token = raw_status.decode("utf-8", errors="ignore").strip().lower()
+    else:
+        token = str(raw_status or "").strip().lower()
     if token in {"queued", "deferred", "scheduled"}:
         return "queued"
     if token in {"started", "busy"}:
@@ -43,7 +46,11 @@ def _extract_owner_user_id(job: Job) -> int | None:
 
 
 def _extract_error(job: Job) -> str | None:
-    exc_info = str(getattr(job, "exc_info", "") or "").strip()
+    exc_info_raw = getattr(job, "exc_info", "") or ""
+    if isinstance(exc_info_raw, bytes):
+        exc_info = exc_info_raw.decode("utf-8", errors="ignore").strip()
+    else:
+        exc_info = str(exc_info_raw).strip()
     if not exc_info:
         return None
     last_line = exc_info.splitlines()[-1].strip()

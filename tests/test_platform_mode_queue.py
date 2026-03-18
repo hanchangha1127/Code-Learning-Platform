@@ -58,6 +58,24 @@ class PlatformModeQueueTests(unittest.TestCase):
                 "request_payload": {"problemId": "blame-1", "selectedCommits": ["A"], "report": "report body"},
                 "queue_payload": {"problem_id": "blame-1", "selected_commits": ["A"], "report": "report body"},
             },
+            {
+                "path": "/single-file-analysis/submit",
+                "mode": "single-file-analysis",
+                "request_payload": {"problemId": "sfa-1", "report": "report body"},
+                "queue_payload": {"problem_id": "sfa-1", "report": "report body"},
+            },
+            {
+                "path": "/multi-file-analysis/submit",
+                "mode": "multi-file-analysis",
+                "request_payload": {"problemId": "mfa-1", "report": "report body"},
+                "queue_payload": {"problem_id": "mfa-1", "report": "report body"},
+            },
+            {
+                "path": "/fullstack-analysis/submit",
+                "mode": "fullstack-analysis",
+                "request_payload": {"problemId": "fsa-1", "report": "report body"},
+                "queue_payload": {"problem_id": "fsa-1", "report": "report body"},
+            },
         ]
 
         for scenario in scenarios:
@@ -181,6 +199,48 @@ class PlatformModeQueueTests(unittest.TestCase):
                         {"optionId": "D", "summary": "noise"},
                         {"optionId": "E", "summary": "noise"},
                     ],
+                },
+            },
+            {
+                "path": "/single-file-analysis/submit",
+                "mode": "single-file-analysis",
+                "request_payload": {"problemId": "sfa-1", "report": "report body"},
+                "service_patch": "app.api.routes.advanced_analysis.submit_advanced_analysis_report",
+                "service_response": {
+                    "correct": True,
+                    "score": 81.0,
+                    "verdict": "passed",
+                    "feedback": {"summary": "ok", "strengths": [], "improvements": []},
+                    "referenceReport": "reference",
+                    "passThreshold": 70,
+                },
+            },
+            {
+                "path": "/multi-file-analysis/submit",
+                "mode": "multi-file-analysis",
+                "request_payload": {"problemId": "mfa-1", "report": "report body"},
+                "service_patch": "app.api.routes.advanced_analysis.submit_advanced_analysis_report",
+                "service_response": {
+                    "correct": True,
+                    "score": 81.0,
+                    "verdict": "passed",
+                    "feedback": {"summary": "ok", "strengths": [], "improvements": []},
+                    "referenceReport": "reference",
+                    "passThreshold": 70,
+                },
+            },
+            {
+                "path": "/fullstack-analysis/submit",
+                "mode": "fullstack-analysis",
+                "request_payload": {"problemId": "fsa-1", "report": "report body"},
+                "service_patch": "app.api.routes.advanced_analysis.submit_advanced_analysis_report",
+                "service_response": {
+                    "correct": True,
+                    "score": 81.0,
+                    "verdict": "passed",
+                    "feedback": {"summary": "ok", "strengths": [], "improvements": []},
+                    "referenceReport": "reference",
+                    "passThreshold": 70,
                 },
             },
         ]

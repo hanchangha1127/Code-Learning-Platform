@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -34,6 +36,8 @@ from backend.learning_reporting import trend_summary
 from server_runtime.context import learning_service, storage_manager, user_service
 
 logger = logging.getLogger(__name__)
+_PROBLEM_FOLLOW_UP_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="problem-follow-up")
+_PROBLEM_FOLLOW_UP_SLOTS = threading.BoundedSemaphore(128)
 
 _PROBLEM_KIND_BY_MODE: dict[str, ProblemKind] = {
     "analysis": ProblemKind.analysis,
@@ -45,6 +49,9 @@ _PROBLEM_KIND_BY_MODE: dict[str, ProblemKind] = {
     "context-inference": ProblemKind.context_inference,
     "refactoring-choice": ProblemKind.refactoring_choice,
     "code-blame": ProblemKind.code_blame,
+    "single-file-analysis": ProblemKind.analysis,
+    "multi-file-analysis": ProblemKind.analysis,
+    "fullstack-analysis": ProblemKind.analysis,
 }
 
 _PROBLEM_DIFFICULTY_BY_CLIENT: dict[str, ProblemDifficulty] = {
@@ -66,6 +73,9 @@ _ANALYSIS_TYPE_BY_MODE: dict[str, AnalysisType] = {
     "context-inference": AnalysisType.review,
     "refactoring-choice": AnalysisType.review,
     "code-blame": AnalysisType.review,
+    "single-file-analysis": AnalysisType.review,
+    "multi-file-analysis": AnalysisType.review,
+    "fullstack-analysis": AnalysisType.review,
 }
 
 _EVENT_TYPE_BY_MODE: dict[str, str] = {
@@ -78,6 +88,9 @@ _EVENT_TYPE_BY_MODE: dict[str, str] = {
     "context-inference": "context_inference_event",
     "refactoring-choice": "refactoring_choice_event",
     "code-blame": "code_blame_event",
+    "single-file-analysis": "single_file_analysis_event",
+    "multi-file-analysis": "multi_file_analysis_event",
+    "fullstack-analysis": "fullstack_analysis_event",
 }
 
 
@@ -208,6 +221,8 @@ def request_mode_problem(
     language: str,
     difficulty: str,
     db: Session | None = None,
+    defer_persistence: bool = False,
+    on_payload_ready: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     normalized_mode = _normalize_mode(mode)
     normalized_language = str(language or "python").strip().lower()
@@ -226,6 +241,23 @@ def request_mode_problem(
             language=normalized_language,
             difficulty=normalized_difficulty,
         )
+        response_payload = _response_problem_payload(normalized_mode, canonical_payload)
+        if defer_persistence:
+            if on_payload_ready is not None:
+                on_payload_ready(response_payload)
+            elapsed_ms = int(max((time.perf_counter() - started_at) * 1000.0, 0.0))
+            _defer_problem_follow_up(
+                mode=normalized_mode,
+                username=username,
+                user_id=user_id,
+                problem_payload=canonical_payload,
+                runtime_payload=runtime_payload,
+                event_type="problem_requested",
+                latency_ms=elapsed_ms,
+                language=normalized_language,
+                difficulty=normalized_difficulty,
+            )
+            return response_payload
         with _db_session(db) as session:
             if session is not None:
                 try:
@@ -234,6 +266,7 @@ def request_mode_problem(
                         username=username,
                         user_id=user_id,
                         problem_payload=canonical_payload,
+                        runtime_payload=runtime_payload,
                         db=session,
                     )
                     session.commit()
@@ -250,18 +283,27 @@ def request_mode_problem(
             latency_ms=elapsed_ms,
             payload={"language": normalized_language, "difficulty": normalized_difficulty},
         )
-        return _response_problem_payload(normalized_mode, canonical_payload)
+        return response_payload
     except Exception:
         elapsed_ms = int(max((time.perf_counter() - started_at) * 1000.0, 0.0))
-        _record_ops_event_best_effort(
-            db=db,
-            user_id=user_id,
-            event_type="problem_requested",
-            mode=normalized_mode,
-            status="failure",
-            latency_ms=elapsed_ms,
-            payload={"language": normalized_language, "difficulty": normalized_difficulty},
-        )
+        if defer_persistence:
+            _defer_failure_ops_event(
+                user_id=user_id,
+                mode=normalized_mode,
+                latency_ms=elapsed_ms,
+                language=normalized_language,
+                difficulty=normalized_difficulty,
+            )
+        else:
+            _record_ops_event_best_effort(
+                db=db,
+                user_id=user_id,
+                event_type="problem_requested",
+                mode=normalized_mode,
+                status="failure",
+                latency_ms=elapsed_ms,
+                payload={"language": normalized_language, "difficulty": normalized_difficulty},
+            )
         raise
 
 
@@ -343,6 +385,12 @@ def _request_runtime_problem(mode: str, *, username: str, language: str, difficu
         return learning_service.request_refactoring_choice_problem(username, language, difficulty)
     if mode == "code-blame":
         return learning_service.request_code_blame_problem(username, language, difficulty)
+    if mode == "single-file-analysis":
+        return learning_service.request_single_file_analysis_problem(username, language, difficulty)
+    if mode == "multi-file-analysis":
+        return learning_service.request_multi_file_analysis_problem(username, language, difficulty)
+    if mode == "fullstack-analysis":
+        return learning_service.request_fullstack_analysis_problem(username, language, difficulty)
     raise ValueError(f"unsupported mode: {mode}")
 
 
@@ -407,6 +455,24 @@ def _submit_runtime_answer(mode: str, *, username: str, body: dict[str, Any]) ->
             list(body.get("selectedCommits") or body.get("selected_commits") or []),
             str(body.get("report") or ""),
         )
+    if mode == "single-file-analysis":
+        return learning_service.submit_single_file_analysis_report(
+            username,
+            str(body.get("problemId") or body.get("problem_id") or ""),
+            str(body.get("report") or ""),
+        )
+    if mode == "multi-file-analysis":
+        return learning_service.submit_multi_file_analysis_report(
+            username,
+            str(body.get("problemId") or body.get("problem_id") or ""),
+            str(body.get("report") or ""),
+        )
+    if mode == "fullstack-analysis":
+        return learning_service.submit_fullstack_analysis_report(
+            username,
+            str(body.get("problemId") or body.get("problem_id") or ""),
+            str(body.get("report") or ""),
+        )
     raise ValueError(f"unsupported mode: {mode}")
 
 
@@ -465,6 +531,101 @@ def _record_ops_event_best_effort(
         )
 
 
+def _defer_problem_follow_up(
+    *,
+    mode: str,
+    username: str,
+    user_id: int,
+    problem_payload: dict[str, Any],
+    runtime_payload: dict[str, Any],
+    event_type: str,
+    latency_ms: int,
+    language: str,
+    difficulty: str,
+) -> None:
+    def _run_follow_up() -> None:
+        try:
+            _persist_problem(
+                mode=mode,
+                username=username,
+                user_id=user_id,
+                problem_payload=problem_payload,
+                runtime_payload=runtime_payload,
+            )
+            _record_ops_event_best_effort(
+                user_id=user_id,
+                event_type=event_type,
+                mode=mode,
+                status="success",
+                latency_ms=latency_ms,
+                payload={"language": language, "difficulty": difficulty},
+            )
+        except Exception:
+            logger.exception(
+                "platform_bridge_problem_follow_up_failed mode=%s user_id=%s problem_id=%s",
+                mode,
+                user_id,
+                problem_payload.get("problemId"),
+            )
+
+    if not _PROBLEM_FOLLOW_UP_SLOTS.acquire(blocking=False):
+        logger.warning(
+            "platform_bridge_problem_follow_up_queue_full mode=%s user_id=%s problem_id=%s",
+            mode,
+            user_id,
+            problem_payload.get("problemId"),
+        )
+        _run_follow_up()
+        return
+
+    def _run_and_release() -> None:
+        try:
+            _run_follow_up()
+        finally:
+            _PROBLEM_FOLLOW_UP_SLOTS.release()
+
+    try:
+        _PROBLEM_FOLLOW_UP_EXECUTOR.submit(_run_and_release)
+    except RuntimeError:
+        _PROBLEM_FOLLOW_UP_SLOTS.release()
+        logger.warning(
+            "platform_bridge_problem_follow_up_executor_unavailable mode=%s user_id=%s problem_id=%s",
+            mode,
+            user_id,
+            problem_payload.get("problemId"),
+        )
+        _run_follow_up()
+
+
+def _defer_failure_ops_event(
+    *,
+    user_id: int,
+    mode: str,
+    latency_ms: int,
+    language: str,
+    difficulty: str,
+) -> None:
+    try:
+        _PROBLEM_FOLLOW_UP_EXECUTOR.submit(
+            _record_ops_event_best_effort,
+            user_id=user_id,
+            event_type="problem_requested",
+            mode=mode,
+            status="failure",
+            latency_ms=latency_ms,
+            payload={"language": language, "difficulty": difficulty},
+        )
+    except RuntimeError:
+        _record_ops_event_best_effort(
+            user_id=user_id,
+            event_type="problem_requested",
+            mode=mode,
+            status="failure",
+            latency_ms=latency_ms,
+            payload={"language": language, "difficulty": difficulty},
+        )
+
+
 def _canonical_problem_payload(
     mode: str,
     payload: dict[str, Any],
@@ -519,13 +680,14 @@ def _persist_problem(
     username: str,
     user_id: int,
     problem_payload: dict[str, Any],
+    runtime_payload: dict[str, Any] | None = None,
     db: Session | None = None,
 ) -> None:
     problem_id = str(problem_payload.get("problemId") or "").strip()
     if not problem_id:
         return
 
-    instance = _load_runtime_instance(username, problem_id)
+    instance = dict(runtime_payload or {}) or _load_runtime_instance(username, problem_id)
     combined_payload = {**instance, **problem_payload}
 
     with _db_session(db) as session:
@@ -786,6 +948,23 @@ def _problem_starter_code(payload: dict[str, Any]) -> str | None:
         if text:
             return text
 
+    files = payload.get("files")
+    if isinstance(files, list):
+        rendered: list[str] = []
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            content = str(item.get("content") or item.get("code") or "").rstrip()
+            if not content:
+                continue
+            file_path = str(item.get("path") or item.get("name") or "").strip()
+            if file_path:
+                rendered.append(f"File: {file_path}\n{content}")
+            else:
+                rendered.append(content)
+        if rendered:
+            return "\n\n".join(rendered)
+
     blocks = payload.get("blocks")
     if isinstance(blocks, list):
         rendered: list[str] = []
@@ -866,7 +1045,15 @@ def _submission_code(mode: str, submission_payload: dict[str, Any]) -> str:
         return str(submission_payload.get("output") or submission_payload.get("outputText") or submission_payload.get("output_text") or "")
     if mode == "code-error":
         return f"selected_index={submission_payload.get('selectedIndex', submission_payload.get('selected_index'))}"
-    if mode in {"auditor", "context-inference", "refactoring-choice", "code-blame"}:
+    if mode in {
+        "auditor",
+        "context-inference",
+        "refactoring-choice",
+        "code-blame",
+        "single-file-analysis",
+        "multi-file-analysis",
+        "fullstack-analysis",
+    }:
         return str(submission_payload.get("report") or "")
     return json.dumps(submission_payload, ensure_ascii=False)
 
@@ -980,7 +1167,7 @@ def _load_db_history(*, username: str, seen_bridge_ids: set[str]) -> list[dict[s
             problem_payload = problem.problem_payload if isinstance(problem.problem_payload, dict) else {}
             analysis = _latest_submission_analysis(submission.analyses or [])
             result_payload = analysis.result_payload if analysis and isinstance(analysis.result_payload, dict) else {}
-            mode = _mode_from_problem_kind(problem.kind)
+            mode = str(problem_payload.get("mode") or "").strip() or _mode_from_problem_kind(problem.kind)
             item = {
                 "source": "platform",
                 "bridgeId": bridge_id or None,
@@ -1026,6 +1213,8 @@ def _load_db_history(*, username: str, seen_bridge_ids: set[str]) -> list[dict[s
                 item["culprit_commits"] = result_payload.get("culpritCommits") or result_payload.get("culprit_commits") or []
                 item["commit_reviews"] = result_payload.get("commitReviews") or result_payload.get("commit_reviews") or []
                 item["problem_error_log"] = problem_payload.get("errorLog") or problem_payload.get("error_log") or ""
+            if mode in {"single-file-analysis", "multi-file-analysis", "fullstack-analysis"}:
+                item["reference_report"] = result_payload.get("referenceReport") or ""
             items.append(item)
         return items
 

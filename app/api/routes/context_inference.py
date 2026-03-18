@@ -48,7 +48,7 @@ def post_context_inference_problem(
             if _wants_problem_stream(request):
                 return _stream_problem_response(
                     request=request,
-                    work=lambda: _execute_stream_problem(
+                    work=lambda emit_payload: _execute_stream_problem(
                         "context_inference_problem",
                         lambda: platform_public_bridge.request_mode_problem(
                             mode="context-inference",
@@ -57,6 +57,8 @@ def post_context_inference_problem(
                             language=body.language,
                             difficulty=body.difficulty,
                             db=None,
+                            defer_persistence=True,
+                            on_payload_ready=emit_payload,
                         ),
                     ),
                 )

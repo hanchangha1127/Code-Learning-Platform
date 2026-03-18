@@ -120,7 +120,7 @@ def _request_problem_with_optional_stream(
     if _wants_problem_stream(request):
         return _stream_problem_response(
             request=request,
-            work=lambda: _execute_stream_problem(
+            work=lambda emit_payload: _execute_stream_problem(
                 f"{mode}_problem",
                 lambda: platform_public_bridge.request_mode_problem(
                     mode=mode,
@@ -129,6 +129,8 @@ def _request_problem_with_optional_stream(
                     language=body.language_id,
                     difficulty=body.difficulty_id,
                     db=None,
+                    defer_persistence=True,
+                    on_payload_ready=emit_payload,
                 ),
             ),
         )

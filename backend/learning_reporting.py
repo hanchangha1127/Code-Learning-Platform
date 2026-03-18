@@ -144,6 +144,242 @@ def _build_summary(event: Dict[str, Any], instance: Dict[str, Any], mode: str) -
     }.get(mode, "학습 기록")
 
 
+def _clip_detail_text(value: Any, limit: int = 600) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(limit - 18, 0)].rstrip()}...(truncated)"
+
+
+def _normalize_detail_list(value: Any, *, limit: int = 6, item_limit: int = 160) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    rows: list[str] = []
+    for item in value:
+        normalized = _clip_detail_text(item, item_limit)
+        if not normalized or normalized in rows:
+            continue
+        rows.append(normalized)
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _mode_label(mode: str) -> str:
+    return {
+        "analysis": "코드 설명",
+        "code-block": "빈칸 채우기",
+        "code-calc": "출력 예측",
+        "code-error": "오류 찾기",
+        "code-arrange": "코드 정렬",
+        "auditor": "감사관",
+        "context-inference": "맥락 추론",
+        "refactoring-choice": "리팩토링 선택",
+        "code-blame": "코드 블레임",
+        "diagnostic": "진단",
+        "practice": "연습",
+    }.get(mode, mode or "unknown")
+
+
+def _build_legacy_expected_answer(event: Dict[str, Any]) -> str | None:
+    mode = str(event.get("mode") or "").strip()
+    if mode == "code-block":
+        return _clip_detail_text(event.get("correct_option_text"))
+    if mode == "code-calc":
+        return _clip_detail_text(event.get("expected_output"))
+    if mode == "code-error":
+        correct_index = event.get("correct_index")
+        try:
+            return f"{int(correct_index) + 1}번 블록"
+        except (TypeError, ValueError):
+            return None
+    if mode == "code-arrange":
+        correct_order = event.get("correct_order")
+        if isinstance(correct_order, list) and correct_order:
+            return "정답 순서: " + " -> ".join(str(item) for item in correct_order[:8])
+        return None
+    if mode == "refactoring-choice":
+        best_option = _clip_detail_text(event.get("best_option"), 40)
+        if best_option:
+            return f"권장 선택지: {best_option}"
+    if mode == "code-blame":
+        culprit_commits = _normalize_detail_list(event.get("culprit_commits"), limit=4, item_limit=40)
+        if culprit_commits:
+            return "범인 커밋: " + ", ".join(culprit_commits)
+    reference_report = _clip_detail_text(event.get("reference_report"))
+    if reference_report:
+        return reference_report
+    return None
+
+
+def _build_legacy_response_comparison(event: Dict[str, Any]) -> str | None:
+    mode = str(event.get("mode") or "").strip()
+    is_correct = event.get("correct") is True
+
+    if mode == "code-block":
+        selected = _clip_detail_text(event.get("selected_option_text"))
+        expected = _clip_detail_text(event.get("correct_option_text"))
+        if selected and expected and not is_correct:
+            return f"제출 선택지는 '{selected}'였고 정답은 '{expected}'였습니다."
+        if selected and is_correct:
+            return f"정답 선택지 '{selected}'를 맞혔습니다."
+
+    if mode == "code-calc":
+        submitted = _clip_detail_text(event.get("submitted_output"), 160)
+        expected = _clip_detail_text(event.get("expected_output"), 160)
+        if submitted and expected and not is_correct:
+            return f"예상 출력 '{expected}' 대신 '{submitted}'를 제출했습니다."
+        if submitted and is_correct:
+            return f"출력 '{submitted}'를 정확히 예측했습니다."
+
+    if mode == "code-error":
+        selected_index = event.get("selected_index")
+        correct_index = event.get("correct_index")
+        try:
+            selected_label = f"{int(selected_index) + 1}번 블록"
+        except (TypeError, ValueError):
+            selected_label = None
+        try:
+            correct_label = f"{int(correct_index) + 1}번 블록"
+        except (TypeError, ValueError):
+            correct_label = None
+        if selected_label and correct_label and not is_correct:
+            return f"{selected_label}을 골랐지만 실제 오류 블록은 {correct_label}였습니다."
+        if selected_label and is_correct:
+            return f"오류 블록 {selected_label}을 정확히 찾았습니다."
+
+    if mode == "code-arrange":
+        submitted_order = event.get("submitted_order")
+        correct_order = event.get("correct_order")
+        if isinstance(submitted_order, list) and isinstance(correct_order, list):
+            mismatches = sum(1 for expected, submitted in zip(correct_order, submitted_order) if expected != submitted)
+            if not is_correct:
+                return f"블록 순서 {len(correct_order)}개 중 {mismatches}개 위치가 틀렸습니다."
+            return f"블록 순서 {len(correct_order)}개를 모두 맞췄습니다."
+
+    if mode == "refactoring-choice":
+        selected_option = _clip_detail_text(event.get("selected_option"), 40)
+        best_option = _clip_detail_text(event.get("best_option"), 40)
+        if selected_option and best_option and selected_option != best_option:
+            return f"사용자는 {selected_option}를 골랐고 권장 선택지는 {best_option}였습니다."
+        if selected_option and best_option:
+            return f"권장 선택지 {best_option}를 정확히 골랐습니다."
+
+    if mode == "code-blame":
+        selected_commits = _normalize_detail_list(event.get("selected_commits"), limit=4, item_limit=40)
+        culprit_commits = _normalize_detail_list(event.get("culprit_commits"), limit=4, item_limit=40)
+        if selected_commits and culprit_commits and set(selected_commits) != set(culprit_commits):
+            return (
+                f"사용자는 {', '.join(selected_commits)}를 지목했지만 "
+                f"실제 범인 커밋은 {', '.join(culprit_commits)}였습니다."
+            )
+        if culprit_commits and is_correct:
+            return f"범인 커밋 {', '.join(culprit_commits)}를 정확히 지목했습니다."
+
+    feedback = event.get("feedback")
+    if isinstance(feedback, dict):
+        return _clip_detail_text(feedback.get("summary"))
+    return None
+
+
+def _build_legacy_detail_records(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    detail_records: List[Dict[str, Any]] = []
+    for idx, event in enumerate(history[:10], 1):
+        mode = str(event.get("mode") or "").strip() or "practice"
+        feedback = event.get("feedback") if isinstance(event.get("feedback"), dict) else {}
+        score = event.get("score")
+        duration = event.get("duration_seconds")
+        try:
+            duration_value = int(duration) if duration is not None else None
+        except (TypeError, ValueError):
+            duration_value = None
+
+        question_context: Dict[str, Any] = {}
+        prompt = _clip_detail_text(event.get("problem_prompt"))
+        code = _clip_detail_text(event.get("problem_code"), 900)
+        if prompt:
+            question_context["prompt"] = prompt
+        if code:
+            question_context["codeOrContext"] = code
+
+        options = _normalize_detail_list(event.get("problem_options"), limit=6, item_limit=200)
+        if options:
+            question_context["options"] = options
+
+        commits = _normalize_detail_list(event.get("problem_commits"), limit=4, item_limit=220)
+        if commits:
+            question_context["commits"] = commits
+
+        scenario = _clip_detail_text(event.get("problem_scenario"), 400)
+        if scenario:
+            question_context["scenario"] = scenario
+
+        error_log = _clip_detail_text(event.get("problem_error_log"), 500)
+        if error_log:
+            question_context["errorLog"] = error_log
+
+        learner_answer = _clip_detail_text(event.get("explanation"), 700)
+        expected_answer = _build_legacy_expected_answer(event)
+        comparison = _build_legacy_response_comparison(event)
+
+        evaluation: Dict[str, Any] = {}
+        feedback_summary = _clip_detail_text(feedback.get("summary"), 280)
+        if feedback_summary:
+            evaluation["feedbackSummary"] = feedback_summary
+
+        strengths = _normalize_detail_list(feedback.get("strengths"))
+        if strengths:
+            evaluation["strengths"] = strengths
+
+        improvements = _normalize_detail_list(feedback.get("improvements"))
+        if improvements:
+            evaluation["improvements"] = improvements
+
+        found_types = _normalize_detail_list(event.get("found_types"))
+        if found_types:
+            evaluation["matchedPoints"] = found_types
+
+        missed_types = _normalize_detail_list(event.get("missed_types"))
+        if missed_types:
+            evaluation["missedPoints"] = missed_types
+
+        if comparison:
+            evaluation["comparison"] = comparison
+
+        reference_report = _clip_detail_text(event.get("reference_report"), 700)
+        if reference_report:
+            evaluation["referenceExplanation"] = reference_report
+
+        record: Dict[str, Any] = {
+            "attempt": idx,
+            "mode": mode,
+            "modeLabel": _mode_label(mode),
+            "title": _clip_detail_text(event.get("problem_title"), 160) or "제목 없음",
+            "result": "correct" if event.get("correct") is True else "incorrect",
+            "summary": _clip_detail_text(event.get("summary"), 240),
+            "questionContext": question_context,
+            "evaluation": evaluation,
+        }
+        if learner_answer:
+            record["learnerResponse"] = learner_answer
+        if expected_answer:
+            record["expectedAnswer"] = expected_answer
+        if score is not None:
+            record["score"] = score
+        if duration_value is not None:
+            record["durationSeconds"] = duration_value
+        difficulty = _clip_detail_text(event.get("difficulty"), 40)
+        if difficulty:
+            record["difficulty"] = difficulty
+        language = _clip_detail_text(event.get("language"), 40)
+        if language:
+            record["language"] = language
+        detail_records.append(record)
+    return detail_records
+
+
 def user_history(
     service: Any,
     username: str,
@@ -262,6 +498,7 @@ def learning_report(
     previous_accuracy = accuracy_from_events(previous_window)
 
     recent_history = history[:10]
+    detail_records = _build_legacy_detail_records(recent_history)
     context_lines: list[str] = []
     score_values: list[float] = []
     for idx, event in enumerate(recent_history, 1):
@@ -280,11 +517,17 @@ def learning_report(
             duration = duration_seconds((instance or {}).get("created_at"), event.get("created_at"))
 
         duration_label = f"{int(duration)}초" if duration is not None else "시간 미기록"
+        comparison = _build_legacy_response_comparison(event)
+        missed_points = _normalize_detail_list(event.get("missed_types"), limit=4, item_limit=80)
         context_lines.append(
             f"{idx}. [{is_correct}] {problem_title} (점수: {score})\n"
             f"   피드백 요약: {feedback_summary}\n"
             f"   소요시간: {duration_label}"
         )
+        if comparison:
+            context_lines.append(f"   정오답 세부: {comparison}")
+        if missed_points:
+            context_lines.append(f"   놓친 포인트: {', '.join(missed_points)}")
 
     history_context = "\n".join(context_lines) if context_lines else "최근 학습 기록이 없습니다."
     avg_score = round(sum(score_values) / len(score_values), 1) if score_values else None
@@ -297,6 +540,7 @@ def learning_report(
     solution_plan = service.ai_client.generate_learning_solution_report(
         history_context=history_context,
         metric_snapshot=metric_snapshot,
+        detail_records=detail_records,
     )
 
     return {

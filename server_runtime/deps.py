@@ -45,7 +45,7 @@ def _resolve_username_from_jwt(token: str) -> str | None:
     except SQLAlchemyError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="인증 서비스(DB) 연결에 실패했습니다. MySQL 상태를 확인해주세요.",
+            detail="인증 서비스(DB) 연결에 실패했습니다. MySQL 상태를 확인해 주세요.",
         ) from exc
 
     if not jwt_username:

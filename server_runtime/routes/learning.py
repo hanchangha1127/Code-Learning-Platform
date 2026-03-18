@@ -4,6 +4,7 @@ import asyncio
 from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import logging
+import os
 import threading
 import time
 from typing import Callable
@@ -29,9 +30,25 @@ from server_runtime.schemas import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _get_int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = os.getenv(name)
+    if not raw:
+        return max(default, minimum)
+    try:
+        return max(int(raw), minimum)
+    except (TypeError, ValueError):
+        return max(default, minimum)
+
+
 STREAM_HEARTBEAT_SECONDS = 0.25
-STREAM_WORKER_MAX = 8
-STREAM_PENDING_MAX = 64
+STREAM_WORKER_MAX = _get_int_env("CODE_PLATFORM_PROBLEM_STREAM_WORKERS", 8)
+STREAM_PENDING_MAX = _get_int_env(
+    "CODE_PLATFORM_PROBLEM_STREAM_PENDING_MAX",
+    STREAM_WORKER_MAX * 2,
+    minimum=STREAM_WORKER_MAX,
+)
 _STREAM_EXECUTOR = ThreadPoolExecutor(max_workers=STREAM_WORKER_MAX, thread_name_prefix="problem-stream")
 _STREAM_SLOTS = threading.BoundedSemaphore(STREAM_PENDING_MAX)
 GENERIC_INTERNAL_ERROR_DETAIL = "요청 처리 중 오류가 발생했습니다."
@@ -91,6 +108,14 @@ def _execute_stream_problem(operation: str, callback: Callable[[], dict]) -> dic
             retryable=False,
         ) from exc
     except Exception as exc:
+        if _looks_like_timeout(exc):
+            logger.warning("%s timed out: %s", operation, exc)
+            raise _ProblemStreamError(
+                "문제 생성 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.",
+                code="request_timeout",
+                http_status=status.HTTP_504_GATEWAY_TIMEOUT,
+                retryable=True,
+            ) from exc
         logger.exception("%s failed: %s", operation, exc)
         raise _ProblemStreamError(
             "request processing failed",
@@ -98,6 +123,11 @@ def _execute_stream_problem(operation: str, callback: Callable[[], dict]) -> dic
             http_status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             retryable=True,
         ) from exc
+
+
+def _looks_like_timeout(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    return any(token in message for token in ("timed out", "timeout", "deadline exceeded"))
 
 
 def _stream_capacity_exceeded_response() -> StreamingResponse:
@@ -134,7 +164,7 @@ def _stream_capacity_exceeded_response() -> StreamingResponse:
 def _stream_problem_response(
     *,
     request: Request,
-    work: Callable[[], dict],
+    work: Callable[[Callable[[dict], None]], dict],
     queued_message: str = STREAM_QUEUED_MESSAGE,
     generating_message: str = STREAM_GENERATING_MESSAGE,
     rendering_message: str = STREAM_RENDERING_MESSAGE,
@@ -146,25 +176,42 @@ def _stream_problem_response(
     error_holder: dict[str, _ProblemStreamError] = {}
     finished = threading.Event()
     cancelled = threading.Event()
+    payload_ready = threading.Event()
     started_at = time.monotonic()
     future: Future[None] | None = None
 
+    def _publish_payload(payload: dict) -> None:
+        if cancelled.is_set():
+            return
+        result_holder["payload"] = payload
+        payload_ready.set()
+
     def _worker() -> None:
         try:
-            payload = work()
+            if cancelled.is_set():
+                logger.info("problem_stream_worker_skipped_after_disconnect")
+                return
+            payload = work(_publish_payload)
             if cancelled.is_set():
                 logger.info("problem_stream_result_discarded_after_disconnect")
                 return
             result_holder["payload"] = payload
+            payload_ready.set()
         except _ProblemStreamError as exc:
             if cancelled.is_set():
                 logger.info("problem_stream_error_discarded_after_disconnect code=%s", exc.code)
+                return
+            if payload_ready.is_set():
+                logger.warning("problem_stream_error_ignored_after_payload code=%s", exc.code)
                 return
             error_holder["error"] = exc
         except Exception as exc:  # pragma: no cover - defensive fallback
             logger.exception("problem_stream_worker_failed: %s", exc)
             if cancelled.is_set():
                 logger.info("problem_stream_unhandled_error_discarded_after_disconnect")
+                return
+            if payload_ready.is_set():
+                logger.warning("problem_stream_unhandled_error_ignored_after_payload")
                 return
             error_holder["error"] = _ProblemStreamError(
                 GENERIC_INTERNAL_ERROR_DETAIL,
@@ -192,7 +239,7 @@ def _stream_problem_response(
             },
         )
 
-        while not finished.is_set():
+        while not finished.is_set() and not payload_ready.is_set():
             if await request.is_disconnected():
                 cancelled.set()
                 if future is not None and not future.done():
@@ -221,29 +268,60 @@ def _stream_problem_response(
             logger.info("problem_stream_cancelled_before_emit")
             return
 
+        payload_emitted = False
+        if payload_ready.is_set():
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            payload = result_holder.get("payload", {})
+            yield _sse_event(
+                "status",
+                {
+                    "phase": "rendering",
+                    "message": rendering_message,
+                    "elapsedMs": elapsed_ms,
+                },
+            )
+            yield _sse_event(
+                "payload",
+                {
+                    "payload": payload,
+                    "elapsedMs": elapsed_ms,
+                },
+            )
+            payload_emitted = True
+
+        while not finished.is_set():
+            if await request.is_disconnected():
+                cancelled.set()
+                if future is not None and not future.done():
+                    future.cancel()
+                logger.info("problem_stream_client_disconnected_after_payload")
+                return
+            await asyncio.sleep(STREAM_HEARTBEAT_SECONDS)
+
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         stream_error = error_holder.get("error")
-        if stream_error:
+        if stream_error and not payload_emitted:
             yield _sse_event("error", stream_error.to_payload(elapsed_ms=elapsed_ms))
             yield _sse_event("done", {"ok": False, "code": stream_error.code, "elapsedMs": elapsed_ms})
             return
 
-        payload = result_holder.get("payload", {})
-        yield _sse_event(
-            "status",
-            {
-                "phase": "rendering",
-                "message": rendering_message,
-                "elapsedMs": elapsed_ms,
-            },
-        )
-        yield _sse_event(
-            "payload",
-            {
-                "payload": payload,
-                "elapsedMs": elapsed_ms,
-            },
-        )
+        if not payload_emitted:
+            payload = result_holder.get("payload", {})
+            yield _sse_event(
+                "status",
+                {
+                    "phase": "rendering",
+                    "message": rendering_message,
+                    "elapsedMs": elapsed_ms,
+                },
+            )
+            yield _sse_event(
+                "payload",
+                {
+                    "payload": payload,
+                    "elapsedMs": elapsed_ms,
+                },
+            )
         yield _sse_event("done", {"ok": True, "elapsedMs": elapsed_ms})
 
     return StreamingResponse(

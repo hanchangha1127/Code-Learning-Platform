@@ -192,6 +192,21 @@ class LearningService:
     ) -> Dict[str, Any]:
         return await asyncio.to_thread(self.request_code_blame_problem, username, language_id, difficulty_id)
 
+    async def request_single_file_analysis_problem_async(
+        self, username: str, language_id: str, difficulty_id: str
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(self.request_single_file_analysis_problem, username, language_id, difficulty_id)
+
+    async def request_multi_file_analysis_problem_async(
+        self, username: str, language_id: str, difficulty_id: str
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(self.request_multi_file_analysis_problem, username, language_id, difficulty_id)
+
+    async def request_fullstack_analysis_problem_async(
+        self, username: str, language_id: str, difficulty_id: str
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(self.request_fullstack_analysis_problem, username, language_id, difficulty_id)
+
 
     async def submit_explanation_async(
         self,
@@ -253,6 +268,21 @@ class LearningService:
             selected_commits,
             report,
         )
+
+    async def submit_single_file_analysis_report_async(
+        self, username: str, problem_id: str, report: str
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(self.submit_single_file_analysis_report, username, problem_id, report)
+
+    async def submit_multi_file_analysis_report_async(
+        self, username: str, problem_id: str, report: str
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(self.submit_multi_file_analysis_report, username, problem_id, report)
+
+    async def submit_fullstack_analysis_report_async(
+        self, username: str, problem_id: str, report: str
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(self.submit_fullstack_analysis_report, username, problem_id, report)
 
     def request_problem(self, username: str, language_id: str, difficulty_id: str) -> Dict[str, Any]:
         return learning_mode_handlers.request_problem(
@@ -370,6 +400,54 @@ class LearningService:
             utcnow=_utcnow,
         )
 
+    def request_single_file_analysis_problem(
+        self,
+        username: str,
+        language_id: str,
+        difficulty_id: str,
+    ) -> Dict[str, Any]:
+        return learning_mode_handlers.request_single_file_analysis_problem(
+            self,
+            username,
+            language_id,
+            difficulty_id,
+            default_track_id=DEFAULT_TRACK_ID,
+            difficulty_choices=DIFFICULTY_CHOICES,
+            utcnow=_utcnow,
+        )
+
+    def request_multi_file_analysis_problem(
+        self,
+        username: str,
+        language_id: str,
+        difficulty_id: str,
+    ) -> Dict[str, Any]:
+        return learning_mode_handlers.request_multi_file_analysis_problem(
+            self,
+            username,
+            language_id,
+            difficulty_id,
+            default_track_id=DEFAULT_TRACK_ID,
+            difficulty_choices=DIFFICULTY_CHOICES,
+            utcnow=_utcnow,
+        )
+
+    def request_fullstack_analysis_problem(
+        self,
+        username: str,
+        language_id: str,
+        difficulty_id: str,
+    ) -> Dict[str, Any]:
+        return learning_mode_handlers.request_fullstack_analysis_problem(
+            self,
+            username,
+            language_id,
+            difficulty_id,
+            default_track_id=DEFAULT_TRACK_ID,
+            difficulty_choices=DIFFICULTY_CHOICES,
+            utcnow=_utcnow,
+        )
+
     def submit_auditor_report(self, username: str, problem_id: str, report: str) -> Dict[str, Any]:
         return learning_mode_handlers.submit_auditor_report(
             self,
@@ -416,6 +494,33 @@ class LearningService:
             username,
             problem_id,
             selected_commits,
+            report,
+            utcnow=_utcnow,
+        )
+
+    def submit_single_file_analysis_report(self, username: str, problem_id: str, report: str) -> Dict[str, Any]:
+        return learning_mode_handlers.submit_single_file_analysis_report(
+            self,
+            username,
+            problem_id,
+            report,
+            utcnow=_utcnow,
+        )
+
+    def submit_multi_file_analysis_report(self, username: str, problem_id: str, report: str) -> Dict[str, Any]:
+        return learning_mode_handlers.submit_multi_file_analysis_report(
+            self,
+            username,
+            problem_id,
+            report,
+            utcnow=_utcnow,
+        )
+
+    def submit_fullstack_analysis_report(self, username: str, problem_id: str, report: str) -> Dict[str, Any]:
+        return learning_mode_handlers.submit_fullstack_analysis_report(
+            self,
+            username,
+            problem_id,
             report,
             utcnow=_utcnow,
         )
@@ -603,6 +708,9 @@ class LearningService:
         events.extend(storage.filter(lambda item: item.get("type") == "context_inference_event"))
         events.extend(storage.filter(lambda item: item.get("type") == "refactoring_choice_event"))
         events.extend(storage.filter(lambda item: item.get("type") == "code_blame_event"))
+        events.extend(storage.filter(lambda item: item.get("type") == "single_file_analysis_event"))
+        events.extend(storage.filter(lambda item: item.get("type") == "multi_file_analysis_event"))
+        events.extend(storage.filter(lambda item: item.get("type") == "fullstack_analysis_event"))
         return events
 
     def _instances_by_id(self, storage) -> Dict[str, Dict[str, Any]]:
@@ -624,6 +732,12 @@ class LearningService:
         for item in storage.filter(lambda it: it.get("type") == "refactoring_choice_instance"):
             instances[item.get("problem_id")] = item
         for item in storage.filter(lambda it: it.get("type") == "code_blame_instance"):
+            instances[item.get("problem_id")] = item
+        for item in storage.filter(lambda it: it.get("type") == "single_file_analysis_instance"):
+            instances[item.get("problem_id")] = item
+        for item in storage.filter(lambda it: it.get("type") == "multi_file_analysis_instance"):
+            instances[item.get("problem_id")] = item
+        for item in storage.filter(lambda it: it.get("type") == "fullstack_analysis_instance"):
             instances[item.get("problem_id")] = item
         return instances
 
@@ -807,6 +921,35 @@ class LearningService:
             log_head = (item.get("error_log") or "").splitlines()[0] if item.get("error_log") else ""
             lines.append(f"{idx}. {lang}/{diff} - commits {commit_count} - {title} - log: {log_head}")
         return "\n".join(lines)
+
+    def _advanced_analysis_history_context(self, storage, instance_type: str, limit: int = 5) -> Optional[str]:
+        items = storage.filter(lambda item: item.get("type") == instance_type)
+        if not items:
+            return None
+        sorted_items = sorted(items, key=lambda item: item.get("created_at", ""), reverse=True)[:limit]
+        lines: List[str] = []
+        for idx, item in enumerate(sorted_items, 1):
+            title = item.get("title") or "Untitled"
+            lang = item.get("language") or "-"
+            diff = item.get("difficulty") or "-"
+            files = item.get("files") or []
+            file_count = len(files) if isinstance(files, list) else 0
+            first_path = ""
+            if isinstance(files, list) and files:
+                first = files[0]
+                if isinstance(first, dict):
+                    first_path = str(first.get("path") or first.get("name") or "")
+            lines.append(f"{idx}. {lang}/{diff} - files {file_count} - {title} - first: {first_path}")
+        return "\n".join(lines)
+
+    def _single_file_analysis_history_context(self, storage, limit: int = 5) -> Optional[str]:
+        return self._advanced_analysis_history_context(storage, "single_file_analysis_instance", limit=limit)
+
+    def _multi_file_analysis_history_context(self, storage, limit: int = 5) -> Optional[str]:
+        return self._advanced_analysis_history_context(storage, "multi_file_analysis_instance", limit=limit)
+
+    def _fullstack_analysis_history_context(self, storage, limit: int = 5) -> Optional[str]:
+        return self._advanced_analysis_history_context(storage, "fullstack_analysis_instance", limit=limit)
 
     def _chunk_and_shuffle_code(self, code: str) -> Dict[str, Any]:
         """Split code into 2~3 line chunks, keep correct order, and return a shuffled variant."""

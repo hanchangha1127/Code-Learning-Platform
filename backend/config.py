@@ -119,6 +119,7 @@ class Settings:
     ai_api_key: Optional[str] = _get_secret_env("AI_API_KEY")
     google_api_key: Optional[str] = _get_secret_env("GOOGLE_API_KEY")
     google_model: str = os.getenv("GOOGLE_MODEL", "gemini-3-flash-preview")
+    google_timeout_seconds: int = _get_int_env("GOOGLE_TIMEOUT_SECONDS", 30)
     google_oauth_client_id: Optional[str] = _get_secret_env("GOOGLE_OAUTH_CLIENT_ID")
     google_oauth_client_secret: Optional[str] = _get_secret_env("GOOGLE_OAUTH_CLIENT_SECRET")
     google_oauth_redirect_uri: Optional[str] = _normalize_optional(os.getenv("GOOGLE_OAUTH_REDIRECT_URI"))
