@@ -149,6 +149,217 @@ const goalPayload = {
   updatedAt: "2026-03-06T09:00:00",
 };
 
+const codeBlockProblemPayload = {
+  problemId: "cb-1",
+  title: "짝수 합계 누적",
+  objective: "짝수 값만 더해 총합을 계산하는 반복문을 완성하세요.",
+  code: `numbers = [1, 2, 3, 4]
+total = 0
+for number in numbers:
+    if number % 2 == 0:
+        total = [BLANK]
+print(total)`,
+  options: ["total + number", "total - number", "number"],
+  difficulty: "beginner",
+  language: "python",
+};
+
+const codeBlockSubmitPayload = {
+  correct: true,
+  correctAnswer: 0,
+  explanation: "The blank must add the current even number to total.",
+};
+
+const analysisProblemPayload = {
+  problem: {
+    id: "analysis-1",
+    problemId: "analysis-1",
+    title: "Trace the accumulator",
+    code: `total = 0
+for value in [1, 2, 3]:
+    total += value
+print(total)`,
+    prompt: "Explain the execution order and the final output.",
+    mode: "analysis",
+    difficulty: "beginner",
+    track: "algorithms",
+    language: "python",
+  },
+  mode: "analysis",
+  skillLevel: "beginner",
+  selectedDifficulty: "초급",
+};
+
+const analysisSubmitPayload = {
+  feedback: {
+    summary: "You tracked the execution flow correctly.",
+    strengths: ["The accumulator updates are explained in order."],
+    improvements: ["Mention the final printed value explicitly."],
+    score: 86,
+    correct: true,
+  },
+  model_answer: "The loop adds 1, 2, and 3, so the final output is 6.",
+  skillLevel: "beginner",
+};
+
+const codeArrangeProblemPayload = {
+  problemId: "arr-1",
+  title: "Arrange the loop",
+  language: "python",
+  blocks: [
+    { id: "b2", code: "    total += value" },
+    { id: "b1", code: "for value in [1, 2, 3]:" },
+    { id: "b3", code: "print(total)" },
+    { id: "b0", code: "total = 0" },
+  ],
+};
+
+const codeArrangeSubmitPayload = {
+  correct: false,
+  results: [
+    { id: "b2", correct: false },
+    { id: "b1", correct: false },
+    { id: "b3", correct: false },
+    { id: "b0", correct: false },
+  ],
+  answerOrder: ["b0", "b1", "b2", "b3"],
+  answerCode: `total = 0
+for value in [1, 2, 3]:
+    total += value
+print(total)`,
+};
+
+const codeCalcProblemPayload = {
+  problemId: "calc-1",
+  title: "Predict the output",
+  language: "python",
+  code: `x = 2
+for _ in range(3):
+    x += 1
+print(x)`,
+};
+
+const codeCalcSubmitPayload = {
+  correct: false,
+  expected_output: "5",
+  explanation: "The loop runs three times, so x becomes 5 before printing.",
+};
+
+const refactoringChoiceProblemPayload = {
+  problemId: "ref-1",
+  title: "Pick the best cache strategy",
+  language: "javascript",
+  difficulty: "intermediate",
+  scenario: "Choose the option that removes duplicate fetches without making invalidation brittle.",
+  constraints: ["Avoid duplicate network calls.", "Keep the code easy to test."],
+  decisionFacets: ["performance", "maintainability"],
+  prompt: "Pick A, B, or C and justify the trade-off.",
+  options: [
+    {
+      optionId: "A",
+      title: "Inline cache",
+      code: `const cache = new Map();
+export async function loadUser(id) {
+  if (cache.has(id)) return cache.get(id);
+  const user = await api.getUser(id);
+  cache.set(id, user);
+  return user;
+}`,
+    },
+    {
+      optionId: "B",
+      title: "Request coalescing",
+      code: `const inflight = new Map();
+export async function loadUser(id) {
+  if (!inflight.has(id)) {
+    inflight.set(id, api.getUser(id).finally(() => inflight.delete(id)));
+  }
+  return inflight.get(id);
+}`,
+    },
+    {
+      optionId: "C",
+      title: "Always refetch",
+      code: `export async function loadUser(id) {
+  return api.getUser(id);
+}`,
+    },
+  ],
+};
+
+const queuedRefactoringChoiceSubmitResult = {
+  correct: true,
+  score: 92,
+  verdict: "passed",
+  feedback: {
+    summary: "You balanced duplicate-call prevention with maintainability.",
+    strengths: ["You identified why request coalescing reduces redundant work."],
+    improvements: ["Call out cache invalidation trade-offs a bit more directly."],
+  },
+  foundTypes: ["performance", "maintainability"],
+  missedTypes: [],
+  referenceReport: "Use request coalescing to deduplicate concurrent fetches without long-lived stale cache entries.",
+  passThreshold: 70,
+  selectedOption: "B",
+  bestOption: "B",
+  optionReviews: [
+    { optionId: "A", summary: "Works, but invalidation grows brittle." },
+    { optionId: "B", summary: "Best balance of concurrency control and readability." },
+    { optionId: "C", summary: "Simple, but it keeps duplicate requests." },
+  ],
+};
+
+const codeBlameProblemPayload = {
+  problemId: "blame-1",
+  title: "Find the breaking commit",
+  language: "javascript",
+  difficulty: "intermediate",
+  errorLog: "TypeError: Cannot read properties of undefined (reading 'id')",
+  commits: [
+    {
+      optionId: "A",
+      title: "Rename payload field",
+      diff: `- const userId = user.id;
++ const userId = account.id;`,
+    },
+    {
+      optionId: "B",
+      title: "Remove null guard",
+      diff: `- if (!user) return null;
++ const userId = user.id;`,
+    },
+    {
+      optionId: "C",
+      title: "Change logging format",
+      diff: `- logger.info(user.id);
++ logger.info({ userId: user?.id });`,
+    },
+  ],
+  prompt: "Pick the commit that introduced the crash and explain why.",
+};
+
+const queuedCodeBlameSubmitResult = {
+  correct: true,
+  score: 89,
+  verdict: "passed",
+  feedback: {
+    summary: "You linked the crash to the removed guard and the now-reachable property access.",
+    strengths: ["The diff-to-error connection is explicit."],
+    improvements: ["Describe the recovery or rollback path in one more sentence."],
+  },
+  foundTypes: ["root_cause_diff"],
+  missedTypes: ["failure_mechanism"],
+  referenceReport: "Commit B removed the null guard and made the undefined access reachable.",
+  passThreshold: 70,
+  selectedCommits: ["B"],
+  culpritCommits: ["B"],
+  commitReviews: [
+    { optionId: "A", summary: "Touches naming, but does not explain the crash." },
+    { optionId: "B", summary: "Removes the guard and directly enables the failure." },
+    { optionId: "C", summary: "Only changes logging output." },
+  ],
+};
+
 const singleFileAnalysisPayload = {
   problemId: "sf-1",
   title: "결제 마감 로직 분석",
@@ -420,6 +631,38 @@ const queuedMultiFileAnalysisSubmitResult = {
   passThreshold: 70,
 };
 
+const auditorProblemPayload = {
+  problemId: "aud-1",
+  title: "결제 검증 로직 감사",
+  language: "python",
+  difficulty: "beginner",
+  code: `def validate_payment(user, amount, cache, db):
+    if cache.get(user.id):
+        return True
+    if amount < 0:
+        return True
+    db.record_attempt(user.id, amount)
+    return amount <= user.credit_limit
+`,
+  prompt: "숨겨진 함정과 영향 범위를 감사 리포트로 작성해 주세요.",
+  trapCount: 3,
+};
+
+const queuedAuditorSubmitResult = {
+  correct: true,
+  score: 91,
+  verdict: "passed",
+  feedback: {
+    summary: "입력 검증 누락과 캐시 우회 위험을 핵심 근거와 함께 잘 짚었습니다.",
+    strengths: ["음수 금액 처리 버그와 감사 로그 흐름을 함께 설명했습니다."],
+    improvements: ["재현 조건을 한 단계 더 구체화하면 더 좋습니다."],
+  },
+  foundTypes: ["validation", "cache"],
+  missedTypes: ["logging"],
+  referenceReport: "모범 감사 리포트",
+  passThreshold: 70,
+};
+
 const userPageSmokeTargets = [
   {
     path: "/dashboard.html",
@@ -428,8 +671,9 @@ const userPageSmokeTargets = [
       "#dashboard-mode-tabs",
       "#dashboard-mode-tab-general",
       "#dashboard-mode-tab-advanced",
-      "#dashboard-weekly-report-card",
-      "#dashboard-notification-list",
+      "#dashboard-hero-title",
+      "#dashboard-goal-form",
+      "#dashboard-review-list",
       '#dashboard-goal-presets button[data-goal="10"]',
       '#dashboard-goal-presets button[data-goal="20"]',
       '#dashboard-goal-presets button[data-goal="30"]',
@@ -440,9 +684,7 @@ const userPageSmokeTargets = [
   { path: "/codeblock.html", ready: "#code-block-section" },
   { path: "/arrange.html", ready: "#arrange-section" },
   { path: "/codecalc.html", ready: "#code-calc-section" },
-  { path: "/codeerror.html", ready: "#code-error-section" },
   { path: "/auditor.html", ready: "#auditor-section" },
-  { path: "/context-inference.html", ready: "#context-inference-section" },
   { path: "/refactoring-choice.html", ready: "#refactoring-choice-section" },
   { path: "/code-blame.html", ready: "#code-blame-section" },
   {
@@ -468,16 +710,16 @@ const adminPageTarget = {
   extra: ["#content-summary-panel", "#ops-events-panel"],
 };
 
-async function installShellMocks(page) {
+async function installShellMocks(page, { language = "python", difficulty = "beginner" } = {}) {
   let multiFileJobPollCount = 0;
 
-  await page.addInitScript(({ marker, adminKey }) => {
+  await page.addInitScript(({ marker, adminKey, languageId, difficultyId }) => {
     window.localStorage.setItem("code-learning-token", marker);
     window.localStorage.setItem("code-learning-display-name", "Tester");
-    window.localStorage.setItem("code-learning-language", "python");
-    window.localStorage.setItem("code-learning-difficulty", "beginner");
+    window.localStorage.setItem("code-learning-language", languageId);
+    window.localStorage.setItem("code-learning-difficulty", difficultyId);
     window.sessionStorage.setItem("admin_panel_key", adminKey);
-  }, { marker: SESSION_MARKER, adminKey: ADMIN_KEY });
+  }, { marker: SESSION_MARKER, adminKey: ADMIN_KEY, languageId: language, difficultyId: difficulty });
 
   await page.route("https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js", async (route) => {
     await route.fulfill({
@@ -503,21 +745,49 @@ async function installShellMocks(page) {
       case "/platform/languages":
         return json(languagePayload);
       case "/platform/learning/history":
-        return json({ history: [] });
+        return json({ history: [], total: 0, hasMore: false, limit: 200 });
       case "/platform/learning/review-queue":
         return json(homePayload.reviewQueue);
+      case "/platform/codeblock/problem":
+        return json(codeBlockProblemPayload);
+      case "/platform/codeblock/submit":
+        return json(codeBlockSubmitPayload);
+      case "/platform/analysis/problem":
+        return json(analysisProblemPayload);
+      case "/platform/analysis/submit":
+        return json(analysisSubmitPayload);
+      case "/platform/arrange/problem":
+        return json(codeArrangeProblemPayload);
+      case "/platform/arrange/submit":
+        return json(codeArrangeSubmitPayload);
+      case "/platform/codecalc/problem":
+        return json(codeCalcProblemPayload);
+      case "/platform/codecalc/submit":
+        return json(codeCalcSubmitPayload);
       case "/platform/single-file-analysis/problem":
         return json(singleFileAnalysisPayload);
       case "/platform/multi-file-analysis/problem":
         return json(multiFileAnalysisPayload);
       case "/platform/fullstack-analysis/problem":
         return json(fullstackAnalysisPayload);
+      case "/platform/auditor/problem":
+        return json(auditorProblemPayload);
+      case "/platform/refactoring-choice/problem":
+        return json(refactoringChoiceProblemPayload);
+      case "/platform/refactoring-choice/submit":
+        return json({ queued: true, message: "Submission queued", jobId: "job-refactor-1" });
+      case "/platform/code-blame/problem":
+        return json(codeBlameProblemPayload);
+      case "/platform/code-blame/submit":
+        return json({ queued: true, message: "Submission queued", jobId: "job-blame-1" });
       case "/platform/single-file-analysis/submit":
         return json(singleFileAnalysisSubmitPayload);
       case "/platform/multi-file-analysis/submit":
         return json({ queued: true, message: "Submission queued", jobId: "job-multi-1" });
       case "/platform/fullstack-analysis/submit":
         return json(fullstackAnalysisSubmitPayload);
+      case "/platform/auditor/submit":
+        return json({ queued: true, message: "Submission queued", jobId: "job-auditor-1" });
       case "/platform/mode-jobs/job-multi-1":
         multiFileJobPollCount += 1;
         if (multiFileJobPollCount === 1) {
@@ -536,6 +806,33 @@ async function installShellMocks(page) {
           finished: true,
           failed: false,
           result: queuedMultiFileAnalysisSubmitResult,
+        });
+      case "/platform/mode-jobs/job-auditor-1":
+        return json({
+          jobId: "job-auditor-1",
+          status: "finished",
+          queued: false,
+          finished: true,
+          failed: false,
+          result: queuedAuditorSubmitResult,
+        });
+      case "/platform/mode-jobs/job-refactor-1":
+        return json({
+          jobId: "job-refactor-1",
+          status: "finished",
+          queued: false,
+          finished: true,
+          failed: false,
+          result: queuedRefactoringChoiceSubmitResult,
+        });
+      case "/platform/mode-jobs/job-blame-1":
+        return json({
+          jobId: "job-blame-1",
+          status: "finished",
+          queued: false,
+          finished: true,
+          failed: false,
+          result: queuedCodeBlameSubmitResult,
         });
       case "/platform/report":
         return json({
@@ -586,19 +883,17 @@ test.describe("desktop UA", () => {
     await expect(page.locator("body")).toHaveAttribute("data-template-variant", "desktop");
   });
 
-  test("login shell stays centered with balanced columns", async ({ page }) => {
+  test("login shell stays centered with a single panel layout", async ({ page }) => {
     await page.goto("/index.html");
     const shellBox = await page.locator(".auth-shell").boundingBox();
-    const heroBox = await page.locator(".auth-hero-card").boundingBox();
     const panelBox = await page.locator(".auth-panel").boundingBox();
     expect(shellBox).not.toBeNull();
-    expect(heroBox).not.toBeNull();
     expect(panelBox).not.toBeNull();
     const viewportWidth = page.viewportSize().width;
     const shellCenter = shellBox.x + shellBox.width / 2;
     expect(Math.abs(shellCenter - viewportWidth / 2)).toBeLessThan(24);
-    expect(panelBox.width).toBeGreaterThan(500);
-    expect(Math.abs(heroBox.height - panelBox.height)).toBeLessThan(40);
+    expect(panelBox.width).toBeGreaterThan(420);
+    expect(panelBox.height).toBeGreaterThan(220);
   });
 
   for (const target of userPageSmokeTargets) {
@@ -669,7 +964,8 @@ test.describe("desktop UA", () => {
       };
     });
 
-    expect(metrics.editorHeight).toBeLessThan(460);
+    expect(metrics.editorHeight).toBeGreaterThan(300);
+    expect(metrics.editorHeight).toBeLessThan(620);
     expect(metrics.rowHeight).toBeLessThan(32);
     expect(metrics.lineNumberHeight).toBeLessThan(30);
     expect(metrics.lineContentLineHeight).toBeLessThan(24);
@@ -688,6 +984,75 @@ test.describe("desktop UA", () => {
     await expect(page.locator("#advanced-reference-report")).toContainText("모범 단일 파일 리포트");
   });
 
+  test("analysis loads a problem and renders feedback", async ({ page }) => {
+    await installShellMocks(page);
+    await page.goto("/analysis.html");
+    await expect(page.locator("#btn-load-problem")).toBeEnabled();
+    await page.locator("#btn-load-problem").click();
+    await expect(page.locator("#problem-title")).toContainText("Trace the accumulator");
+    await page.locator("#answer-text").fill("The loop adds each value to total and prints 6.");
+    await page.locator("#answer-form button[type='submit']").click();
+    await expect(page.locator("#feedback-summary")).toContainText("tracked the execution flow");
+    await expect(page.locator("#feedback-score")).toContainText("86");
+    await expect(page.locator("#feedback-verdict")).toContainText("정답");
+    await expect(page.locator("#model-answer-text")).toContainText("final output is 6");
+  });
+
+  test("arrange reveals feedback and the answer code after submit", async ({ page }) => {
+    await installShellMocks(page);
+    await page.goto("/arrange.html");
+    await expect(page.locator("#arr-load-btn")).toBeEnabled();
+    await page.locator("#arr-load-btn").click();
+    await expect(page.locator("#arr-title")).toContainText("Arrange the loop");
+    await page.locator("#arr-check-btn").click();
+    await expect(page.locator("#arr-feedback")).toBeVisible();
+    await expect(page.locator("#arr-answer")).toBeVisible();
+    await expect(page.locator("#arr-answer-code")).toContainText("total = 0");
+  });
+
+  test("codecalc reveals the expected output after submit", async ({ page }) => {
+    await installShellMocks(page);
+    await page.goto("/codecalc.html");
+    await expect(page.locator("#calc-load-btn")).toBeEnabled();
+    await page.locator("#calc-load-btn").click();
+    await expect(page.locator("#calc-title")).toContainText("Predict the output");
+    await page.locator("#calc-output").fill("4");
+    await page.locator("#calc-submit-btn").click();
+    await expect(page.locator("#calc-feedback")).toBeVisible();
+    await expect(page.locator("#calc-expected-output")).toContainText("5");
+    await expect(page.locator("#calc-explanation")).toContainText("x becomes 5");
+  });
+
+  test("refactoring choice renders queued submit feedback after job polling", async ({ page }) => {
+    await installShellMocks(page, { language: "javascript", difficulty: "intermediate" });
+    await page.goto("/refactoring-choice.html");
+    await expect(page.locator("#rc-load-btn")).toBeEnabled();
+    await page.locator("#rc-load-btn").click();
+    await expect(page.locator("#rc-problem-title")).toContainText("Pick the best cache strategy");
+    await page.locator('input[name="selected-option"][value="B"]').check();
+    await page.locator("#rc-report-text").fill("B removes duplicate in-flight calls without long-lived stale cache state.");
+    await page.locator("#rc-report-form button[type='submit']").click();
+    await expect(page.locator("#rc-score")).toContainText("92");
+    await expect(page.locator("#rc-verdict")).toContainText("합격");
+    await expect(page.locator("#rc-best-option")).toContainText("B");
+    await expect(page.locator("#rc-reference-report")).toContainText("request coalescing");
+  });
+
+  test("code blame renders queued submit feedback after job polling", async ({ page }) => {
+    await installShellMocks(page, { language: "javascript", difficulty: "intermediate" });
+    await page.goto("/code-blame.html");
+    await expect(page.locator("#cb-load-btn")).toBeEnabled();
+    await page.locator("#cb-load-btn").click();
+    await expect(page.locator("#cb-problem-title")).toContainText("Find the breaking commit");
+    await page.locator('#cb-commit-list input[type="checkbox"][value="B"]').check();
+    await page.locator("#cb-report-text").fill("Commit B removes the guard and makes the undefined access reachable.");
+    await page.locator("#cb-report-form button[type='submit']").click();
+    await expect(page.locator("#cb-score")).toContainText("89");
+    await expect(page.locator("#cb-verdict")).toContainText("합격");
+    await expect(page.locator("#cb-culprit-commits")).toContainText("B");
+    await expect(page.locator("#cb-reference-report")).toContainText("removed the null guard");
+  });
+
   test("multi file analysis switches files and renders queued submit results", async ({ page }) => {
     await installShellMocks(page);
     await page.goto("/multi-file-analysis.html");
@@ -704,6 +1069,34 @@ test.describe("desktop UA", () => {
     await expect(page.locator("#advanced-reference-report")).toContainText("모범 다중 파일 리포트");
   });
 
+  test("fullstack analysis uses the saved language instead of defaulting to python", async ({ page }) => {
+    let requestedLanguage = null;
+    await installShellMocks(page, { language: "javascript", difficulty: "advanced" });
+    await page.route("**/platform/fullstack-analysis/problem", async (route) => {
+      const body = route.request().postDataJSON();
+      requestedLanguage = body?.language || null;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...fullstackAnalysisPayload,
+          language: body?.language || fullstackAnalysisPayload.language,
+          difficulty: body?.difficulty || fullstackAnalysisPayload.difficulty,
+        }),
+      });
+    });
+
+    await page.goto("/fullstack-analysis.html");
+    await expect(page.locator("#advanced-load-btn")).toBeEnabled();
+    await page.locator("#advanced-load-btn").click();
+    expect(requestedLanguage).toBe("javascript");
+    await expect(page.locator("#advanced-selected-language")).toContainText("JavaScript");
+    await page.locator("#advanced-report-text").fill("The request flows from the page into the API and back into the UI state.");
+    await page.locator("#advanced-submit-btn").click();
+    await expect(page.locator("#advanced-result-panel")).toBeVisible();
+    await expect(page.locator("#advanced-result-score")).toContainText("62");
+  });
+
   test("analysis settings panel is not sticky", async ({ page }) => {
     await installShellMocks(page);
     await page.goto("/analysis.html");
@@ -711,11 +1104,41 @@ test.describe("desktop UA", () => {
     expect(position).not.toBe("sticky");
   });
 
+  test("auditor renders queued submit feedback after job polling", async ({ page }) => {
+    await installShellMocks(page);
+    await page.goto("/auditor.html");
+    await page.locator("#auditor-load-btn").click();
+    await page.locator("#auditor-report-text").fill("입력 검증과 캐시 분기를 중심으로 위험을 정리했습니다.");
+    await page.locator("#auditor-report-form button[type='submit']").click();
+    await expect(page.locator("#auditor-score")).toContainText("91");
+    await expect(page.locator("#auditor-verdict")).toContainText("합격");
+    await expect(page.locator("#auditor-feedback-summary")).toContainText("입력 검증 누락");
+    await expect(page.locator("#auditor-reference-report")).toContainText("모범 감사 리포트");
+  });
+
+  test("codeblock submits an answer and renders the explanation", async ({ page }) => {
+    await installShellMocks(page);
+    await page.goto("/codeblock.html");
+    await expect(page.locator("#cb-load-btn")).toBeEnabled();
+    await page.locator("#cb-load-btn").click();
+    await page.locator("#cb-options-container button").first().click();
+    await expect(page.locator("#cb-result-message")).toContainText("정답입니다.");
+    await expect(page.locator("#cb-explanation")).toContainText("add the current even number");
+  });
+
   test("codeblock desktop settings panel stays wide enough", async ({ page }) => {
     await installShellMocks(page);
     await page.goto("/codeblock.html");
     const width = await page.locator(".cb-controls").evaluate((el) => el.getBoundingClientRect().width);
     expect(width).toBeGreaterThan(360);
+  });
+
+  test("codeblock shows the code purpose after loading a problem", async ({ page }) => {
+    await installShellMocks(page);
+    await page.goto("/codeblock.html");
+    await page.locator("#cb-load-btn").click();
+    await expect(page.locator("#cb-problem-title")).toContainText("짝수 합계 누적");
+    await expect(page.locator("#cb-problem-purpose")).toContainText("짝수 값만 더해 총합을 계산하는 반복문을 완성하세요.");
   });
 });
 

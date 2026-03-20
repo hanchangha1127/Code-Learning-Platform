@@ -33,12 +33,6 @@ class PlatformModeAIBridge:
     def analyze_auditor_report(self, **kwargs: Any) -> dict[str, Any]:
         return self._ai_client.analyze_auditor_report(**kwargs)
 
-    def generate_context_inference_problem_sync(self, **kwargs: Any) -> dict[str, Any]:
-        return self._generator.generate_context_inference_problem_sync(**kwargs)
-
-    def analyze_context_inference_report(self, **kwargs: Any) -> dict[str, Any]:
-        return self._ai_client.analyze_context_inference_report(**kwargs)
-
     def generate_refactoring_choice_problem_sync(self, **kwargs: Any) -> dict[str, Any]:
         return self._generator.generate_refactoring_choice_problem_sync(**kwargs)
 

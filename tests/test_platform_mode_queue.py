@@ -41,12 +41,6 @@ class PlatformModeQueueTests(unittest.TestCase):
                 "queue_payload": {"problem_id": "aud-1", "report": "report body"},
             },
             {
-                "path": "/context-inference/submit",
-                "mode": "context-inference",
-                "request_payload": {"problemId": "ctx-1", "report": "report body"},
-                "queue_payload": {"problem_id": "ctx-1", "report": "report body"},
-            },
-            {
                 "path": "/refactoring-choice/submit",
                 "mode": "refactoring-choice",
                 "request_payload": {"problemId": "ref-1", "selectedOption": "A", "report": "report body"},
@@ -126,22 +120,6 @@ class PlatformModeQueueTests(unittest.TestCase):
                 "mode": "auditor",
                 "request_payload": {"problemId": "aud-1", "report": "report body"},
                 "service_patch": "app.api.routes.auditor.submit_auditor_report",
-                "service_response": {
-                    "correct": True,
-                    "score": 81.0,
-                    "verdict": "passed",
-                    "feedback": {"summary": "ok", "strengths": [], "improvements": []},
-                    "foundTypes": [],
-                    "missedTypes": [],
-                    "referenceReport": "reference",
-                    "passThreshold": 70,
-                },
-            },
-            {
-                "path": "/context-inference/submit",
-                "mode": "context-inference",
-                "request_payload": {"problemId": "ctx-1", "report": "report body"},
-                "service_patch": "app.api.routes.context_inference.submit_context_inference_report",
                 "service_response": {
                     "correct": True,
                     "score": 81.0,

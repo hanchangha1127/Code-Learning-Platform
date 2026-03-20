@@ -45,7 +45,7 @@ class AdminMetricsPlatformModeTests(unittest.TestCase):
 
     def test_platform_mode_metrics_cover_all_new_modes(self) -> None:
         metrics = AdminMetrics(window_minutes=10, active_window_seconds=30)
-        modes = ("auditor", "context-inference", "refactoring-choice", "code-blame")
+        modes = ("auditor", "refactoring-choice", "code-blame")
 
         for mode in modes:
             token = metrics.start_platform_mode_call(mode, "problem")

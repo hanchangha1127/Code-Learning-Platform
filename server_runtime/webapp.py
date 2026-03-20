@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +16,7 @@ from server_runtime.context import ADMIN_FILE, FRONTEND_DIR, admin_metrics, requ
 from server_runtime.routes import auth_router, health_router, learning_router, pages_router
 
 logger = logging.getLogger(__name__)
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 _MOVED_API_PATHS = {
     "/api/languages": "/platform/languages",
@@ -31,29 +33,70 @@ _MOVED_API_PATHS = {
     "/api/code-arrange/submit": "/platform/arrange/submit",
     "/api/code-calc/problem": "/platform/codecalc/problem",
     "/api/code-calc/submit": "/platform/codecalc/submit",
-    "/api/code-error/problem": "/platform/codeerror/problem",
-    "/api/code-error/submit": "/platform/codeerror/submit",
     "/api/auditor/problem": "/platform/auditor/problem",
     "/api/auditor/submit": "/platform/auditor/submit",
-    "/api/context-inference/problem": "/platform/context-inference/problem",
-    "/api/context-inference/submit": "/platform/context-inference/submit",
     "/api/refactoring-choice/problem": "/platform/refactoring-choice/problem",
     "/api/refactoring-choice/submit": "/platform/refactoring-choice/submit",
     "/api/code-blame/problem": "/platform/code-blame/problem",
     "/api/code-blame/submit": "/platform/code-blame/submit",
 }
+_MOVED_AUTH_PATHS = {
+    "/api/auth/register": "/platform/auth/signup",
+    "/api/auth/login": "/platform/auth/login",
+    "/api/auth/logout": "/platform/auth/logout",
+    "/api/auth/guest": "/platform/auth/guest",
+    "/api/auth/guest/start": "/platform/auth/guest",
+    "/api/auth/google/start": "/platform/auth/google/start",
+    "/api/auth/google/callback": "/platform/auth/google/callback",
+}
 
 
 def _resolve_moved_api_path(path: str) -> str | None:
+    explicit_auth_path = _MOVED_AUTH_PATHS.get(path)
+    if explicit_auth_path is not None:
+        return explicit_auth_path
     if path.startswith("/api/auth/"):
         return "/platform/auth/" + path.removeprefix("/api/auth/")
     return _MOVED_API_PATHS.get(path)
+
+
+def _is_loopback_origin(origin: str) -> bool:
+    try:
+        parsed = urlsplit(origin)
+    except ValueError:
+        return False
+    return (parsed.hostname or "").lower() in _LOOPBACK_HOSTS
+
+
+def _credentialed_cors_origins(origins: tuple[str, ...]) -> list[str]:
+    sanitized: list[str] = []
+    seen: set[str] = set()
+    for raw_origin in origins:
+        origin = str(raw_origin or "").strip().rstrip("/")
+        if not origin:
+            continue
+        try:
+            parsed = urlsplit(origin)
+        except ValueError:
+            logger.warning("Dropping invalid CORS origin: %s", raw_origin)
+            continue
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            logger.warning("Dropping invalid CORS origin: %s", raw_origin)
+            continue
+        if parsed.scheme == "http" and not _is_loopback_origin(origin):
+            logger.warning("Dropping insecure credentialed CORS origin: %s", raw_origin)
+            continue
+        if origin in seen:
+            continue
+        seen.add(origin)
+        sanitized.append(origin)
+    return sanitized
 
 app = FastAPI(title="code-learning-platform", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=list(settings.cors_origins),
+    allow_origins=_credentialed_cors_origins(settings.cors_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

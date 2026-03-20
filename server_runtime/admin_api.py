@@ -8,8 +8,9 @@ import string
 import threading
 import time
 from datetime import timedelta
+from ipaddress import ip_address, ip_network
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import Response
@@ -18,6 +19,14 @@ from server_runtime.template_renderer import render_template_response
 
 DOCKER_SOCKET_PATH = Path("/var/run/docker.sock")
 logger = logging.getLogger(__name__)
+_TRUSTED_PROXY_NETWORKS = (
+    ip_network("127.0.0.0/8"),
+    ip_network("10.0.0.0/8"),
+    ip_network("172.16.0.0/12"),
+    ip_network("192.168.0.0/16"),
+    ip_network("::1/128"),
+    ip_network("fc00::/7"),
+)
 
 
 def _is_in_docker() -> bool:
@@ -127,14 +136,66 @@ def _shutdown_enable_guidance() -> str:
     )
 
 
+def _shutdown_disabled_detail() -> str:
+    return (
+        "Admin shutdown is disabled by default. "
+        "Set CODE_PLATFORM_ENABLE_ADMIN_SHUTDOWN=true only in tightly controlled development or ops environments."
+    )
 
-def _docker_control_status() -> dict[str, Any]:
+
+def _local_shutdown_disabled_detail() -> str:
+    return (
+        "Local process shutdown is disabled. "
+        "Admin shutdown is only available for Docker-managed runtime stacks."
+    )
+
+
+def _is_trusted_forwarded_for_source(host: str) -> bool:
+    normalized = str(host or "").strip()
+    if not normalized:
+        return False
+    if normalized.lower() == "localhost":
+        return True
+    try:
+        address = ip_address(normalized)
+    except ValueError:
+        return False
+    return any(address in network for network in _TRUSTED_PROXY_NETWORKS)
+
+
+def _admin_client_id(request: Request) -> str:
+    client_host = request.client.host if request.client and request.client.host else ""
+    resolved_host = client_host or "unknown"
+    if _is_trusted_forwarded_for_source(client_host):
+        forwarded_for = (request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
+        real_ip = forwarded_for or (request.headers.get("x-real-ip") or "").strip()
+        if real_ip:
+            resolved_host = real_ip
+    return resolved_host
+
+
+def _get_admin_redis_connection():
+    from app.services.analysis_queue import get_redis_connection
+
+    return get_redis_connection()
+
+
+
+def _docker_control_status(settings: Any | None = None) -> dict[str, Any]:
+    if settings is not None and not bool(getattr(settings, "enable_admin_shutdown", False)):
+        return {
+            "supported": False,
+            "reason": "disabled_by_config",
+            "requires_socket_override": False,
+            "detail": _shutdown_disabled_detail(),
+        }
+
     if not _is_in_docker():
         return {
             "supported": False,
-            "reason": "not_in_docker",
+            "reason": "local_process_disabled",
             "requires_socket_override": False,
-            "detail": "Stack shutdown is available only when the API runs inside Docker.",
+            "detail": _local_shutdown_disabled_detail(),
         }
 
     if not DOCKER_SOCKET_PATH.exists():
@@ -375,10 +436,150 @@ def _collect_admin_platform_summaries(*, window_hours: int = 24) -> tuple[dict[s
     return content_summary, ops_summary
 
 
+class _AdminThrottleStore:
+    def clear(self, client_id: str) -> None:
+        raise NotImplementedError
+
+    def get_retry_after(self, client_id: str, *, now: float) -> int | None:
+        raise NotImplementedError
+
+    def record_failure(
+        self,
+        client_id: str,
+        *,
+        now: float,
+        failed_window_seconds: int,
+        block_seconds: int,
+        max_failed_attempts: int,
+    ) -> int | None:
+        raise NotImplementedError
+
+
+class _MemoryAdminThrottleStore(_AdminThrottleStore):
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._failed_attempts: dict[str, list[float]] = {}
+        self._blocked_until: dict[str, float] = {}
+        self._failed_window_seconds = 60
+
+    def _prune_state(self, now: float, *, failed_window_seconds: int | None = None) -> None:
+        window_seconds = int(
+            failed_window_seconds
+            if failed_window_seconds is not None
+            else self._failed_window_seconds
+        )
+        for key, until in list(self._blocked_until.items()):
+            if until <= now:
+                self._blocked_until.pop(key, None)
+
+        for key, attempts in list(self._failed_attempts.items()):
+            kept = [ts for ts in attempts if (now - ts) <= window_seconds]
+            if kept:
+                self._failed_attempts[key] = kept
+            else:
+                self._failed_attempts.pop(key, None)
+
+    def clear(self, client_id: str) -> None:
+        now = time.time()
+        with self._lock:
+            self._prune_state(now)
+            self._failed_attempts.pop(client_id, None)
+            self._blocked_until.pop(client_id, None)
+
+    def get_retry_after(self, client_id: str, *, now: float) -> int | None:
+        with self._lock:
+            self._prune_state(now)
+            until = self._blocked_until.get(client_id)
+            if until and until > now:
+                return max(1, int(until - now))
+            return None
+
+    def record_failure(
+        self,
+        client_id: str,
+        *,
+        now: float,
+        failed_window_seconds: int,
+        block_seconds: int,
+        max_failed_attempts: int,
+    ) -> int | None:
+        self._failed_window_seconds = int(failed_window_seconds)
+        with self._lock:
+            self._prune_state(now, failed_window_seconds=failed_window_seconds)
+            attempts = self._failed_attempts.get(client_id, [])
+            attempts.append(now)
+            attempts = [ts for ts in attempts if (now - ts) <= failed_window_seconds]
+            self._failed_attempts[client_id] = attempts
+            if len(attempts) >= max_failed_attempts:
+                self._failed_attempts.pop(client_id, None)
+                self._blocked_until[client_id] = now + block_seconds
+                return block_seconds
+        return None
+
+
+class _RedisAdminThrottleStore(_AdminThrottleStore):
+    def __init__(self, connection_factory: Callable[[], Any]) -> None:
+        self._connection_factory = connection_factory
+
+    @staticmethod
+    def _fail_key(client_id: str) -> str:
+        return f"admin:throttle:fail:{client_id}"
+
+    @staticmethod
+    def _block_key(client_id: str) -> str:
+        return f"admin:throttle:block:{client_id}"
+
+    def _conn(self):
+        return self._connection_factory()
+
+    def clear(self, client_id: str) -> None:
+        conn = self._conn()
+        conn.delete(self._fail_key(client_id), self._block_key(client_id))
+
+    def get_retry_after(self, client_id: str, *, now: float) -> int | None:
+        _ = now
+        conn = self._conn()
+        ttl = conn.ttl(self._block_key(client_id))
+        if ttl is None or int(ttl) < 0:
+            return None
+        return max(int(ttl), 1)
+
+    def record_failure(
+        self,
+        client_id: str,
+        *,
+        now: float,
+        failed_window_seconds: int,
+        block_seconds: int,
+        max_failed_attempts: int,
+    ) -> int | None:
+        _ = now
+        conn = self._conn()
+        fail_key = self._fail_key(client_id)
+        count = int(conn.incr(fail_key))
+        if count == 1:
+            conn.expire(fail_key, failed_window_seconds)
+        if count >= max_failed_attempts:
+            pipe = conn.pipeline()
+            pipe.delete(fail_key)
+            pipe.setex(self._block_key(client_id), block_seconds, "1")
+            pipe.execute()
+            return block_seconds
+        return None
+
+
+def _build_admin_throttle_store(settings: Any) -> _AdminThrottleStore:
+    backend = str(getattr(settings, "admin_throttle_backend", "redis") or "redis").strip().lower() or "redis"
+    if backend == "memory":
+        return _MemoryAdminThrottleStore()
+    return _RedisAdminThrottleStore(_get_admin_redis_connection)
+
+
 class _AdminKeyGuard:
     def __init__(
         self,
         settings: Any,
+        store: _AdminThrottleStore | None = None,
         *,
         max_failed_attempts: int = 5,
         failed_window_seconds: int = 60,
@@ -388,22 +589,7 @@ class _AdminKeyGuard:
         self.max_failed_attempts = max_failed_attempts
         self.failed_window_seconds = failed_window_seconds
         self.block_seconds = block_seconds
-
-        self._lock = threading.Lock()
-        self._failed_attempts: dict[str, list[float]] = {}
-        self._blocked_until: dict[str, float] = {}
-
-    def _prune_state(self, now: float) -> None:
-        for key, until in list(self._blocked_until.items()):
-            if until <= now:
-                self._blocked_until.pop(key, None)
-
-        for key, attempts in list(self._failed_attempts.items()):
-            kept = [ts for ts in attempts if (now - ts) <= self.failed_window_seconds]
-            if kept:
-                self._failed_attempts[key] = kept
-            else:
-                self._failed_attempts.pop(key, None)
+        self._store = store or _build_admin_throttle_store(settings)
 
     def require(
         self,
@@ -419,40 +605,43 @@ class _AdminKeyGuard:
             )
 
         provided = self._extract_admin_key(x_admin_key=x_admin_key, x_admin_key_b64=x_admin_key_b64)
-        client_id = request.client.host if request.client and request.client.host else "unknown"
+        client_id = _admin_client_id(request)
         now = time.time()
-
-        with self._lock:
-            self._prune_state(now)
-
+        try:
             is_valid = bool(provided) and hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
             if is_valid:
-                self._failed_attempts.pop(client_id, None)
-                self._blocked_until.pop(client_id, None)
+                self._store.clear(client_id)
                 return
 
-            until = self._blocked_until.get(client_id)
-            if until and until > now:
-                retry_after = max(1, int(until - now))
+            retry_after = self._store.get_retry_after(client_id, now=now)
+            if retry_after is not None:
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail="Too many invalid admin key attempts. Try again later.",
                     headers={"Retry-After": str(retry_after)},
                 )
 
-            attempts = self._failed_attempts.get(client_id, [])
-            attempts.append(now)
-            attempts = [ts for ts in attempts if (now - ts) <= self.failed_window_seconds]
-            self._failed_attempts[client_id] = attempts
-
-            if len(attempts) >= self.max_failed_attempts:
-                self._failed_attempts.pop(client_id, None)
-                self._blocked_until[client_id] = now + self.block_seconds
+            retry_after = self._store.record_failure(
+                client_id,
+                now=now,
+                failed_window_seconds=self.failed_window_seconds,
+                block_seconds=self.block_seconds,
+                max_failed_attempts=self.max_failed_attempts,
+            )
+            if retry_after is not None:
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail="Too many invalid admin key attempts. Try again later.",
-                    headers={"Retry-After": str(self.block_seconds)},
+                    headers={"Retry-After": str(retry_after)},
                 )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("admin_throttle_backend_unavailable client_id=%s", client_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Admin throttle backend is unavailable.",
+            ) from exc
 
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin key.")
 
@@ -490,13 +679,6 @@ class _ShutdownGate:
     def release(self) -> None:
         with self._lock:
             self._requested = False
-
-
-
-def _shutdown_local_process(delay_seconds: float = 1.0) -> None:
-    time.sleep(delay_seconds)
-    os._exit(0)
-
 
 
 def _resolve_current_container(client: Any) -> Any | None:
@@ -667,8 +849,8 @@ def _shutdown_runtime_stack() -> bool:
     if _is_in_docker():
         return _shutdown_compose_stack()
 
-    _shutdown_local_process()
-    return True
+    logger.warning("admin_shutdown_local_process_disabled")
+    return False
 
 
 
@@ -708,7 +890,7 @@ def register_admin_api(
     @app.get("/api/admin/metrics")
     def admin_metrics_snapshot(_: None = Depends(admin_guard.require)) -> dict:
         snapshot = admin_metrics.snapshot()
-        status_info = _docker_control_status()
+        status_info = _docker_control_status(settings)
         content_summary, ops_events = _collect_admin_platform_summaries(window_hours=24)
         snapshot["admin"] = {
             "shutdown": {
@@ -728,7 +910,7 @@ def register_admin_api(
         background_tasks: BackgroundTasks,
         _: None = Depends(admin_guard.require),
     ) -> dict:
-        status_info = _docker_control_status()
+        status_info = _docker_control_status(settings)
         if not status_info.get("supported"):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

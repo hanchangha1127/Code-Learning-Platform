@@ -328,10 +328,14 @@ async function animateProblemRender(problem) {
     });
   }
   if (elements.problemPrompt) {
-    await streamClient.typeText(elements.problemPrompt, problem.prompt || "코드를 분석하고 설명해 주세요.", {
+    await streamClient.typeText(
+      elements.problemPrompt,
+      problem.prompt || "실행 흐름과 주요 상태 변화가 왜 생기는지 설명해 주세요.",
+      {
       minDelay: 10,
       maxDelay: 16,
-    });
+      }
+    );
   }
 
   renderProblem(problem);
@@ -429,7 +433,8 @@ function renderProblem(problem) {
     elements.problemCode.textContent = problem.code || "// 코드가 제공되지 않았어요.";
   }
   if (elements.problemPrompt) {
-    elements.problemPrompt.textContent = problem.prompt || "코드를 분석하고 설명해 주세요.";
+    elements.problemPrompt.textContent =
+      problem.prompt || "실행 흐름과 주요 상태 변화가 왜 생기는지 설명해 주세요.";
   }
   if (elements.hintText) {
     elements.hintText.textContent = "";
@@ -447,7 +452,10 @@ function resetProblemView() {
   if (elements.problemTrack) elements.problemTrack.textContent = "분야 - 알고리즘";
   if (elements.problemLanguage) elements.problemLanguage.textContent = "언어 -";
   if (elements.problemCode) elements.problemCode.textContent = "// 아직 로드된 문제가 없습니다.";
-  if (elements.problemPrompt) elements.problemPrompt.textContent = "맞춤 문제를 받은 뒤 코드가 어떻게 동작하는지 설명해 주세요.";
+  if (elements.problemPrompt) {
+    elements.problemPrompt.textContent =
+      "맞춤 문제를 받은 뒤 실행 흐름과 주요 상태 변화가 왜 생기는지 설명해 주세요.";
+  }
   if (elements.hintText) {
     elements.hintText.textContent = "";
     elements.hintText.classList.add("hidden");

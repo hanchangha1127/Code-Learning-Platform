@@ -7,6 +7,8 @@ const DIFFICULTY_KEY = "code-learning-difficulty";
 const DEFAULT_LANGUAGE = "python";
 const DEFAULT_DIFFICULTY = "beginner";
 const DEFAULT_TOAST_DURATION = 3200;
+const MODE_JOB_POLL_INTERVAL = 1200;
+const MODE_JOB_MAX_POLL_ATTEMPTS = 60;
 
 const DIFFICULTY_OPTIONS = new Set(["beginner", "intermediate", "advanced"]);
 const DIFFICULTY_LABELS = {
@@ -25,6 +27,9 @@ const state = {
   currentProblemId: null,
   currentCommits: [],
   problemStreamController: null,
+  submitJobId: null,
+  submitPollAttempts: 0,
+  submitPollTimer: null,
   toastTimer: null,
 };
 
@@ -96,6 +101,7 @@ async function init() {
 function bindEvents() {
   elements.loadBtn?.addEventListener("click", handleLoadProblem);
   elements.reportForm?.addEventListener("submit", handleSubmitReport);
+  window.addEventListener("beforeunload", stopSubmitPolling);
 }
 
 async function bootstrapWorkspace() {
@@ -470,7 +476,7 @@ async function handleSubmitReport(event) {
   setLoadingState(submitBtn, true, "채점 중...");
 
   try {
-    const payload = await apiRequest("/platform/code-blame/submit", {
+    let payload = await apiRequest("/platform/code-blame/submit", {
       method: "POST",
       body: {
         problemId: state.currentProblemId,
@@ -478,14 +484,71 @@ async function handleSubmitReport(event) {
         report,
       },
     });
+    if (payload?.queued && payload?.jobId) {
+      if (elements.feedbackSummary) {
+        elements.feedbackSummary.textContent = "AI가 범인 추론 리포트를 채점하는 중입니다.";
+      }
+      showToast("AI 피드백 요청이 접수되었습니다.");
+      payload = await pollSubmitJob(payload.jobId);
+    }
     renderFeedback(payload);
     syncSelectedCardStyles(payload.culpritCommits || []);
-    showToast("채점이 완료되었습니다.");
+    showToast(isFallbackFeedback(payload) ? "기본 피드백으로 결과를 표시했습니다." : "AI 피드백이 완료되었습니다.");
   } catch (error) {
     showToast(error.message || "채점에 실패했습니다. 잠시 후 다시 시도해 주세요.");
   } finally {
     setLoadingState(submitBtn, false);
   }
+}
+
+function startSubmitPolling(jobId) {
+  stopSubmitPolling();
+  state.submitJobId = String(jobId || "").trim();
+  state.submitPollAttempts = 0;
+}
+
+function stopSubmitPolling() {
+  if (state.submitPollTimer) {
+    window.clearTimeout(state.submitPollTimer);
+    state.submitPollTimer = null;
+  }
+  state.submitJobId = null;
+  state.submitPollAttempts = 0;
+}
+
+async function pollSubmitJob(jobId) {
+  startSubmitPolling(jobId);
+  if (!state.submitJobId) {
+    throw new Error("채점 작업 정보를 확인하지 못했습니다.");
+  }
+
+  while (state.submitPollAttempts < MODE_JOB_MAX_POLL_ATTEMPTS) {
+    state.submitPollAttempts += 1;
+    const payload = await apiRequest(`/platform/mode-jobs/${encodeURIComponent(state.submitJobId)}`);
+    if (payload?.finished) {
+      const result = payload.result && typeof payload.result === "object" ? payload.result : {};
+      stopSubmitPolling();
+      return result;
+    }
+    if (payload?.failed) {
+      stopSubmitPolling();
+      throw new Error(payload.error || "채점 작업이 실패했습니다.");
+    }
+
+    await waitForNextPoll();
+  }
+
+  stopSubmitPolling();
+  throw new Error("채점 결과를 불러오는 데 시간이 너무 오래 걸립니다. 잠시 후 다시 시도해 주세요.");
+}
+
+function waitForNextPoll() {
+  return new Promise((resolve) => {
+    state.submitPollTimer = window.setTimeout(() => {
+      state.submitPollTimer = null;
+      resolve();
+    }, MODE_JOB_POLL_INTERVAL);
+  });
 }
 
 function renderFeedback(payload) {
@@ -518,7 +581,7 @@ function renderFeedback(payload) {
     elements.thresholdText.textContent = `합격 기준: ${Number.isFinite(threshold) ? threshold : 70}점`;
   }
   if (elements.feedbackSummary) {
-    elements.feedbackSummary.textContent = feedback.summary || "요약 정보가 없습니다.";
+    elements.feedbackSummary.textContent = formatFeedbackSummary(payload, feedback.summary, "AI 피드백 요약이 없습니다.");
   }
 
   renderList(elements.strengths, feedback.strengths, "강점이 없습니다.");
@@ -609,7 +672,7 @@ function clearFeedback() {
     elements.thresholdText.textContent = "합격 기준: 70점";
   }
   if (elements.feedbackSummary) {
-    elements.feedbackSummary.textContent = "리포트를 제출하면 AI가 요약을 제공합니다.";
+    elements.feedbackSummary.textContent = "리포트를 제출하면 AI 피드백이 여기에 표시됩니다.";
   }
   renderList(elements.strengths, [], "강점이 없습니다.");
   renderList(elements.improvements, [], "개선 포인트가 없습니다.");
@@ -682,16 +745,35 @@ function showToast(message) {
   }, DEFAULT_TOAST_DURATION);
 }
 
-function getSavedLanguage(languages = []) {
+function getSavedLanguage(languages = null) {
   const saved = window.localStorage.getItem(LANGUAGE_KEY);
-  if (saved && languages.some((lang) => lang.id === saved)) {
-    return saved;
+  if (Array.isArray(languages) && languages.length > 0) {
+    if (saved && languages.some((lang) => lang.id === saved)) {
+      return saved;
+    }
+    const fallback = languages[0]?.id || DEFAULT_LANGUAGE;
+    if (fallback) {
+      window.localStorage.setItem(LANGUAGE_KEY, fallback);
+    }
+    return fallback;
   }
-  const fallback = languages[0]?.id || DEFAULT_LANGUAGE;
-  if (fallback) {
-    window.localStorage.setItem(LANGUAGE_KEY, fallback);
+  return saved || DEFAULT_LANGUAGE;
+}
+
+function getFeedbackSource(payload) {
+  return String(payload?.feedbackSource || "").trim().toLowerCase() || "ai";
+}
+
+function isFallbackFeedback(payload) {
+  return getFeedbackSource(payload) === "fallback";
+}
+
+function formatFeedbackSummary(payload, summary, emptyText) {
+  const normalized = String(summary || "").trim();
+  if (!normalized) {
+    return isFallbackFeedback(payload) ? "기본 피드백 요약이 없습니다." : emptyText;
   }
-  return fallback;
+  return isFallbackFeedback(payload) ? `기본 피드백: ${normalized}` : normalized;
 }
 
 function getSavedDifficulty() {

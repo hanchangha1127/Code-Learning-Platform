@@ -340,6 +340,9 @@ def submit_refactoring_choice_report(
     )
 
     db.commit()
+    from app.services.platform_public_bridge import invalidate_public_history_total_for_user_id
+
+    invalidate_public_history_total_for_user_id(db, user_id)
 
     return {
         "correct": is_correct,

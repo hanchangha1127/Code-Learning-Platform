@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
@@ -26,7 +26,7 @@ from server_runtime.routes import auth as runtime_auth_routes
 
 router = APIRouter()
 
-PASSWORD_AUTH_DISABLED_DETAIL = "플랫폼 비밀번호 인증은 기본적으로 비활성화되어 있습니다."
+PASSWORD_AUTH_DISABLED_DETAIL = "이메일/비밀번호 로그인은 기본적으로 비활성화되어 있습니다."
 OAUTH_ERROR_PREFIX = "Google 로그인 오류"
 OAUTH_CODE_MISSING_DETAIL = "로그인 코드를 받지 못했습니다."
 OAUTH_TOKEN_MISSING_DETAIL = "Google 토큰 응답에 access_token이 없습니다."
@@ -34,6 +34,16 @@ OAUTH_PROFILE_MISSING_DETAIL = "Google 사용자 계정 식별자(sub)가 없습
 OAUTH_SERVICE_UNAVAILABLE_DETAIL = "로그인 서비스 연결에 실패했습니다. 잠시 후 다시 시도해 주세요."
 GUEST_DB_UNAVAILABLE_DETAIL = "인증 서비스(DB) 연결에 실패했습니다. MySQL 상태를 확인해 주세요."
 
+
+def _access_token_from_request(request: Request) -> str | None:
+    authorization = (request.headers.get("authorization") or "").strip()
+    if authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        if token:
+            return token
+
+    cookie_token = (request.cookies.get("code_learning_access") or "").strip()
+    return cookie_token or None
 
 
 def _require_password_auth_enabled() -> None:
@@ -157,12 +167,16 @@ def post_refresh(body: RefreshRequest, db: Session = Depends(get_db)):
 
 @router.post("/logout")
 def post_logout(
+    request: Request,
     response: Response,
     body: LogoutRequest | None = None,
     db: Session = Depends(get_db),
 ):
-    if body is not None and settings.ALLOW_PLATFORM_PASSWORD_AUTH:
-        logout(db, body.refresh_token)
+    logout(
+        db,
+        body.refresh_token if body is not None else None,
+        access_token=_access_token_from_request(request),
+    )
     clear_access_cookie(response)
     response.headers["Cache-Control"] = "no-store"
     return {"ok": True}

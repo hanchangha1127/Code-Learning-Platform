@@ -12,6 +12,7 @@ from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
+from app.services.platform_public_bridge import ProblemFollowUpUnavailableError
 from server_runtime.context import learning_service, user_service
 from server_runtime.deps import get_current_username
 from server_runtime.schemas import (
@@ -20,8 +21,6 @@ from server_runtime.schemas import (
     CodeArrangeSubmitRequest,
     CodeBlockSubmitRequest,
     CodeCalcSubmitRequest,
-    CodeErrorSubmitRequest,
-    ContextInferenceSubmitRequest,
     DiagnosticStartRequest,
     ExplanationSubmission,
     ProblemRequest,
@@ -43,10 +42,10 @@ def _get_int_env(name: str, default: int, *, minimum: int = 1) -> int:
 
 
 STREAM_HEARTBEAT_SECONDS = 0.25
-STREAM_WORKER_MAX = _get_int_env("CODE_PLATFORM_PROBLEM_STREAM_WORKERS", 8)
+STREAM_WORKER_MAX = _get_int_env("CODE_PLATFORM_PROBLEM_STREAM_WORKERS", 16)
 STREAM_PENDING_MAX = _get_int_env(
     "CODE_PLATFORM_PROBLEM_STREAM_PENDING_MAX",
-    STREAM_WORKER_MAX * 2,
+    max(STREAM_WORKER_MAX * 4, 64),
     minimum=STREAM_WORKER_MAX,
 )
 _STREAM_EXECUTOR = ThreadPoolExecutor(max_workers=STREAM_WORKER_MAX, thread_name_prefix="problem-stream")
@@ -100,6 +99,14 @@ def _sse_event(event: str, payload: dict) -> str:
 def _execute_stream_problem(operation: str, callback: Callable[[], dict]) -> dict:
     try:
         return callback()
+    except ProblemFollowUpUnavailableError as exc:
+        logger.warning("%s capacity exceeded: %s", operation, exc)
+        raise _ProblemStreamError(
+            STREAM_RETRY_MESSAGE,
+            code="stream_capacity_exceeded",
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            retryable=True,
+        ) from exc
     except ValueError as exc:
         raise _ProblemStreamError(
             str(exc),
@@ -556,58 +563,6 @@ def submit_code_calc_answer(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 
-@router.post("/api/code-error/problem")
-def request_code_error_problem(
-    payload: ProblemRequest,
-    request: Request,
-    username: str = Depends(get_current_username),
-) -> dict:
-    _require_username(username)
-    if _wants_problem_stream(request):
-        return _stream_problem_response(
-            request=request,
-            work=lambda: _execute_stream_problem(
-                "request_code_error_problem",
-                lambda: learning_service.request_code_error_problem(
-                    username,
-                    payload.language_id,
-                    payload.difficulty_id,
-                ),
-            )
-        )
-
-    try:
-        return learning_service.request_code_error_problem(
-            username,
-            payload.language_id,
-            payload.difficulty_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.exception("request_code_error_problem failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
-
-
-@router.post("/api/code-error/submit")
-def submit_code_error_answer(
-    submission: CodeErrorSubmitRequest,
-    username: str = Depends(get_current_username),
-) -> dict:
-    _require_username(username)
-    try:
-        return learning_service.submit_code_error_answer(
-            username,
-            submission.problem_id,
-            submission.selected_index,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.exception("submit_code_error_answer failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
-
-
 @router.post("/api/auditor/problem")
 def request_auditor_problem(
     payload: ProblemRequest,
@@ -657,58 +612,6 @@ def submit_auditor_report(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("submit_auditor_report failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
-
-
-@router.post("/api/context-inference/problem")
-def request_context_inference_problem(
-    payload: ProblemRequest,
-    request: Request,
-    username: str = Depends(get_current_username),
-) -> dict:
-    _require_username(username)
-    if _wants_problem_stream(request):
-        return _stream_problem_response(
-            request=request,
-            work=lambda: _execute_stream_problem(
-                "request_context_inference_problem",
-                lambda: learning_service.request_context_inference_problem(
-                    username,
-                    payload.language_id,
-                    payload.difficulty_id,
-                ),
-            )
-        )
-
-    try:
-        return learning_service.request_context_inference_problem(
-            username,
-            payload.language_id,
-            payload.difficulty_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.exception("request_context_inference_problem failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
-
-
-@router.post("/api/context-inference/submit")
-def submit_context_inference_report(
-    submission: ContextInferenceSubmitRequest,
-    username: str = Depends(get_current_username),
-) -> dict:
-    _require_username(username)
-    try:
-        return learning_service.submit_context_inference_report(
-            username,
-            submission.problem_id,
-            submission.report,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.exception("submit_context_inference_report failed: %s", exc)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=GENERIC_INTERNAL_ERROR_DETAIL) from exc
 
 

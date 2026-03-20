@@ -48,6 +48,14 @@
             <div class="profile-action-header"><span>학습 리포트</span><span class="profile-action-arrow">›</span></div>
             <span class="profile-action-desc">최근 학습 흐름을 정리한 AI 솔루션 리포트를 확인합니다.</span>
           </button>
+          <section id="latest-report-card" class="profile-report-card" aria-live="polite">
+            <div class="profile-report-copy">
+              <p class="panel-note">최근 학습 리포트</p>
+              <strong id="latest-report-title">아직 저장된 리포트가 없습니다.</strong>
+              <p id="latest-report-meta" class="profile-action-desc">학습 리포트를 생성하면 여기서 다시 PDF로 내려받을 수 있습니다.</p>
+            </div>
+            <button id="btn-latest-report-download" type="button" class="ghost" disabled>최근 PDF 다운로드</button>
+          </section>
           <button id="btn-logout" class="profile-logout" type="button">로그아웃</button>
         </div>
       </aside>

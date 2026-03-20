@@ -564,11 +564,12 @@ class LearningService:
 
     # Reporting -----------------------------------------------------------
 
-    def user_history(self, username: str) -> List[Dict[str, Any]]:
+    def user_history(self, username: str, limit: int | None = None) -> List[Dict[str, Any]]:
         return learning_reporting.user_history(
             self,
             username,
             duration_seconds=_duration_seconds,
+            limit=limit,
         )
 
     def user_memory(self, username: str) -> List[Dict[str, Any]]:
@@ -860,6 +861,36 @@ class LearningService:
             sample = (item.get("blocks") or [])
             first = sample[0].splitlines()[0] if sample else ""
             lines.append(f"{idx}. {lang} · {title} · 첫줄: {first}")
+        return "\n".join(lines)
+
+    def _code_arrange_history_context(self, storage, limit: int = 5) -> Optional[str]:
+        items = storage.filter(lambda item: item.get("type") == "code_arrange_instance")
+        if not items:
+            return None
+
+        latest_event_by_problem_id: Dict[str, Dict[str, Any]] = {}
+        arrange_events = storage.filter(lambda item: item.get("type") == "code_arrange_event")
+        for event in sorted(arrange_events, key=lambda item: item.get("created_at", ""), reverse=True):
+            problem_id = str(event.get("problem_id") or "").strip()
+            if problem_id and problem_id not in latest_event_by_problem_id:
+                latest_event_by_problem_id[problem_id] = event
+
+        sorted_items = sorted(items, key=lambda item: item.get("created_at", ""), reverse=True)[:limit]
+        lines: List[str] = []
+        for idx, item in enumerate(sorted_items, 1):
+            title = item.get("title") or "Untitled"
+            lang = item.get("language") or "-"
+            diff = item.get("difficulty") or "-"
+            first_line = (item.get("code") or "").splitlines()[0] if item.get("code") else ""
+            problem_id = str(item.get("problem_id") or "").strip()
+            event = latest_event_by_problem_id.get(problem_id)
+            verdict = "unsolved"
+            if event:
+                if event.get("correct") is True:
+                    verdict = "correct"
+                elif event.get("correct") is False:
+                    verdict = "wrong"
+            lines.append(f"{idx}. {lang}/{diff} - {verdict} - {title} - first line: {first_line}")
         return "\n".join(lines)
 
     def _auditor_history_context(self, storage, limit: int = 5) -> Optional[str]:

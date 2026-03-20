@@ -4,7 +4,6 @@ from app.api.routes.auth import router as auth_router
 from app.api.routes.advanced_analysis import router as advanced_analysis_router
 from app.api.routes.auditor import router as auditor_router
 from app.api.routes.code_blame import router as code_blame_router
-from app.api.routes.context_inference import router as context_inference_router
 from app.api.routes.health import router as health_router
 from app.api.routes.me import router as me_router
 from app.api.routes.platform_mode_jobs import router as platform_mode_jobs_router
@@ -40,7 +39,6 @@ app.include_router(problems_router, prefix="/problems", tags=["problems"])
 app.include_router(submissions_router, tags=["submissions"])
 app.include_router(reports_router, tags=["reports"])
 app.include_router(auditor_router, prefix="/auditor", tags=["auditor"])
-app.include_router(context_inference_router, prefix="/context-inference", tags=["context-inference"])
 app.include_router(refactoring_choice_router, prefix="/refactoring-choice", tags=["refactoring-choice"])
 app.include_router(code_blame_router, prefix="/code-blame", tags=["code-blame"])
 app.include_router(platform_mode_jobs_router, prefix="/mode-jobs", tags=["mode-jobs"])

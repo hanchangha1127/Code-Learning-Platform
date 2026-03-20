@@ -101,33 +101,7 @@ class CodeCalcSubmitRequest(BaseModel):
     )
 
 
-class CodeErrorSubmitRequest(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, extra="forbid", str_strip_whitespace=True)
-    problem_id: str = Field(
-        ...,
-        validation_alias=AliasChoices("problemId", "problem_id"),
-        min_length=1,
-        max_length=128,
-    )
-    selected_index: int = Field(
-        ...,
-        validation_alias=AliasChoices("selectedIndex", "selected_index"),
-        ge=0,
-    )
-
-
 class AuditorSubmitRequest(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, extra="forbid", str_strip_whitespace=True)
-    problem_id: str = Field(
-        ...,
-        validation_alias=AliasChoices("problemId", "problem_id"),
-        min_length=1,
-        max_length=128,
-    )
-    report: str = Field(..., min_length=1, max_length=8000)
-
-
-class ContextInferenceSubmitRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid", str_strip_whitespace=True)
     problem_id: str = Field(
         ...,

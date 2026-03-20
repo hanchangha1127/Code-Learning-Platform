@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from collections.abc import Iterator
@@ -11,7 +12,7 @@ from datetime import datetime
 from typing import Any, Callable
 from uuid import uuid4
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.db.base import utcnow
 from app.db.models import (
@@ -21,8 +22,6 @@ from app.db.models import (
     ProblemContentStatus,
     ProblemDifficulty,
     ProblemKind,
-    Report,
-    ReportType,
     Submission,
     SubmissionStatus,
     User,
@@ -30,23 +29,50 @@ from app.db.models import (
 )
 from app.services.learning_continuity_service import sync_review_queue_for_submission
 from app.services.platform_ops_service import record_ops_event
+from app.services.report_pdf_service import get_latest_report_detail
 from app.db.session import SessionLocal
+from app.services.analysis_queue import enqueue_problem_follow_up_job, get_redis_connection, is_rq_enabled
 from app.services.problem_stat_service import classify_wrong_answer_type, update_user_problem_stat
 from backend.learning_reporting import trend_summary
 from server_runtime.context import learning_service, storage_manager, user_service
 
 logger = logging.getLogger(__name__)
-_PROBLEM_FOLLOW_UP_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="problem-follow-up")
-_PROBLEM_FOLLOW_UP_SLOTS = threading.BoundedSemaphore(128)
+_HISTORY_TOTAL_CACHE_PREFIX = "platform:history:total:"
+
+
+class ProblemFollowUpUnavailableError(RuntimeError):
+    """Raised when follow-up persistence cannot be reserved before streaming."""
+
+
+def _get_int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = os.getenv(name)
+    if not raw:
+        return max(default, minimum)
+    try:
+        return max(int(raw), minimum)
+    except (TypeError, ValueError):
+        return max(default, minimum)
+
+
+_PROBLEM_FOLLOW_UP_WORKERS = _get_int_env("CODE_PLATFORM_PROBLEM_FOLLOW_UP_WORKERS", 8)
+_PROBLEM_FOLLOW_UP_PENDING_MAX = _get_int_env(
+    "CODE_PLATFORM_PROBLEM_FOLLOW_UP_PENDING_MAX",
+    max(_PROBLEM_FOLLOW_UP_WORKERS * 8, 128),
+    minimum=_PROBLEM_FOLLOW_UP_WORKERS,
+)
+_PROBLEM_FOLLOW_UP_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_PROBLEM_FOLLOW_UP_WORKERS,
+    thread_name_prefix="problem-follow-up",
+)
+_PROBLEM_FOLLOW_UP_SLOTS = threading.BoundedSemaphore(_PROBLEM_FOLLOW_UP_PENDING_MAX)
+_DEFAULT_HISTORY_LIMIT = _get_int_env("CODE_PLATFORM_HISTORY_DEFAULT_LIMIT", 200)
 
 _PROBLEM_KIND_BY_MODE: dict[str, ProblemKind] = {
     "analysis": ProblemKind.analysis,
     "code-block": ProblemKind.code_block,
     "code-arrange": ProblemKind.code_arrange,
     "code-calc": ProblemKind.code_calc,
-    "code-error": ProblemKind.code_error,
     "auditor": ProblemKind.auditor,
-    "context-inference": ProblemKind.context_inference,
     "refactoring-choice": ProblemKind.refactoring_choice,
     "code-blame": ProblemKind.code_blame,
     "single-file-analysis": ProblemKind.analysis,
@@ -68,9 +94,7 @@ _ANALYSIS_TYPE_BY_MODE: dict[str, AnalysisType] = {
     "code-block": AnalysisType.explain,
     "code-arrange": AnalysisType.explain,
     "code-calc": AnalysisType.explain,
-    "code-error": AnalysisType.error,
     "auditor": AnalysisType.review,
-    "context-inference": AnalysisType.review,
     "refactoring-choice": AnalysisType.review,
     "code-blame": AnalysisType.review,
     "single-file-analysis": AnalysisType.review,
@@ -83,9 +107,7 @@ _EVENT_TYPE_BY_MODE: dict[str, str] = {
     "code-block": "learning_event",
     "code-arrange": "code_arrange_event",
     "code-calc": "code_calc_event",
-    "code-error": "code_error_event",
     "auditor": "auditor_event",
-    "context-inference": "context_inference_event",
     "refactoring-choice": "refactoring_choice_event",
     "code-blame": "code_blame_event",
     "single-file-analysis": "single_file_analysis_event",
@@ -96,6 +118,131 @@ _EVENT_TYPE_BY_MODE: dict[str, str] = {
 
 def list_public_languages() -> list[dict[str, str]]:
     return learning_service.list_languages()
+
+
+def _load_runtime_history(username: str, limit: int | None = None) -> list[dict[str, Any]]:
+    if limit is None:
+        return learning_service.user_history(username)
+    try:
+        return learning_service.user_history(username, limit=limit)
+    except Exception:
+        logger.exception(
+            "platform_bridge_recent_history_load_failed username=%s limit=%s",
+            username,
+            limit,
+        )
+        return learning_service.user_history(username)
+
+
+def _load_runtime_attempt_events(username: str) -> list[dict[str, Any]]:
+    try:
+        storage = storage_manager.get_storage(username)
+    except Exception:
+        logger.exception("platform_bridge_runtime_attempt_load_failed username=%s", username)
+        return []
+    try:
+        return learning_service._collect_attempt_events(storage)
+    except Exception:
+        logger.exception("platform_bridge_runtime_attempt_collection_failed username=%s", username)
+        return []
+
+
+def _history_total_cache_key(username: str) -> str:
+    return f"{_HISTORY_TOTAL_CACHE_PREFIX}{str(username or '').strip().lower()}"
+
+
+def _history_cache_connection():
+    try:
+        return get_redis_connection()
+    except Exception:
+        logger.debug("platform_history_total_cache_unavailable", exc_info=True)
+        return None
+
+
+def _read_cached_public_history_total(username: str) -> int | None:
+    conn = _history_cache_connection()
+    if conn is None:
+        return None
+    try:
+        raw = conn.get(_history_total_cache_key(username))
+    except Exception:
+        logger.debug("platform_history_total_cache_read_failed username=%s", username, exc_info=True)
+        return None
+    if raw in (None, b"", ""):
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="ignore")
+    try:
+        return max(int(str(raw).strip()), 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _write_cached_public_history_total(username: str, total: int) -> None:
+    conn = _history_cache_connection()
+    if conn is None:
+        return
+    try:
+        conn.set(_history_total_cache_key(username), str(max(int(total), 0)))
+    except Exception:
+        logger.debug("platform_history_total_cache_write_failed username=%s", username, exc_info=True)
+
+
+def invalidate_public_history_total(username: str) -> None:
+    conn = _history_cache_connection()
+    if conn is None:
+        return
+    try:
+        conn.delete(_history_total_cache_key(username))
+    except Exception:
+        logger.debug("platform_history_total_cache_invalidate_failed username=%s", username, exc_info=True)
+
+
+def invalidate_public_history_total_for_user_id(db: Session, user_id: int) -> None:
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+    except Exception:
+        logger.debug(
+            "platform_history_total_cache_user_lookup_failed user_id=%s",
+            user_id,
+            exc_info=True,
+        )
+        return
+    username = str(getattr(user, "username", "") or "").strip()
+    if username:
+        invalidate_public_history_total(username)
+
+
+def _seed_public_history_total(username: str) -> int:
+    runtime_events = _load_runtime_attempt_events(username)
+    total = len(runtime_events) + _count_db_history(
+        username=username,
+        seen_bridge_ids=_history_bridge_ids(runtime_events),
+    )
+    _write_cached_public_history_total(username, total)
+    return total
+
+
+def _get_public_history_total(username: str) -> int:
+    cached = _read_cached_public_history_total(username)
+    if cached is not None:
+        return cached
+    return _seed_public_history_total(username)
+
+
+def _increment_public_history_total(username: str, delta: int = 1) -> None:
+    conn = _history_cache_connection()
+    if conn is None:
+        return
+    key = _history_total_cache_key(username)
+    try:
+        if conn.exists(key):
+            conn.incrby(key, int(delta))
+            return
+    except Exception:
+        logger.debug("platform_history_total_cache_increment_failed username=%s", username, exc_info=True)
+        return
+    _seed_public_history_total(username)
 
 
 def get_public_me(current: User) -> dict[str, Any]:
@@ -122,17 +269,82 @@ def get_public_me(current: User) -> dict[str, Any]:
     }
 
 
-def get_public_history(username: str) -> list[dict[str, Any]]:
-    history = learning_service.user_history(username)
-    seen_bridge_ids = {
+def _normalize_history_limit(limit: int | None) -> int | None:
+    if limit is None:
+        return None
+    try:
+        return max(int(limit), 1)
+    except (TypeError, ValueError):
+        return _DEFAULT_HISTORY_LIMIT
+
+
+def _history_bridge_ids(items: list[dict[str, Any]]) -> set[str]:
+    return {
         str(item.get("bridgeId") or item.get("bridge_id") or "").strip()
-        for item in history
+        for item in items
         if str(item.get("bridgeId") or item.get("bridge_id") or "").strip()
     }
-    db_history = _load_db_history(username=username, seen_bridge_ids=seen_bridge_ids)
+
+
+def _load_public_history(username: str, limit: int | None = None) -> tuple[list[dict[str, Any]], int | None]:
+    effective_limit = _normalize_history_limit(limit)
+    history = _load_runtime_history(username, effective_limit)
+    if effective_limit is not None:
+        history = history[:effective_limit]
+    seen_bridge_ids = _history_bridge_ids(history)
+    db_history = _load_db_history(username=username, seen_bridge_ids=seen_bridge_ids, limit=effective_limit)
     merged = history + db_history
     merged.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-    return merged
+    if effective_limit is not None:
+        merged = merged[:effective_limit]
+    return merged, effective_limit
+
+
+def get_public_history(username: str, limit: int | None = None) -> list[dict[str, Any]]:
+    history, _ = _load_public_history(username, limit=limit)
+    return history
+
+
+def get_public_history_page(username: str, limit: int | None = None) -> dict[str, Any]:
+    history, effective_limit = _load_public_history(username, limit=limit)
+    resolved_limit = effective_limit or len(history)
+    total = len(history) if effective_limit is None else _get_public_history_total(username)
+    return {
+        "history": history,
+        "total": total,
+        "hasMore": total > len(history),
+        "limit": resolved_limit,
+    }
+
+
+def _count_public_history(username: str) -> int:
+    runtime_events = _load_runtime_attempt_events(username)
+    return len(runtime_events) + _count_db_history(
+        username=username,
+        seen_bridge_ids=_history_bridge_ids(runtime_events),
+    )
+
+
+def _count_db_history(*, username: str, seen_bridge_ids: set[str]) -> int:
+    with SessionLocal() as session:
+        user = session.query(User).filter(User.username == username).first()
+        if user is None:
+            return 0
+
+        rows = (
+            session.query(Submission)
+            .join(Problem, Problem.id == Submission.problem_id)
+            .filter(Submission.user_id == user.id)
+            .all()
+        )
+        total = 0
+        for submission in rows:
+            payload = submission.submission_payload if isinstance(submission.submission_payload, dict) else {}
+            bridge_id = str(payload.get("bridgeId") or "").strip()
+            if bridge_id and bridge_id in seen_bridge_ids:
+                continue
+            total += 1
+        return total
 
 
 def get_public_memory(username: str) -> list[dict[str, Any]]:
@@ -152,64 +364,12 @@ def get_public_profile(username: str, history: list[dict[str, Any]] | None = Non
 
 
 def get_public_report(username: str, user_id: int, db: Session | None = None) -> dict[str, Any]:
-    payload = learning_service.learning_report(username)
-    metric_snapshot = _build_metric_snapshot(get_public_history(username))
-    payload["metricSnapshot"] = metric_snapshot
-    created_at = utcnow().isoformat()
-    payload["createdAt"] = created_at
-
-    bridge_id = f"report-{uuid4().hex}"
-    payload["bridgeId"] = bridge_id
-    _append_jsonl_record(
-        username,
-        {
-            "type": "learning_report",
-            "source": "platform",
-            "bridgeId": bridge_id,
-            "created_at": created_at,
-            "payload": payload,
-        },
-    )
-
     with _db_session(db) as session:
         if session is None:
-            payload["reportId"] = None
-            return payload
-
-        report = Report(
-            user_id=user_id,
-            report_type=ReportType.milestone,
-            period_start=None,
-            period_end=None,
-            milestone_problem_count=int(metric_snapshot.get("attempts") or 0),
-            title=str(payload.get("goal") or "\uD559\uC2B5 \uB9AC\uD3EC\uD2B8")[:200],
-            summary=str(payload.get("solutionSummary") or ""),
-            strengths=[],
-            weaknesses=[],
-            recommendations=payload.get("priorityActions") if isinstance(payload.get("priorityActions"), list) else [],
-            stats={
-                "source": "platform",
-                "bridgeId": bridge_id,
-                "solutionPlan": payload,
-                "metricSnapshot": metric_snapshot,
-            },
-            created_at=utcnow(),
-        )
-        session.add(report)
-        record_ops_event(
-            session,
-            user_id=user_id,
-            event_type="learning_report_generated",
-            status="success",
-            payload={
-                "attempts": metric_snapshot.get("attempts"),
-                "accuracy": metric_snapshot.get("accuracy"),
-            },
-        )
-        session.commit()
-        session.refresh(report)
-        payload["reportId"] = report.id
-        payload["createdAt"] = report.created_at.isoformat() if report.created_at else created_at
+            raise LookupError("report_not_found")
+        payload = get_latest_report_detail(session, user_id)
+        if payload is None:
+            raise LookupError("report_not_found")
         return payload
 
 
@@ -243,8 +403,6 @@ def request_mode_problem(
         )
         response_payload = _response_problem_payload(normalized_mode, canonical_payload)
         if defer_persistence:
-            if on_payload_ready is not None:
-                on_payload_ready(response_payload)
             elapsed_ms = int(max((time.perf_counter() - started_at) * 1000.0, 0.0))
             _defer_problem_follow_up(
                 mode=normalized_mode,
@@ -257,6 +415,8 @@ def request_mode_problem(
                 language=normalized_language,
                 difficulty=normalized_difficulty,
             )
+            if on_payload_ready is not None:
+                on_payload_ready(response_payload)
             return response_payload
         with _db_session(db) as session:
             if session is not None:
@@ -336,6 +496,7 @@ def submit_mode_answer(
                     session.rollback()
                     raise
         elapsed_ms = int(max((time.perf_counter() - started_at) * 1000.0, 0.0))
+        _increment_public_history_total(username)
         _record_ops_event_best_effort(
             db=db,
             user_id=user_id,
@@ -375,12 +536,8 @@ def _request_runtime_problem(mode: str, *, username: str, language: str, difficu
         return learning_service.request_code_arrange_problem(username, language, difficulty)
     if mode == "code-calc":
         return learning_service.request_code_calc_problem(username, language, difficulty)
-    if mode == "code-error":
-        return learning_service.request_code_error_problem(username, language, difficulty)
     if mode == "auditor":
         return learning_service.request_auditor_problem(username, language, difficulty)
-    if mode == "context-inference":
-        return learning_service.request_context_inference_problem(username, language, difficulty)
     if mode == "refactoring-choice":
         return learning_service.request_refactoring_choice_problem(username, language, difficulty)
     if mode == "code-blame":
@@ -420,23 +577,8 @@ def _submit_runtime_answer(mode: str, *, username: str, body: dict[str, Any]) ->
             str(body.get("problemId") or body.get("problem_id") or ""),
             str(body.get("output") or body.get("outputText") or body.get("output_text") or ""),
         )
-    if mode == "code-error":
-        selected_index = body.get("selectedIndex")
-        if selected_index is None:
-            selected_index = body.get("selected_index")
-        return learning_service.submit_code_error_answer(
-            username,
-            str(body.get("problemId") or body.get("problem_id") or ""),
-            int(selected_index),
-        )
     if mode == "auditor":
         return learning_service.submit_auditor_report(
-            username,
-            str(body.get("problemId") or body.get("problem_id") or ""),
-            str(body.get("report") or ""),
-        )
-    if mode == "context-inference":
-        return learning_service.submit_context_inference_report(
             username,
             str(body.get("problemId") or body.get("problem_id") or ""),
             str(body.get("report") or ""),
@@ -531,6 +673,77 @@ def _record_ops_event_best_effort(
         )
 
 
+def _start_detached_task(target: Callable[[], None], *, name: str) -> None:
+    thread = threading.Thread(target=target, name=name, daemon=True)
+    thread.start()
+
+
+def _perform_problem_follow_up(
+    *,
+    mode: str,
+    username: str,
+    user_id: int,
+    problem_payload: dict[str, Any],
+    runtime_payload: dict[str, Any],
+    event_type: str,
+    latency_ms: int,
+    language: str,
+    difficulty: str,
+) -> None:
+    _persist_problem(
+        mode=mode,
+        username=username,
+        user_id=user_id,
+        problem_payload=problem_payload,
+        runtime_payload=runtime_payload,
+    )
+    _record_ops_event_best_effort(
+        user_id=user_id,
+        event_type=event_type,
+        mode=mode,
+        status="success",
+        latency_ms=latency_ms,
+        payload={"language": language, "difficulty": difficulty},
+    )
+
+
+def run_problem_follow_up_background(
+    *,
+    mode: str,
+    username: str,
+    user_id: int,
+    problem_payload: dict[str, Any],
+    runtime_payload: dict[str, Any],
+    event_type: str,
+    latency_ms: int,
+    language: str,
+    difficulty: str,
+) -> None:
+    _perform_problem_follow_up(
+        mode=mode,
+        username=username,
+        user_id=user_id,
+        problem_payload=problem_payload,
+        runtime_payload=runtime_payload,
+        event_type=event_type,
+        latency_ms=latency_ms,
+        language=language,
+        difficulty=difficulty,
+    )
+
+
+def _run_problem_follow_up_best_effort(**kwargs: Any) -> None:
+    try:
+        _perform_problem_follow_up(**kwargs)
+    except Exception:
+        logger.exception(
+            "platform_bridge_problem_follow_up_failed mode=%s user_id=%s problem_id=%s",
+            kwargs.get("mode"),
+            kwargs.get("user_id"),
+            (kwargs.get("problem_payload") or {}).get("problemId"),
+        )
+
+
 def _defer_problem_follow_up(
     *,
     mode: str,
@@ -543,30 +756,41 @@ def _defer_problem_follow_up(
     language: str,
     difficulty: str,
 ) -> None:
-    def _run_follow_up() -> None:
+    follow_up_kwargs = {
+        "mode": mode,
+        "username": username,
+        "user_id": user_id,
+        "problem_payload": problem_payload,
+        "runtime_payload": runtime_payload,
+        "event_type": event_type,
+        "latency_ms": latency_ms,
+        "language": language,
+        "difficulty": difficulty,
+    }
+
+    if is_rq_enabled():
         try:
-            _persist_problem(
+            enqueue_problem_follow_up_job(
                 mode=mode,
                 username=username,
                 user_id=user_id,
                 problem_payload=problem_payload,
                 runtime_payload=runtime_payload,
-            )
-            _record_ops_event_best_effort(
-                user_id=user_id,
                 event_type=event_type,
-                mode=mode,
-                status="success",
                 latency_ms=latency_ms,
-                payload={"language": language, "difficulty": difficulty},
+                language=language,
+                difficulty=difficulty,
             )
         except Exception:
-            logger.exception(
-                "platform_bridge_problem_follow_up_failed mode=%s user_id=%s problem_id=%s",
+            logger.warning(
+                "platform_bridge_problem_follow_up_enqueue_failed mode=%s user_id=%s problem_id=%s",
                 mode,
                 user_id,
                 problem_payload.get("problemId"),
+                exc_info=True,
             )
+            raise ProblemFollowUpUnavailableError("stream_capacity_exceeded")
+        return
 
     if not _PROBLEM_FOLLOW_UP_SLOTS.acquire(blocking=False):
         logger.warning(
@@ -575,26 +799,24 @@ def _defer_problem_follow_up(
             user_id,
             problem_payload.get("problemId"),
         )
-        _run_follow_up()
-        return
+        raise ProblemFollowUpUnavailableError("stream_capacity_exceeded")
 
     def _run_and_release() -> None:
         try:
-            _run_follow_up()
+            _run_problem_follow_up_best_effort(**follow_up_kwargs)
         finally:
             _PROBLEM_FOLLOW_UP_SLOTS.release()
 
     try:
         _PROBLEM_FOLLOW_UP_EXECUTOR.submit(_run_and_release)
     except RuntimeError:
-        _PROBLEM_FOLLOW_UP_SLOTS.release()
         logger.warning(
             "platform_bridge_problem_follow_up_executor_unavailable mode=%s user_id=%s problem_id=%s",
             mode,
             user_id,
             problem_payload.get("problemId"),
         )
-        _run_follow_up()
+        _run_and_release()
 
 
 def _defer_failure_ops_event(
@@ -616,13 +838,16 @@ def _defer_failure_ops_event(
             payload={"language": language, "difficulty": difficulty},
         )
     except RuntimeError:
-        _record_ops_event_best_effort(
-            user_id=user_id,
-            event_type="problem_requested",
-            mode=mode,
-            status="failure",
-            latency_ms=latency_ms,
-            payload={"language": language, "difficulty": difficulty},
+        _start_detached_task(
+            lambda: _record_ops_event_best_effort(
+                user_id=user_id,
+                event_type="problem_requested",
+                mode=mode,
+                status="failure",
+                latency_ms=latency_ms,
+                payload={"language": language, "difficulty": difficulty},
+            ),
+            name=f"problem-failure-event-{mode}",
         )
 
 
@@ -634,12 +859,13 @@ def _canonical_problem_payload(
     difficulty: str,
 ) -> dict[str, Any]:
     normalized_payload = dict(payload)
-    if mode != "analysis":
-        return normalized_payload
-
-    legacy_problem = payload.get("problem")
+    legacy_problem = payload.get("problem") if mode == "analysis" else None
     canonical_problem = dict(legacy_problem) if isinstance(legacy_problem, dict) else {}
-    canonical_payload = {**canonical_problem, **{key: value for key, value in normalized_payload.items() if key != "problem"}}
+    canonical_payload = (
+        {**canonical_problem, **{key: value for key, value in normalized_payload.items() if key != "problem"}}
+        if canonical_problem
+        else normalized_payload
+    )
 
     problem_id = str(
         canonical_payload.get("problemId")
@@ -689,6 +915,7 @@ def _persist_problem(
 
     instance = dict(runtime_payload or {}) or _load_runtime_instance(username, problem_id)
     combined_payload = {**instance, **problem_payload}
+    combined_payload.setdefault("mode", mode)
 
     with _db_session(db) as session:
         if session is None:
@@ -860,6 +1087,7 @@ def _backfill_problem_from_runtime(
         return None
 
     combined_payload = {"problemId": problem_id, **instance}
+    combined_payload.setdefault("mode", mode)
     problem = Problem(
         external_id=problem_id,
         kind=_PROBLEM_KIND_BY_MODE[mode],
@@ -1013,6 +1241,44 @@ def _problem_reference_solution(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _history_problem_files(payload: dict[str, Any], *, fallback_language: str = "python") -> list[dict[str, str]]:
+    files = payload.get("files")
+    if not isinstance(files, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    resolved_language = str(fallback_language or "python").strip().lower() or "python"
+    for index, item in enumerate(files, start=1):
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or item.get("code") or "").replace("\r\n", "\n")
+        if not content.strip():
+            continue
+        path = str(item.get("path") or item.get("name") or f"src/file_{index}.txt").strip() or f"src/file_{index}.txt"
+        name = str(item.get("name") or path.rsplit("/", 1)[-1]).strip() or f"file_{index}.txt"
+        language = str(item.get("language") or resolved_language).strip().lower() or resolved_language
+        role = str(item.get("role") or "module").strip() or "module"
+        file_id = str(item.get("id") or path or f"file-{index}").strip() or f"file-{index}"
+        normalized.append(
+            {
+                "id": file_id,
+                "path": path,
+                "name": name,
+                "language": language,
+                "role": role,
+                "content": content,
+            }
+        )
+    return normalized
+
+
+def _history_problem_checklist(payload: dict[str, Any]) -> list[str]:
+    checklist = payload.get("checklist")
+    if not isinstance(checklist, list):
+        return []
+    return [str(item or "").strip() for item in checklist if str(item or "").strip()]
+
+
 def _submission_status_from_result(result_payload: dict[str, Any]) -> SubmissionStatus:
     if result_payload.get("correct") is True:
         return SubmissionStatus.passed
@@ -1140,19 +1406,22 @@ def _window_accuracy(history: list[dict[str, Any]]) -> float | None:
     return round((correct / len(history)) * 100, 1)
 
 
-def _load_db_history(*, username: str, seen_bridge_ids: set[str]) -> list[dict[str, Any]]:
+def _load_db_history(*, username: str, seen_bridge_ids: set[str], limit: int | None = None) -> list[dict[str, Any]]:
     with SessionLocal() as session:
         user = session.query(User).filter(User.username == username).first()
         if user is None:
             return []
 
-        rows = (
+        query = (
             session.query(Submission)
+            .options(joinedload(Submission.problem), selectinload(Submission.analyses))
             .join(Problem, Problem.id == Submission.problem_id)
             .filter(Submission.user_id == user.id)
             .order_by(Submission.id.desc())
-            .all()
         )
+        if limit is not None:
+            query = query.limit(max(limit * 3, 100))
+        rows = query.all()
         items: list[dict[str, Any]] = []
         for submission in rows:
             payload = submission.submission_payload if isinstance(submission.submission_payload, dict) else {}
@@ -1165,9 +1434,10 @@ def _load_db_history(*, username: str, seen_bridge_ids: set[str]) -> list[dict[s
                 continue
 
             problem_payload = problem.problem_payload if isinstance(problem.problem_payload, dict) else {}
+            answer_payload = problem.answer_payload if isinstance(problem.answer_payload, dict) else {}
             analysis = _latest_submission_analysis(submission.analyses or [])
             result_payload = analysis.result_payload if analysis and isinstance(analysis.result_payload, dict) else {}
-            mode = str(problem_payload.get("mode") or "").strip() or _mode_from_problem_kind(problem.kind)
+            mode = _history_mode_for_problem(problem=problem, problem_payload=problem_payload, answer_payload=answer_payload)
             item = {
                 "source": "platform",
                 "bridgeId": bridge_id or None,
@@ -1214,9 +1484,60 @@ def _load_db_history(*, username: str, seen_bridge_ids: set[str]) -> list[dict[s
                 item["commit_reviews"] = result_payload.get("commitReviews") or result_payload.get("commit_reviews") or []
                 item["problem_error_log"] = problem_payload.get("errorLog") or problem_payload.get("error_log") or ""
             if mode in {"single-file-analysis", "multi-file-analysis", "fullstack-analysis"}:
+                item["problem_workspace"] = str(problem_payload.get("workspace") or "").strip()
+                item["problem_summary"] = str(problem_payload.get("summary") or "").strip()
+                item["problem_checklist"] = _history_problem_checklist(problem_payload)
+                item["problem_files"] = _history_problem_files(
+                    problem_payload,
+                    fallback_language=str(problem_payload.get("language") or problem.language or "python"),
+                )
                 item["reference_report"] = result_payload.get("referenceReport") or ""
             items.append(item)
-        return items
+            if limit is not None and len(items) >= limit:
+                break
+        return items[:limit] if limit is not None else items
+
+
+def _history_mode_for_problem(
+    *,
+    problem: Problem,
+    problem_payload: dict[str, Any],
+    answer_payload: dict[str, Any] | None = None,
+) -> str:
+    for payload in (problem_payload, answer_payload or {}):
+        raw_mode = str(payload.get("mode") or "").strip()
+        if raw_mode:
+            return raw_mode
+
+    workspace = str(problem_payload.get("workspace") or "").strip().lower()
+    workspace_mode = {
+        "single-file-analysis.workspace": "single-file-analysis",
+        "multi-file-analysis.workspace": "multi-file-analysis",
+        "fullstack-analysis.workspace": "fullstack-analysis",
+    }.get(workspace)
+    if workspace_mode:
+        return workspace_mode
+
+    external_id = str(problem.external_id or "").strip().lower()
+    if external_id:
+        prefix = external_id.split(":", 1)[0]
+        inferred_mode = {
+            "sfile": "single-file-analysis",
+            "mfile": "multi-file-analysis",
+            "fstack": "fullstack-analysis",
+            "cinfer": "context-inference",
+            "rchoice": "refactoring-choice",
+            "cblame": "code-blame",
+            "auditor": "auditor",
+            "cerr": "code-error",
+            "ccalc": "code-calc",
+            "cblock": "code-block",
+            "analysis": "analysis",
+        }.get(prefix)
+        if inferred_mode:
+            return inferred_mode
+
+    return _mode_from_problem_kind(problem.kind)
 
 
 def _mode_from_problem_kind(kind: ProblemKind | str) -> str:

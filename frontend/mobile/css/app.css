@@ -41,6 +41,7 @@ body[data-template-variant="mobile"] .header-actions,
 body[data-template-variant="mobile"] .auth-panel-actions,
 body[data-template-variant="mobile"] .auth-panel-actions .auth-action,
 body[data-template-variant="mobile"] .auth-panel-actions .auth-action button,
+body[data-template-variant="mobile"] .dashboard-action-stack,
 body[data-template-variant="mobile"] .goal-form-row,
 body[data-template-variant="mobile"] .calc-actions,
 body[data-template-variant="mobile"] .arrange-actions,
@@ -56,6 +57,7 @@ body[data-template-variant="mobile"] .header-actions .ghost,
 body[data-template-variant="mobile"] .header-actions .primary,
 body[data-template-variant="mobile"] .header-actions a,
 body[data-template-variant="mobile"] .header-actions button,
+body[data-template-variant="mobile"] .dashboard-action-stack > *,
 body[data-template-variant="mobile"] .auth-panel-actions .block,
 body[data-template-variant="mobile"] .goal-form-row .primary,
 body[data-template-variant="mobile"] .goal-form-row input,
@@ -72,6 +74,11 @@ body[data-template-variant="mobile"] .cerr-actions .primary,
 body[data-template-variant="mobile"] .cerr-actions .ghost,
 body[data-template-variant="mobile"] .cb-actions .ghost {
   width: 100%;
+}
+
+body[data-template-variant="mobile"] .auth-shell {
+  max-width: 520px;
+  margin: 0 auto;
 }
 
 body[data-template-variant="mobile"] .auth-note-grid {

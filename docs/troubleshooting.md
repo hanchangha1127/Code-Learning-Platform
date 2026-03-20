@@ -80,9 +80,17 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml logs worker redis
 대상 모드:
 
 - `auditor`
-- `context-inference`
 - `refactoring-choice`
 - `code-blame`
+- `single-file-analysis`
+- `multi-file-analysis`
+- `fullstack-analysis`
+
+참고:
+
+- queued 응답은 최종 피드백이 아니므로 `jobId` 완료 polling 뒤 `result.feedback`를 렌더링해야 합니다.
+- 대부분의 문제 생성 모드는 SSE 상태 이벤트를 먼저 보내고, 본문은 생성 완료 뒤 최종 `payload` 1회로 도착합니다.
+- `arrange`는 의도적인 가짜 스트리밍(UI 애니메이션)이라 서버 본문 스트리밍이 없어도 정상입니다.
 
 ## 6. Google OAuth 시작 시 redirect URI 오류가 남
 

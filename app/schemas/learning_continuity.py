@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -92,6 +92,13 @@ class ReviewResumeRead(BaseModel):
     mode: str
     resumeLink: str
     problem: dict
+
+
+class LearningHistoryPageRead(BaseModel):
+    history: list[dict[str, Any]]
+    total: int
+    hasMore: bool
+    limit: int
 
 
 class LearningHomeRead(BaseModel):

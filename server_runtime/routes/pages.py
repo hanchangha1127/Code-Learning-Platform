@@ -23,9 +23,7 @@ PAGE_FILES: dict[str, str] = {
     "codeblock": "codeblock.html",
     "arrange": "arrange.html",
     "codecalc": "codecalc.html",
-    "codeerror": "codeerror.html",
     "auditor": "auditor.html",
-    "context-inference": "context-inference.html",
     "refactoring-choice": "refactoring-choice.html",
     "code-blame": "code-blame.html",
     "single-file-analysis": "single-file-analysis.html",
@@ -122,19 +120,9 @@ def codecalc_page(request: Request) -> Response:
     return _render_page_or_404(request, "codecalc", detail="Codecalc page not found")
 
 
-@router.get("/codeerror.html", include_in_schema=False)
-def codeerror_page(request: Request) -> Response:
-    return _render_page_or_404(request, "codeerror", detail="Codeerror page not found")
-
-
 @router.get("/auditor.html", include_in_schema=False)
 def auditor_page(request: Request) -> Response:
     return _render_page_or_404(request, "auditor", detail="Auditor page not found")
-
-
-@router.get("/context-inference.html", include_in_schema=False)
-def context_inference_page(request: Request) -> Response:
-    return _render_page_or_404(request, "context-inference", detail="Context inference page not found")
 
 
 @router.get("/refactoring-choice.html", include_in_schema=False)

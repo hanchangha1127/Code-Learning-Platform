@@ -26,21 +26,26 @@ def _new_report_payload(report_id: int | None) -> dict[str, object]:
     return {
         "reportId": report_id,
         "createdAt": "2026-03-05T10:00:00+00:00",
-        "goal": "다음 주까지 오답 복기 루틴을 고정한다.",
-        "solutionSummary": "짧은 복기와 일일 반복 학습으로 정확도와 점수를 함께 끌어올립니다.",
-        "priorityActions": ["오답 3개 복기", "풀이 시간 기록"],
-        "phasePlan": ["1단계: 기초 복기", "2단계: 실전 적용"],
-        "dailyHabits": ["매일 2문제 풀이", "매일 10분 복기"],
-        "focusTopics": ["자료구조", "탐색"],
-        "metricsToTrack": ["정확도", "평균 점수"],
-        "checkpoints": ["주말 정확도 70% 달성"],
-        "riskMitigation": ["시간 압박 대응"],
+        "goal": "Lock in the review loop for the next week.",
+        "solutionSummary": "Use repeated review plus a short daily habit block.",
+        "priorityActions": ["Replay three wrong answers", "Track solve time"],
+        "phasePlan": ["Phase 1: review", "Phase 2: apply"],
+        "dailyHabits": ["Solve two problems daily", "Spend 10 minutes reviewing"],
+        "focusTopics": ["data structures", "search"],
+        "metricsToTrack": ["accuracy", "average score"],
+        "checkpoints": ["reach 70% weekly accuracy"],
+        "riskMitigation": ["avoid rushing difficult prompts"],
         "metricSnapshot": {
             "attempts": 12,
             "accuracy": 66.7,
             "avgScore": 72.5,
-            "trend": "최근 추세는 안정적입니다.",
+            "trend": "recent trend is stable",
         },
+        "reportBrief": {
+            "title": "Lock in the review loop for the next week.",
+            "summary": "Use repeated review plus a short daily habit block.",
+        },
+        "pdfDownloadUrl": f"/platform/reports/{report_id}/pdf" if report_id else None,
     }
 
 
@@ -68,30 +73,99 @@ class LearningSolutionReportApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 410, response.text)
         self.assertEqual(response.json().get("newPath"), "/platform/report")
 
-    def test_platform_report_returns_new_schema(self) -> None:
+    def test_platform_report_returns_latest_stored_schema(self) -> None:
         payload = _new_report_payload(101)
         with patch.object(public_learning_route.platform_public_bridge, "get_public_report", return_value=payload):
             response = self.platform_client.get("/report")
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), payload)
-        self.assertNotIn("summary", response.json())
-        self.assertNotIn("recommendations", response.json())
 
-    def test_platform_report_returns_503_on_ai_failure(self) -> None:
+    def test_platform_report_returns_404_when_no_stored_report_exists(self) -> None:
         with patch.object(
             public_learning_route.platform_public_bridge,
             "get_public_report",
-            side_effect=RuntimeError("learning_report_generation_failed: generation_failed"),
+            side_effect=LookupError("report_not_found"),
         ):
             response = self.platform_client.get("/report")
 
-        self.assertEqual(response.status_code, 503, response.text)
+        self.assertEqual(response.status_code, 404, response.text)
 
     def test_platform_milestone_returns_new_schema(self) -> None:
         payload = _new_report_payload(202)
         with patch.object(platform_reports_route, "create_milestone_report", return_value=payload):
             response = self.platform_client.post("/reports/milestone", json={"problem_count": 10})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), payload)
+
+    def test_platform_report_pdf_download_returns_attachment(self) -> None:
+        with patch.object(
+            platform_reports_route,
+            "generate_report_pdf_download",
+            return_value=("learning-report-202.pdf", b"%PDF-1.4\nmock"),
+        ):
+            response = self.platform_client.get("/reports/202/pdf")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.content, b"%PDF-1.4\nmock")
+        self.assertEqual(response.headers["content-type"], "application/pdf")
+        self.assertIn('attachment; filename="learning-report-202.pdf"', response.headers["content-disposition"])
+
+    def test_platform_report_pdf_download_returns_404_for_missing_report(self) -> None:
+        with patch.object(
+            platform_reports_route,
+            "generate_report_pdf_download",
+            side_effect=LookupError("report_not_found"),
+        ):
+            response = self.platform_client.get("/reports/999/pdf")
+
+        self.assertEqual(response.status_code, 404, response.text)
+
+    def test_platform_report_pdf_download_returns_503_when_pdf_generation_unavailable(self) -> None:
+        with patch.object(
+            platform_reports_route,
+            "generate_report_pdf_download",
+            side_effect=RuntimeError("report_pdf_generation_unavailable"),
+        ):
+            response = self.platform_client.get("/reports/999/pdf")
+
+        self.assertEqual(response.status_code, 503, response.text)
+
+    def test_platform_reports_latest_returns_recent_download_metadata(self) -> None:
+        payload = {
+            "available": True,
+            "reportId": 303,
+            "createdAt": "2026-03-19T12:00:00+00:00",
+            "goal": "Latest report",
+            "summary": "This is the most recent stored milestone report.",
+            "pdfDownloadUrl": "/platform/reports/303/pdf",
+        }
+        with patch.object(
+            platform_reports_route,
+            "get_latest_report_download_metadata",
+            return_value=payload,
+        ):
+            response = self.platform_client.get("/reports/latest")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), payload)
+
+    def test_platform_reports_latest_returns_empty_payload_when_none_exists(self) -> None:
+        payload = {
+            "available": False,
+            "reportId": None,
+            "createdAt": None,
+            "goal": "",
+            "summary": "",
+            "pdfDownloadUrl": None,
+        }
+        with patch.object(
+            platform_reports_route,
+            "get_latest_report_download_metadata",
+            return_value=payload,
+        ):
+            response = self.platform_client.get("/reports/latest")
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), payload)

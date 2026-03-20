@@ -97,7 +97,12 @@
       ANALYSIS_QUEUE_MODE: rq
       ANALYSIS_QUEUE_NAME: analysis
       AI_PROVIDER: "${AI_PROVIDER:-mock}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      GOOGLE_API_KEY_FILE: "${GOOGLE_API_KEY_FILE:-}"
+      GOOGLE_MODEL: "${GOOGLE_MODEL:-gemini-3-flash-preview}"
+      GOOGLE_TIMEOUT_SECONDS: "${GOOGLE_TIMEOUT_SECONDS:-30}"
       AI_API_KEY: "${AI_API_KEY:-}"
+      AI_API_KEY_FILE: "${AI_API_KEY_FILE:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o-mini}"
       TZ: Asia/Seoul

@@ -97,11 +97,14 @@ ENABLE_HTTPS=true TLS_CERTS_DIR=certs python run_server.py --local --host 127.0.
 - `api` 컨테이너는 작업을 enqueue
 - `worker` 컨테이너가 Redis `rq` 큐를 소비
 - `ANALYSIS_QUEUE_MODE=rq`가 강제됨
+- `auditor`, `refactoring-choice`, `code-blame`, `single-file-analysis`, `multi-file-analysis`, `fullstack-analysis` 제출은 queued 응답을 반환할 수 있음
+- 상태 조회는 `GET /platform/mode-jobs/{job_id}` 사용
 
 ### Local 모드
 
 - 기본값은 `inline`
 - 환경변수로 `rq`를 켤 수 있지만, 이 경우 Redis와 worker 구성이 별도로 필요
+- 문제 생성은 대부분 SSE 상태 이벤트 이후 최종 `payload` 1회 전달 구조이며, `arrange`는 클라이언트 가짜 스트리밍이 정상 동작임
 
 ## 6. 관리자 패널
 

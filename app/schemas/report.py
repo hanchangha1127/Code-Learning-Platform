@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -27,4 +29,14 @@ class LearningSolutionReportRead(BaseModel):
     checkpoints: list[str]
     riskMitigation: list[str]
     metricSnapshot: MetricSnapshot
+    reportBrief: dict[str, Any] = Field(default_factory=dict)
+    pdfDownloadUrl: str | None = None
 
+
+class LatestLearningReportRead(BaseModel):
+    available: bool
+    reportId: int | None = None
+    createdAt: str | None = None
+    goal: str = ""
+    summary: str = ""
+    pdfDownloadUrl: str | None = None

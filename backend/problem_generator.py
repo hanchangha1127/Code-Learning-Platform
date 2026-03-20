@@ -154,6 +154,81 @@ def _strip_comments(code: str, language_id: str) -> str:
     return "\n".join(cleaned_lines).strip()
 
 
+_ANALYSIS_OUTPUT_ONLY_PATTERNS: tuple[str, ...] = (
+    "무엇이 출력",
+    "무엇을 출력",
+    "출력하는 값",
+    "출력 값을",
+    "출력값은",
+    "최종 출력",
+    "실행 결과는",
+    "실행 결과를",
+    "결과값은",
+    "반환되는 값",
+    "무엇을 반환",
+    "반환값은",
+    "return 값",
+    "return value",
+    "stdout",
+    "콘솔에 찍히",
+    "한 줄로 답",
+)
+
+_ANALYSIS_REASONING_TERMS: tuple[str, ...] = (
+    "실행 흐름",
+    "흐름",
+    "단계",
+    "순서",
+    "변수",
+    "상태",
+    "조건",
+    "분기",
+    "반복",
+    "이유",
+    "의도",
+    "근거",
+    "역할",
+)
+
+_ANALYSIS_REASONING_FALLBACK_PROMPT = (
+    "코드를 위에서 아래로 따라가며 실행 흐름을 단계별로 설명하고, 변수 상태 변화, 조건 분기, "
+    "각 코드 조각의 역할을 함께 정리하세요. 최종 출력값이나 반환값만 적지 말고 왜 그런 흐름이 "
+    "생기는지도 서술하세요."
+)
+
+_ANALYSIS_REASONING_REFERENCE_PREFIX = (
+    "해설 포인트: 최종 출력이나 반환값만 적는 대신, 실행 순서와 변수/조건의 변화가 왜 그런 결과로 "
+    "이어지는지 함께 설명해야 합니다."
+)
+
+
+def _is_output_only_analysis_text(text: object) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    if not any(pattern in normalized for pattern in _ANALYSIS_OUTPUT_ONLY_PATTERNS):
+        return False
+    return not any(term in normalized for term in _ANALYSIS_REASONING_TERMS)
+
+
+def _normalize_analysis_prompt(prompt: object) -> str:
+    text = str(prompt or "").strip()
+    if not text:
+        return _ANALYSIS_REASONING_FALLBACK_PROMPT
+    if _is_output_only_analysis_text(text):
+        return _ANALYSIS_REASONING_FALLBACK_PROMPT
+    return text
+
+
+def _normalize_analysis_reference(reference: object) -> str:
+    text = str(reference or "").strip()
+    if not text:
+        return ""
+    if not _is_output_only_analysis_text(text):
+        return text
+    return f"{_ANALYSIS_REASONING_REFERENCE_PREFIX}\n{text}"
+
+
 _AUDITOR_TRAP_DEFAULTS: list[dict[str, str]] = [
     {"type": "logic_error", "description": "조건 분기/경계값 처리 오류"},
     {"type": "input_validation", "description": "입력 검증 누락"},
@@ -465,6 +540,24 @@ def _normalize_advanced_analysis_files(
     return fallback_files
 
 
+def _normalize_code_block_objective(value: Any, *, fallback: str = "", correct_option: str = "") -> str:
+    candidates = [
+        str(value or "").strip(),
+        str(fallback or "").strip(),
+    ]
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        normalized = re.sub(r"\s+", " ", candidate).strip()
+        if correct_option:
+            normalized = normalized.replace(correct_option, "핵심 로직").strip()
+        if normalized and normalized != "코드 빈칸 채우기":
+            return normalized
+
+    return "코드가 완성하려는 동작을 먼저 읽고 빈칸의 역할을 추론해 보세요."
+
+
 class ProblemGenerator:
     """Google Gemini API를 호출해 맞춤 문제를 생성한다."""
 
@@ -532,7 +625,9 @@ class ProblemGenerator:
             "- code에는 docstring(삼중 따옴표) 같은 설명 텍스트를 넣지 마세요.\n"
             "- code에는 불필요한 설명 문장(영어/한국어)을 넣지 마세요.\n"
             "- prompt는 학습자가 자연스럽게 설명할 수 있도록 명확하게 작성하세요.\n"
-            "- reference는 모범 해설 요약을 한국어로 작성하세요."
+            "- prompt는 최종 출력값/반환값만 맞히게 하지 말고, 변수 상태 변화, 조건 분기, 핵심 로직의 목적을 설명하게 작성하세요.\n"
+            "- '무엇이 출력되나요?', '최종 출력값은?', '실행 결과만 쓰세요', '반환값은?' 같은 질문은 금지합니다.\n"
+            "- reference는 모범 해설 요약을 한국어로 작성하되, 최종 결과만 적지 말고 흐름과 근거를 함께 설명하세요."
         )
 
         try:
@@ -564,8 +659,8 @@ class ProblemGenerator:
             problem_id=problem_id,
             title=data.get("title", "AI 생성 문제"),
             code=code_clean,
-            prompt=data.get("prompt", "코드를 분석하고 자연어로 설명해주세요."),
-            reference=data.get("reference", ""),
+            prompt=_normalize_analysis_prompt(data.get("prompt")),
+            reference=_normalize_analysis_reference(data.get("reference", "")),
             difficulty=data.get("difficulty", difficulty),
             mode=mode,
         )
@@ -592,7 +687,7 @@ class ProblemGenerator:
         contents = (
             "당신은 코딩 학습자를 위한 '빈칸 채우기' 문제를 만드는 AI입니다. "
             "반드시 JSON 형태로만 답변하세요.\n"
-            '{"title": 문자열, "code": 문자열, "correct_option": 문자열, "wrong_options": ["오답1", "오답2"], "explanation": 문자열}\n\n'
+            '{"title": 문자열, "objective": 문자열, "code": 문자열, "correct_option": 문자열, "wrong_options": ["오답1", "오답2"], "explanation": 문자열}\n\n'
             f"언어: {language_id}\n"
             f"난이도: {difficulty}\n"
             f"{history_block}"
@@ -603,7 +698,9 @@ class ProblemGenerator:
             "- correct_option은 정답 1개를 문자열로 제공하세요.\n"
             "- wrong_options는 오답 2개를 리스트로 제공하세요. 오답은 그럴듯해야 합니다.\n"
             "- explanation 필드는 한국어로 정답인 이유를 간략히 설명해주세요.\n"
-            "- title 필드는 문제의 주제를 한국어로 요약하세요."
+            "- title 필드는 문제의 주제를 한국어로 요약하세요.\n"
+            "- objective 필드는 코드가 무엇을 완성하려는지 한 문장으로 설명하세요.\n"
+            "- title/objective에는 [BLANK]에 들어갈 정확한 코드 문자열을 그대로 쓰지 마세요."
         )
 
         try:
@@ -685,13 +782,18 @@ class ProblemGenerator:
             )
 
         explanation = data.get("explanation") or "정답인 이유를 간단히 설명합니다."
-
-        # 제목에 정답이 노출되는 것을 방지하기 위해 난이도/언어 기반의 일반화된 제목을 사용
-        title_safe = "코드 빈칸 채우기"
+        title_raw = str(data.get("title") or "").strip()
+        title_safe = title_raw if title_raw and (not correct_option or correct_option not in title_raw) else "코드 빈칸 채우기"
+        objective = _normalize_code_block_objective(
+            data.get("objective") or data.get("goal") or data.get("summary") or title_raw,
+            fallback=title_raw,
+            correct_option=correct_option,
+        )
 
         return {
             "problem_id": problem_id,
             "title": title_safe,
+            "objective": objective,
             "code": code_clean,
             "options": options,
             "answer_index": answer_index,

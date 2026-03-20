@@ -17,7 +17,7 @@
     <header class="app-header page-header">
       <div>
         <h1>코드 분석</h1>
-        <p class="header-status">코드를 실행하지 않고 흐름과 의도를 설명해 보세요.</p>
+        <p class="header-status">최종 출력만 맞히지 말고 흐름, 상태 변화, 의도를 설명해 보세요.</p>
       </div>
       <div class="header-actions">
         <a href="/dashboard.html" class="ghost">대시보드</a>
@@ -62,11 +62,11 @@
           </header>
           <div class="problem-card">
             <pre id="problem-code" class="code-block">// 아직 로드된 문제가 없습니다.</pre>
-            <p id="problem-prompt" class="problem-prompt">맞춤 문제를 받은 뒤 코드가 어떻게 동작하는지 설명해 주세요.</p>
+            <p id="problem-prompt" class="problem-prompt">맞춤 문제를 받은 뒤 실행 흐름과 주요 상태 변화가 왜 생기는지 설명해 주세요.</p>
           </div>
           <form id="answer-form" class="answer-form">
             <label for="answer-text">설명 입력</label>
-            <textarea id="answer-text" name="explanation" rows="6" placeholder="코드가 어떤 순서로 동작하는지 단계별로 설명해 주세요." required></textarea>
+            <textarea id="answer-text" name="explanation" rows="6" placeholder="최종 출력만 쓰지 말고, 코드가 어떤 순서로 실행되고 어떤 값이 왜 바뀌는지 단계별로 설명해 주세요." required></textarea>
             <button type="submit" class="primary block">AI 피드백 요청</button>
           </form>
         </section>

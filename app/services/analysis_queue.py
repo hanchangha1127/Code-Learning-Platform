@@ -73,3 +73,38 @@ def enqueue_platform_mode_submit_job(
     job.save_meta()
     return QueueEnqueueResult(job_id=job.id, queue_name=queue.name)
 
+
+def enqueue_problem_follow_up_job(
+    *,
+    mode: str,
+    username: str,
+    user_id: int,
+    problem_payload: dict[str, Any],
+    runtime_payload: dict[str, Any],
+    event_type: str,
+    latency_ms: int,
+    language: str,
+    difficulty: str,
+) -> QueueEnqueueResult:
+    queue = get_analysis_queue()
+    job = queue.enqueue(
+        "app.services.platform_public_bridge.run_problem_follow_up_background",
+        mode=mode,
+        username=username,
+        user_id=user_id,
+        problem_payload=problem_payload,
+        runtime_payload=runtime_payload,
+        event_type=event_type,
+        latency_ms=latency_ms,
+        language=language,
+        difficulty=difficulty,
+        job_timeout=settings.ANALYSIS_QUEUE_JOB_TIMEOUT_SECONDS,
+        result_ttl=settings.ANALYSIS_QUEUE_RESULT_TTL_SECONDS,
+        failure_ttl=settings.ANALYSIS_QUEUE_FAILURE_TTL_SECONDS,
+    )
+    job.meta["user_id"] = int(user_id)
+    job.meta["mode"] = str(mode or "").strip().lower()
+    job.meta["username"] = str(username or "").strip()
+    job.save_meta()
+    return QueueEnqueueResult(job_id=job.id, queue_name=queue.name)
+

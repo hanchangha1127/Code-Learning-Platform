@@ -65,6 +65,16 @@ class AuditorSqlSubmitTests(unittest.TestCase):
             created_by=1,
         )
 
+        class _FakeQuery:
+            def __init__(self, problem_obj):
+                self._problem = problem_obj
+
+            def filter(self, *_args, **_kwargs):
+                return self
+
+            def first(self):
+                return self._problem
+
         class _FakeSession:
             def __init__(self, problem_obj):
                 self._problem = problem_obj
@@ -75,6 +85,11 @@ class AuditorSqlSubmitTests(unittest.TestCase):
                 if model is Problem and int(key) == int(self._problem.id):
                     return self._problem
                 return None
+
+            def query(self, model):
+                if model is Problem:
+                    return _FakeQuery(self._problem)
+                raise AssertionError("unexpected query model")
 
             def add(self, item):
                 # emulate auto id assignment after flush
@@ -136,6 +151,32 @@ class AuditorSqlSubmitTests(unittest.TestCase):
                 problem_id="101",
                 report="   ",
             )
+
+    def test_submit_auditor_report_accepts_external_problem_id(self):
+        self.db._problem.external_id = "auditor:test-problem"
+        evaluation = {
+            "summary": "외부 ID로도 정상 채점됩니다.",
+            "strengths": ["문제 식별자를 올바르게 해석했습니다."],
+            "improvements": [],
+            "score": 90.0,
+            "correct": True,
+            "found_types": ["logic_error"],
+            "missed_types": ["injection_risk"],
+        }
+        with (
+            patch("app.services.auditor_service._ai_client.analyze_auditor_report", return_value=evaluation),
+            patch("app.services.auditor_service.update_user_problem_stat") as mock_stat_update,
+        ):
+            result = submit_auditor_report(
+                self.db,
+                user_id=1,
+                problem_id="auditor:test-problem",
+                report="외부 ID 기반 감사 리포트",
+            )
+
+        self.assertEqual(result["verdict"], "passed")
+        mock_stat_update.assert_called_once()
+        self.assertTrue(self.db.committed)
 
     def test_submit_ai_failure_returns_fallback_response(self):
         with (

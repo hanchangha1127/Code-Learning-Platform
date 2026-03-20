@@ -3,15 +3,18 @@ const authClient = window.CodeAuth || null;
 const DISPLAY_NAME_KEY = "code-learning-display-name";
 const LANGUAGE_KEY = "code-learning-language";
 const DIFFICULTY_KEY = "code-learning-difficulty";
+const LATEST_REPORT_CACHE_KEY = "code-learning-latest-report";
 const DEFAULT_LANGUAGE = "python";
 const DEFAULT_DIFFICULTY = "beginner";
 const DEFAULT_TOAST_DURATION = 3200;
+const LATEST_REPORT_REFRESH_TTL_MS = 5 * 60 * 1000;
 
 const DIFFICULTY_OPTIONS = [
   { id: "beginner", label: "초급" },
   { id: "intermediate", label: "중급" },
   { id: "advanced", label: "고급" },
 ];
+const ADVANCED_HISTORY_MODES = new Set(["single-file-analysis", "multi-file-analysis", "fullstack-analysis"]);
 
 const MODE_LABELS = {
   diagnostic: "진단",
@@ -24,6 +27,9 @@ const MODE_LABELS = {
   "context-inference": "맥락 추론",
   "refactoring-choice": "최적안 선택",
   "code-blame": "범인 찾기",
+  "single-file-analysis": "단일 파일 분석",
+  "multi-file-analysis": "다중 파일 분석",
+  "fullstack-analysis": "풀스택 코드 분석",
 };
 
 const LANGUAGE_LABELS = {
@@ -50,14 +56,21 @@ const REPORT_LOADING_STEPS = [
 
 const state = {
   token: null,
+  userId: null,
   username: "",
   displayName: "",
   languages: [],
   selectedLanguage: DEFAULT_LANGUAGE,
   difficulty: DEFAULT_DIFFICULTY,
+  latestReport: null,
+  latestReportStatus: "idle",
+  latestReportError: "",
+  latestReportRequestId: 0,
+  latestReportCheckedAt: 0,
   toastTimer: null,
   reportLoadingTimer: null,
   activeReportRequestId: null,
+  wrongNoteAdvancedProblems: new Map(),
 };
 
 const apiRequest = window.CodeApiClient.create({
@@ -65,6 +78,12 @@ const apiRequest = window.CodeApiClient.create({
   authClient,
   defaultErrorMessage: "요청을 처리하지 못했습니다.",
 });
+
+import {
+  buildAdvancedHistoryWorkbenchMarkup,
+  mountAdvancedHistoryWorkbench,
+  normalizeAdvancedHistoryProblem,
+} from "./advanced_history_view.js";
 
 
 const elements = {};
@@ -103,6 +122,10 @@ function cacheDom() {
   elements.profileAvatar = document.getElementById("profile-avatar");
   elements.wrongNoteBtn = document.getElementById("btn-wrong-note");
   elements.reportBtn = document.getElementById("btn-report");
+  elements.latestReportCard = document.getElementById("latest-report-card");
+  elements.latestReportTitle = document.getElementById("latest-report-title");
+  elements.latestReportMeta = document.getElementById("latest-report-meta");
+  elements.latestReportDownloadBtn = document.getElementById("btn-latest-report-download");
   elements.logoutBtn = document.getElementById("btn-logout");
   elements.languageSetting = document.getElementById("language-setting");
   elements.difficultySetting = document.getElementById("difficulty-setting");
@@ -130,15 +153,19 @@ async function init() {
   state.difficulty = getSavedDifficulty();
   renderUserInfo();
   bindEvents();
-  loadLanguages();
   renderDifficultyOptions();
-  loadProfile();
-  loadUserInfo();
+  void loadLanguages();
+  void loadProfile();
+  await loadUserInfo();
+  restoreLatestReportFromCache();
+  renderLatestReportSummary();
+  void loadLatestReportSummary();
 }
 
 function bindEvents() {
   elements.wrongNoteBtn?.addEventListener("click", openWrongNote);
   elements.reportBtn?.addEventListener("click", openReportModal);
+  elements.latestReportDownloadBtn?.addEventListener("click", handleLatestReportDownload);
   elements.logoutBtn?.addEventListener("click", handleLogout);
   elements.modalClose?.addEventListener("click", hideModal);
   elements.modal?.addEventListener("click", (event) => {
@@ -158,17 +185,407 @@ function renderUserInfo() {
   }
 }
 
+function buildAuthHeaders() {
+  const headers = {};
+  const token = state.token;
+  const canUseBearer =
+    token &&
+    !(authClient && typeof authClient.isSessionMarker === "function" && authClient.isSessionMarker(token));
+  if (canUseBearer) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+function parseResponseBody(text) {
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { detail: text };
+  }
+}
+
+function getLatestReportCacheUserKey() {
+  if (
+    authClient &&
+    typeof authClient.isSessionMarker === "function" &&
+    authClient.isSessionMarker(state.token) &&
+    !Number.isInteger(Number(state.userId))
+  ) {
+    return "";
+  }
+
+  const userId = Number(state.userId);
+  if (Number.isInteger(userId) && userId > 0) {
+    return `id:${userId}`;
+  }
+  const username = normalizeText(state.username).toLowerCase();
+  if (username) {
+    return `username:${username}`;
+  }
+  return "";
+}
+
+function normalizeLatestReportPayload(payload) {
+  const reportId = Number(payload?.reportId ?? payload?.report_id);
+  const createdAt = payload?.createdAt ?? payload?.created_at ?? null;
+  const goal = normalizeText(payload?.goal || payload?.title || payload?.reportGoal);
+  const summary = normalizeText(payload?.summary || payload?.headline || payload?.solutionSummary);
+  const pdfDownloadUrl = normalizeText(payload?.pdfDownloadUrl ?? payload?.pdf_download_url);
+  const hasDownloadTarget = (Number.isInteger(reportId) && reportId > 0) || pdfDownloadUrl;
+
+  if (!payload || payload.available === false || !hasDownloadTarget) {
+    return null;
+  }
+
+  return {
+    available: true,
+    reportId: Number.isInteger(reportId) && reportId > 0 ? reportId : null,
+    createdAt,
+    goal,
+    summary,
+    pdfDownloadUrl,
+  };
+}
+
+function persistLatestReportCache(latestReport, checkedAt = Date.now()) {
+  const userKey = getLatestReportCacheUserKey();
+  if (!userKey || !latestReport) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      LATEST_REPORT_CACHE_KEY,
+      JSON.stringify({
+        userKey,
+        userId: Number.isInteger(Number(state.userId)) ? Number(state.userId) : null,
+        username: normalizeText(state.username).toLowerCase(),
+        checkedAt: Number.isFinite(Number(checkedAt)) ? Number(checkedAt) : Date.now(),
+        report: latestReport,
+      })
+    );
+  } catch {
+    // Ignore localStorage write failures.
+  }
+}
+
+function readLatestReportCache() {
+  const userKey = getLatestReportCacheUserKey();
+  if (!userKey) {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(LATEST_REPORT_CACHE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const payload = JSON.parse(raw);
+    if (!payload || payload.userKey !== userKey) {
+      return null;
+    }
+    const report = normalizeLatestReportPayload({ available: true, ...(payload.report || {}) });
+    if (!report) {
+      return null;
+    }
+    const checkedAt = Number(payload.checkedAt);
+    return {
+      report,
+      checkedAt: Number.isFinite(checkedAt) && checkedAt > 0 ? checkedAt : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clearLatestReportCache() {
+  try {
+    window.localStorage.removeItem(LATEST_REPORT_CACHE_KEY);
+  } catch {
+    // Ignore localStorage delete failures.
+  }
+}
+
+function restoreLatestReportFromCache() {
+  const cached = readLatestReportCache();
+  if (!cached) {
+    return false;
+  }
+
+  state.latestReport = cached.report;
+  state.latestReportStatus = "ready";
+  state.latestReportError = "";
+  state.latestReportCheckedAt = cached.checkedAt;
+  return true;
+}
+
+function setLatestReport(payload, { persist = true, clearCache = true, checkedAt = Date.now() } = {}) {
+  const latestReport = normalizeLatestReportPayload(payload);
+  if (!latestReport) {
+    state.latestReport = null;
+    state.latestReportStatus = "empty";
+    state.latestReportError = "";
+    state.latestReportCheckedAt = Number.isFinite(Number(checkedAt)) ? Number(checkedAt) : 0;
+    if (clearCache) {
+      clearLatestReportCache();
+    }
+    return false;
+  }
+
+  state.latestReport = latestReport;
+  state.latestReportStatus = "ready";
+  state.latestReportError = "";
+  state.latestReportCheckedAt = Number.isFinite(Number(checkedAt)) ? Number(checkedAt) : Date.now();
+  if (persist) {
+    persistLatestReportCache(latestReport, state.latestReportCheckedAt);
+  }
+  return true;
+}
+
+function isLatestReportSummaryStale(now = Date.now()) {
+  if (!Number.isFinite(Number(state.latestReportCheckedAt)) || state.latestReportCheckedAt <= 0) {
+    return true;
+  }
+  return now - state.latestReportCheckedAt >= LATEST_REPORT_REFRESH_TTL_MS;
+}
+
+function renderLatestReportSummary() {
+  if (!elements.latestReportCard || !elements.latestReportTitle || !elements.latestReportMeta || !elements.latestReportDownloadBtn) {
+    return;
+  }
+
+  elements.latestReportCard.classList.toggle("is-loading", state.latestReportStatus === "loading");
+  elements.latestReportCard.classList.toggle("is-error", state.latestReportStatus === "error");
+
+  if (state.latestReportStatus === "loading") {
+    elements.latestReportCard.classList.add("is-empty");
+    elements.latestReportTitle.textContent = "최근 학습 리포트를 확인하는 중입니다.";
+    elements.latestReportMeta.textContent = "프로필 화면에서 바로 다시 다운로드할 수 있도록 최신 리포트를 불러오고 있습니다.";
+    elements.latestReportDownloadBtn.textContent = "불러오는 중...";
+    elements.latestReportDownloadBtn.disabled = true;
+    elements.latestReportDownloadBtn.setAttribute("aria-busy", "true");
+    return;
+  }
+
+  if (state.latestReportStatus === "error") {
+    elements.latestReportCard.classList.add("is-empty");
+    elements.latestReportTitle.textContent = "최근 학습 리포트를 불러오지 못했습니다.";
+    elements.latestReportMeta.textContent = state.latestReportError || "잠시 후 다시 시도해 주세요.";
+    elements.latestReportDownloadBtn.textContent = "다시 불러오기";
+    elements.latestReportDownloadBtn.disabled = false;
+    elements.latestReportDownloadBtn.setAttribute("aria-busy", "false");
+    return;
+  }
+
+  const latest = state.latestReport;
+  if (!latest || (!Number.isInteger(latest.reportId) && !latest.pdfDownloadUrl)) {
+    elements.latestReportCard.classList.add("is-empty");
+    elements.latestReportTitle.textContent = "아직 저장된 리포트가 없습니다.";
+    elements.latestReportMeta.textContent = "학습 리포트를 생성하면 여기서 다시 PDF로 내려받을 수 있습니다.";
+    elements.latestReportDownloadBtn.textContent = "최근 PDF 다운로드";
+    elements.latestReportDownloadBtn.disabled = true;
+    elements.latestReportDownloadBtn.setAttribute("aria-busy", "false");
+    return;
+  }
+
+  elements.latestReportCard.classList.remove("is-empty");
+  elements.latestReportTitle.textContent = latest.goal || "최근 학습 리포트";
+  const metaParts = [];
+  if (latest.createdAt) {
+    metaParts.push(`생성 ${formatDate(latest.createdAt)}`);
+  }
+  if (latest.summary) {
+    metaParts.push(latest.summary);
+  }
+  elements.latestReportMeta.textContent = metaParts.join(" · ") || "최근 생성한 학습 리포트를 다시 내려받을 수 있습니다.";
+  elements.latestReportDownloadBtn.textContent = "최근 PDF 다운로드";
+  elements.latestReportDownloadBtn.disabled = false;
+  elements.latestReportDownloadBtn.setAttribute("aria-busy", "false");
+}
+
+async function requestLatestReportSummary() {
+  const response = await fetch("/platform/reports/latest", {
+    method: "GET",
+    credentials: "same-origin",
+    headers: buildAuthHeaders(),
+  });
+  const text = await response.text().catch(() => "");
+  const data = parseResponseBody(text);
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    const message = data?.detail || data?.message || "최근 리포트를 불러오지 못했습니다.";
+    if (
+      authClient &&
+      typeof authClient.isAuthFailureStatus === "function" &&
+      authClient.isAuthFailureStatus(response.status) &&
+      typeof authClient.handleSessionExpired === "function"
+    ) {
+      authClient.handleSessionExpired(message);
+    }
+    throw new Error(message);
+  }
+
+  return data;
+}
+
+async function loadLatestReportSummary() {
+  const requestId = state.latestReportRequestId + 1;
+  state.latestReportRequestId = requestId;
+  if (!state.latestReport) {
+    state.latestReportStatus = "loading";
+    state.latestReportError = "";
+  }
+  renderLatestReportSummary();
+
+  try {
+    const payload = await requestLatestReportSummary();
+    if (state.latestReportRequestId !== requestId) return;
+    if (payload === null) {
+      setLatestReport(null, { persist: false, clearCache: true, checkedAt: Date.now() });
+    } else if (!setLatestReport(payload, { persist: true, clearCache: false, checkedAt: Date.now() }) && !restoreLatestReportFromCache()) {
+      setLatestReport(null, { persist: false, clearCache: false });
+    }
+  } catch (error) {
+    if (state.latestReportRequestId !== requestId) return;
+    if (!restoreLatestReportFromCache()) {
+      state.latestReport = null;
+      state.latestReportStatus = "error";
+      state.latestReportError = error?.message || "최근 리포트를 불러오지 못했습니다.";
+    }
+  }
+
+  if (state.latestReportRequestId === requestId) {
+    renderLatestReportSummary();
+  }
+}
+
+function renderReportOverviewModal() {
+  const latest = state.latestReport;
+  const hasLatest = latest && (Number.isInteger(latest.reportId) || normalizeText(latest.pdfDownloadUrl));
+  const generatedAt = hasLatest && latest.createdAt
+    ? `<p class="report-summary-meta">생성 ${escapeText(formatDate(latest.createdAt), "-")}</p>`
+    : "";
+  const latestSummary = hasLatest
+    ? `
+      <article class="report-summary-card report-summary-card-hero">
+        <p class="report-summary-label">최근 저장본</p>
+        <h4>${escapeText(latest.goal, "최근 학습 리포트")}</h4>
+        ${generatedAt}
+        <p class="report-summary-text">${escapeText(latest.summary, "최근 생성한 리포트를 다시 내려받을 수 있습니다.")}</p>
+      </article>
+    `
+    : `
+      <article class="report-summary-card report-summary-card-hero">
+        <p class="report-summary-label">저장된 리포트</p>
+        <h4>아직 저장된 리포트가 없습니다.</h4>
+        <p class="report-summary-text">지금 생성하면 최근 학습 기록을 기준으로 새 리포트를 만들 수 있습니다.</p>
+      </article>
+    `;
+
+  const statusBody = (() => {
+    if (state.latestReportStatus === "loading") {
+      return `
+        <article class="report-summary-card">
+          <p class="report-summary-label">최근 상태 확인 중</p>
+          <p class="report-summary-text">최신 리포트 메타데이터를 불러오고 있습니다.</p>
+        </article>
+      `;
+    }
+    if (state.latestReportStatus === "error") {
+      return `
+        <article class="report-summary-card">
+          <p class="report-summary-label">최근 상태 확인 실패</p>
+          <p class="report-summary-text">${escapeText(state.latestReportError, "최근 리포트를 불러오지 못했습니다.")}</p>
+        </article>
+      `;
+    }
+    return `
+      <article class="report-summary-card">
+        <p class="report-summary-label">생성 방식</p>
+        <p class="report-summary-text">모달을 열기만 해서는 새 리포트를 만들지 않습니다. 버튼을 눌렀을 때만 생성합니다.</p>
+      </article>
+    `;
+  })();
+
+  return `
+    <section class="report-summary">
+      <div class="report-summary-head">
+        <div class="report-summary-copy">
+          <p class="report-summary-kicker">학습 리포트</p>
+          <h4>${hasLatest ? "최근 리포트 확인" : "새 리포트 생성"}</h4>
+          <p class="report-summary-meta">최신 저장본을 확인하거나 필요할 때만 새 리포트를 생성하세요.</p>
+        </div>
+      </div>
+      <div class="report-summary-cards">
+        ${latestSummary}
+        ${statusBody}
+        <article class="report-summary-card">
+          <p class="report-summary-label">다음 동작</p>
+          <div class="dashboard-action-stack">
+            <button id="report-generate-btn" type="button" class="primary">
+              ${hasLatest ? "새 리포트 생성" : "지금 리포트 생성"}
+            </button>
+            ${hasLatest ? '<button id="report-modal-download-btn" type="button" class="ghost">최근 PDF 다운로드</button>' : ""}
+            <button id="report-refresh-summary-btn" type="button" class="ghost">최신 상태 다시 확인</button>
+          </div>
+        </article>
+      </div>
+    </section>`;
+}
+
+function showReportOverviewModal() {
+  showModal("학습 리포트", renderReportOverviewModal(), { wide: true });
+  bindReportOverviewActions();
+}
+
+function isReportOverviewModalActive() {
+  if (!elements.modal || elements.modal.classList.contains("hidden")) {
+    return false;
+  }
+  return Boolean(document.getElementById("report-refresh-summary-btn"));
+}
+
+function bindReportOverviewActions() {
+  const generateButton = document.getElementById("report-generate-btn");
+  generateButton?.addEventListener("click", () => {
+    void generateReport();
+  });
+
+  const refreshButton = document.getElementById("report-refresh-summary-btn");
+  refreshButton?.addEventListener("click", async () => {
+    await loadLatestReportSummary();
+    if (!isReportOverviewModalActive()) return;
+    showReportOverviewModal();
+  });
+
+  const downloadButton = document.getElementById("report-modal-download-btn");
+  downloadButton?.addEventListener("click", () => {
+    const latest = state.latestReport;
+    if (!latest) return;
+    void downloadReportPdf(latest.reportId, downloadButton, latest.pdfDownloadUrl);
+  });
+}
+
 async function loadUserInfo() {
   try {
     const data = await apiRequest("/platform/me");
+    state.userId = Number.isInteger(Number(data.id)) ? Number(data.id) : state.userId;
     state.username = data.username || state.username;
     state.displayName = data.display_name || data.displayName || state.username;
     if (state.displayName) {
       window.localStorage.setItem(DISPLAY_NAME_KEY, state.displayName);
     }
     renderUserInfo();
+    return data;
   } catch {
     // Ignore and keep fallback from token
+    return null;
   }
 }
 
@@ -286,6 +703,7 @@ function getSavedDifficulty() {
 }
 
 async function openWrongNote() {
+  state.wrongNoteAdvancedProblems.clear();
   try {
     const payload = await apiRequest("/platform/learning/history");
     const list = (payload.history || []).filter((item) => item.correct === false);
@@ -293,16 +711,26 @@ async function openWrongNote() {
       showModal("오답 노트", '<p class="empty">틀린 기록이 없습니다.</p>', { wide: true });
       return;
     }
-    const items = list.map((item) => renderWrongNoteItem(item)).join("");
-    showModal("오답 노트", `<ul class="list history-list">${items}</ul>`, { wide: true });
+    const items = list.map((item, index) => renderWrongNoteItem(item, index)).join("");
+    showModal("오답 노트", `<ul class="list history-list">${items}</ul>`, {
+      wide: true,
+      maxWidth: "min(1280px, 97vw)",
+    });
+    mountWrongNoteAdvancedWorkbenches();
   } catch (error) {
+    state.wrongNoteAdvancedProblems.clear();
     showModal("오답 노트", `<p class="empty">${escapeText(error.message, "기록을 불러오지 못했습니다.")}</p>`, { wide: true });
   }
 }
 
-function renderWrongNoteItem(item) {
+function renderWrongNoteItem(item, index) {
   const modeLabel = formatModeLabel(item.mode);
   const modeKey = item.mode || "practice";
+  const noteId = buildWrongNoteId(index);
+  const advancedProblem = normalizeAdvancedHistoryProblem(item);
+  if (advancedProblem) {
+    state.wrongNoteAdvancedProblems.set(noteId, advancedProblem);
+  }
   const summaryText = escapeText(item.summary || modeLabel || "요약 없음", "요약 없음");
   const metaParts = [];
   if (item.language) metaParts.push(`언어: ${formatLanguageLabel(item.language)}`);
@@ -311,24 +739,37 @@ function renderWrongNoteItem(item) {
     ? `<p><strong>설정:</strong> ${metaParts.map((part) => escapeHtml(part)).join(" · ")}</p>`
     : "";
   const showRawCode = !["code-error", "code-arrange", "code-block"].includes(modeKey);
-  const codeHtml = showRawCode && item.problem_code
+  const codeHtml = !advancedProblem && showRawCode && item.problem_code
     ? `<div class="code-block"><pre><code>${escapeHtml(item.problem_code)}</code></pre></div>`
     : "";
-  const promptHtml = item.problem_prompt
+  const promptHtml = !advancedProblem && item.problem_prompt
     ? `<p><strong>질문:</strong> ${escapeText(item.problem_prompt)}</p>`
     : "";
   const modeHtml = buildModeDetail(item);
   const feedbackSummary = item.feedback?.summary;
-  const feedbackHtml = feedbackSummary
+  const feedbackHtml = !isAdvancedAnalysisMode(modeKey) && feedbackSummary
     ? `<p><strong>AI 피드백:</strong> ${escapeText(feedbackSummary)}</p>`
     : "";
   const scoreHtml =
-    item.score !== undefined && item.score !== null
+    !isAdvancedAnalysisMode(modeKey) && item.score !== undefined && item.score !== null
       ? `<p>점수: ${escapeText(item.score)}</p>`
       : "";
   const safeDate = escapeHtml(formatDate(item.created_at));
   const safeModeLabel = escapeHtml(modeLabel || "학습 기록");
   const problemTitle = escapeText(item.problem_title, "제목 없음");
+  const advancedContextHtml = advancedProblem
+    ? renderAdvancedHistoryContext(noteId, advancedProblem)
+    : "";
+  const detailHtml = advancedProblem
+    ? advancedContextHtml
+    : `
+        ${codeHtml}
+        ${promptHtml}
+        <hr />
+        ${modeHtml}
+        ${feedbackHtml}
+        ${scoreHtml}
+      `;
 
   return `
     <li>
@@ -342,12 +783,7 @@ function renderWrongNoteItem(item) {
         <div class="history-detail">
           <p><strong>문제:</strong> ${problemTitle}</p>
           ${metaHtml}
-          ${codeHtml}
-          ${promptHtml}
-          <hr />
-          ${modeHtml}
-          ${feedbackHtml}
-          ${scoreHtml}
+          ${detailHtml}
         </div>
       </details>
     </li>`;
@@ -355,6 +791,9 @@ function renderWrongNoteItem(item) {
 
 function buildModeDetail(item) {
   const mode = item.mode || "practice";
+  if (isAdvancedAnalysisMode(mode)) {
+    return "";
+  }
   if (mode === "code-calc") {
     const submitted = escapeText(item.submitted_output, "없음");
     const expected = escapeText(item.expected_output, "없음");
@@ -519,6 +958,82 @@ function buildModeDetail(item) {
   return `
     <p><strong>제출 답변:</strong></p>
     <p class="user-answer">${answer}</p>
+  `;
+}
+
+function isAdvancedAnalysisMode(mode) {
+  return ADVANCED_HISTORY_MODES.has(String(mode || "").trim().toLowerCase());
+}
+
+function buildWrongNoteId(index) {
+  return `wrong-note-${index + 1}`;
+}
+
+function mountWrongNoteAdvancedWorkbenches() {
+  if (!elements.modalBody || state.wrongNoteAdvancedProblems.size === 0) {
+    return;
+  }
+
+  state.wrongNoteAdvancedProblems.forEach((problem, noteId) => {
+    const root = elements.modalBody.querySelector(`[data-history-workbench-id="${noteId}"]`);
+    if (root) {
+      mountAdvancedHistoryWorkbench(root, problem);
+    }
+  });
+}
+
+function renderAdvancedHistoryContext(noteId, problem) {
+  return `
+    <section class="history-advanced-context">
+      ${buildAdvancedHistoryWorkbenchMarkup(noteId)}
+    </section>
+  `;
+}
+
+function buildAdvancedChecklist(checklist) {
+  if (!Array.isArray(checklist) || checklist.length === 0) {
+    return "";
+  }
+  const items = checklist.map((entry) => `<li>${escapeText(entry)}</li>`).join("");
+  return `
+    <div class="history-advanced-checklist">
+      <strong>체크리스트</strong>
+      <ul>${items}</ul>
+    </div>
+  `;
+}
+
+function buildAdvancedAnalysisModeDetail(item) {
+  const explanation = escapeText(item.explanation, "내용 없음");
+  const feedbackSummary = escapeText(item.feedback?.summary, "요약 없음");
+  const strengths = escapeList(item.feedback?.strengths, "없음");
+  const improvements = escapeList(item.feedback?.improvements, "없음");
+  const score = escapeText(item.score, "-");
+  const reference = escapeText(item.reference_report);
+  const referenceHtml = reference
+    ? `
+      <article class="advanced-result-card history-advanced-reference-card">
+        <h4>모범 리포트</h4>
+        <p class="user-answer">${reference}</p>
+      </article>
+    `
+    : "";
+
+  return `
+    <div class="history-advanced-report-grid">
+      <article class="advanced-result-card">
+        <h4>내 제출 리포트</h4>
+        <p class="user-answer">${explanation}</p>
+      </article>
+      <article class="advanced-result-card">
+        <h4>채점 결과</h4>
+        <p><strong>점수:</strong> ${score}</p>
+        <p><strong>AI 요약:</strong> ${feedbackSummary}</p>
+        <p><strong>강점:</strong> ${strengths}</p>
+        <p><strong>개선 포인트:</strong> ${improvements}</p>
+      </article>
+      ${referenceHtml}
+    </div>
   `;
 }
 
@@ -736,66 +1251,283 @@ function startReportLoadingAnimation(requestId) {
   }, 1200);
 }
 
-function renderReportContent(payload) {
-  const metric = payload.metricSnapshot || {};
-  const priorityActions = buildList(payload.priorityActions || [], "우선 실행 액션이 없습니다.");
-  const phasePlan = buildList(payload.phasePlan || [], "단계별 계획이 없습니다.");
-  const dailyHabits = buildList(payload.dailyHabits || [], "일일 학습 습관 제안이 없습니다.");
-  const focusTopics = buildList(payload.focusTopics || [], "집중 학습 주제가 없습니다.");
-  const metricsToTrack = buildList(payload.metricsToTrack || [], "추적 지표가 없습니다.");
-  const checkpoints = buildList(payload.checkpoints || [], "체크포인트가 없습니다.");
-  const riskMitigation = buildList(payload.riskMitigation || [], "리스크 대응 항목이 없습니다.");
-  const metricSnapshot = `
-    <p>시도 횟수: ${escapeText(metric.attempts ?? 0, "0")}</p>
-    <p>정확도: ${escapeText(metric.accuracy ?? "-", "-")}%</p>
-    <p>평균 점수: ${escapeText(metric.avgScore ?? "-", "-")}</p>
-    <p>추세: ${escapeText(metric.trend ?? "데이터 부족", "데이터 부족")}</p>
-  `;
+function collectReportActions(payload) {
+  const briefActions = Array.isArray(payload?.reportBrief?.nextSteps)
+    ? payload.reportBrief.nextSteps
+    : Array.isArray(payload?.reportBrief?.focusActions)
+      ? payload.reportBrief.focusActions
+    : [];
+  const sources = [briefActions, payload?.priorityActions, payload?.phasePlan, payload?.dailyHabits];
+  const deduped = [];
+  const seen = new Set();
+
+  sources.forEach((items) => {
+    if (!Array.isArray(items)) return;
+    items.forEach((item) => {
+      const normalized = normalizeText(item);
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      deduped.push(normalized);
+    });
+  });
+
+  return deduped.slice(0, 3);
+}
+
+function collectReportCheckpoints(payload) {
+  const briefCheckpoints = Array.isArray(payload?.reportBrief?.checkpoints)
+    ? payload.reportBrief.checkpoints
+    : [];
+  const sources = [briefCheckpoints, payload?.checkpoints, payload?.metricsToTrack];
+  const deduped = [];
+  const seen = new Set();
+
+  sources.forEach((items) => {
+    if (!Array.isArray(items)) return;
+    items.forEach((item) => {
+      const normalized = normalizeText(item);
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      deduped.push(normalized);
+    });
+  });
+
+  return deduped.slice(0, 3);
+}
+
+function renderReportMetricGrid(metric, metricItems) {
+  const normalizedItems = Array.isArray(metricItems) && metricItems.length
+    ? metricItems
+    : [
+        { label: "시도 수", value: `${normalizeText(metric.attempts || 0) || "0"}회` },
+        { label: "정확도", value: `${normalizeText(metric.accuracy ?? "-") || "-"}%` },
+        { label: "평균 점수", value: normalizeText(metric.avgScore ?? "-") || "-" },
+        { label: "추세", value: normalizeText(metric.trend ?? "데이터 부족") || "데이터 부족" },
+      ];
+
+  return normalizedItems
+    .map(
+      (item) => `
+        <div class="report-metric-item">
+          <span class="report-metric-label">${escapeHtml(item.label || "-")}</span>
+          <strong class="report-metric-value">${escapeHtml(item.value || "-")}</strong>
+        </div>
+      `
+    )
+    .join("");
+}
+
+function renderReportActionList(actions) {
+  if (!actions.length) {
+    return '<p class="empty">바로 실행할 액션이 없습니다.</p>';
+  }
 
   return `
-    <section class="report-grid">
-      <div>
-        <h4>학습 목표</h4>
-        <p>${escapeText(payload.goal, "목표가 없습니다.")}</p>
-        <p><strong>생성 시각:</strong> ${escapeText(formatDate(payload.createdAt), "-")}</p>
+    <ol class="report-action-list">
+      ${actions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+    </ol>
+  `;
+}
+
+function collectReportStudyGuide(brief) {
+  const candidates = [brief?.studyGuide, brief?.nextSteps];
+  const lines = [];
+  const seen = new Set();
+
+  candidates.forEach((value) => {
+    if (Array.isArray(value)) {
+      value.forEach((entry) => {
+        const normalized = normalizeText(entry);
+        if (!normalized || seen.has(normalized)) return;
+        seen.add(normalized);
+        lines.push(normalized);
+      });
+      return;
+    }
+
+    const normalized = normalizeText(value);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    lines.push(normalized);
+  });
+
+  return lines.slice(0, 4);
+}
+
+function renderReportStudyGuide(lines) {
+  if (!Array.isArray(lines) || lines.length === 0) {
+    return "";
+  }
+
+  const hasMultipleItems = lines.length > 1;
+  const contentHtml = hasMultipleItems
+    ? `
+      <ol class="report-guide-list">
+        ${lines.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+      </ol>
+    `
+    : `<p class="report-summary-text">${escapeHtml(lines[0])}</p>`;
+
+  return `
+    <article class="report-summary-card report-summary-card-guide">
+      <div class="report-guide-head">
+        <p class="report-summary-label">앞으로 이렇게 학습하세요</p>
+        <p class="report-guide-caption">다음 학습에서 바로 적용할 수 있는 안내입니다.</p>
       </div>
-      <div>
-        <h4>솔루션 요약</h4>
-        <p>${escapeText(payload.solutionSummary, "요약이 없습니다.")}</p>
+      ${contentHtml}
+    </article>
+  `;
+}
+
+function renderReportContent(payload) {
+  const metric = payload.metricSnapshot || {};
+  const brief = payload.reportBrief || {};
+  const reportId = Number(payload.reportId);
+  const actions = collectReportActions(payload);
+  const checkpoints = collectReportCheckpoints(payload);
+  const studyGuide = collectReportStudyGuide(brief);
+  const canDownload = Number.isInteger(reportId) && reportId > 0;
+  const metaParts = [
+    `생성 ${escapeText(formatDate(payload.createdAt), "-")}`,
+    normalizeText(brief.title || payload.goal) ? `목표 ${escapeText(brief.title || payload.goal)}` : "",
+  ].filter(Boolean);
+  const headline = brief.headline || payload.goal || "핵심만 빠르게 확인하세요";
+  const summary = brief.summary || payload.solutionSummary || "요약이 없습니다.";
+
+  return `
+    <section class="report-summary">
+      <div class="report-summary-head">
+        <div class="report-summary-copy">
+          <p class="report-summary-kicker">학습 리포트</p>
+          <h4>${escapeText(headline, "핵심만 빠르게 확인하세요")}</h4>
+          <p class="report-summary-meta">${metaParts.join('<span aria-hidden="true">·</span>')}</p>
+        </div>
+        ${
+          canDownload
+            ? '<button id="report-pdf-download" type="button" class="ghost report-download-btn">PDF 다운로드</button>'
+            : ""
+        }
       </div>
-      <div>
-        <h4>지표 스냅샷</h4>
-        ${metricSnapshot}
-      </div>
-      <div>
-        <h4>우선 실행 액션</h4>
-        ${priorityActions}
-      </div>
-      <div>
-        <h4>단계별 계획</h4>
-        ${phasePlan}
-      </div>
-      <div>
-        <h4>일일 습관</h4>
-        ${dailyHabits}
-      </div>
-      <div>
-        <h4>집중 학습 주제</h4>
-        ${focusTopics}
-      </div>
-      <div>
-        <h4>추적 지표</h4>
-        ${metricsToTrack}
-      </div>
-      <div>
-        <h4>체크포인트</h4>
-        ${checkpoints}
-      </div>
-      <div>
-        <h4>리스크 대응</h4>
-        ${riskMitigation}
+      <div class="report-summary-cards">
+        <article class="report-summary-card report-summary-card-hero">
+          <p class="report-summary-label">핵심 요약</p>
+          <p class="report-summary-text">${escapeText(summary, "요약이 없습니다.")}</p>
+        </article>
+        <article class="report-summary-card">
+          <p class="report-summary-label">핵심 지표</p>
+          <div class="report-metric-grid">
+            ${renderReportMetricGrid(metric, brief.metrics)}
+          </div>
+        </article>
+        <article class="report-summary-card">
+          <p class="report-summary-label">실행 지시</p>
+          ${renderReportActionList(actions)}
+        </article>
+        <article class="report-summary-card">
+          <p class="report-summary-label">체크포인트</p>
+          ${renderReportActionList(checkpoints)}
+        </article>
+        ${renderReportStudyGuide(studyGuide)}
       </div>
     </section>`;
+}
+
+async function downloadReportPdf(reportId, trigger, downloadUrl) {
+  const normalizedDownloadUrl = normalizeText(downloadUrl);
+  const hasReportId = Number.isInteger(reportId) && reportId > 0;
+  if (!hasReportId && !normalizedDownloadUrl) {
+    showToast("다운로드할 리포트가 없습니다.");
+    return;
+  }
+
+  trigger?.setAttribute("aria-busy", "true");
+  if (trigger instanceof HTMLButtonElement) {
+    trigger.disabled = true;
+  }
+
+  try {
+    const response = await fetch(normalizedDownloadUrl || `/platform/reports/${reportId}/pdf`, {
+      method: "GET",
+      credentials: "same-origin",
+      headers: buildAuthHeaders(),
+    });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        clearLatestReportCache();
+        if (state.latestReport && state.latestReport.reportId === reportId) {
+          state.latestReport = null;
+          state.latestReportStatus = "empty";
+          state.latestReportError = "";
+          renderLatestReportSummary();
+        }
+      }
+      const contentType = response.headers.get("content-type") || "";
+      let message = "PDF 다운로드에 실패했습니다.";
+
+      if (contentType.includes("application/json")) {
+        const data = await response.json().catch(() => null);
+        message = data?.detail || data?.message || message;
+      } else {
+        const text = await response.text().catch(() => "");
+        if (text) {
+          message = text;
+        }
+      }
+
+      if (
+        authClient &&
+        typeof authClient.isAuthFailureStatus === "function" &&
+        authClient.isAuthFailureStatus(response.status) &&
+        typeof authClient.handleSessionExpired === "function"
+      ) {
+        authClient.handleSessionExpired(message);
+      }
+
+      throw new Error(message);
+    }
+
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = hasReportId ? `learning-report-${reportId}.pdf` : "learning-report.pdf";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    showToast("PDF 다운로드를 시작했습니다.");
+  } catch (error) {
+    showToast(error?.message || "PDF 다운로드에 실패했습니다.");
+  } finally {
+    trigger?.setAttribute("aria-busy", "false");
+    if (trigger instanceof HTMLButtonElement) {
+      trigger.disabled = false;
+    }
+  }
+}
+
+function handleLatestReportDownload() {
+  if (state.latestReportStatus === "error") {
+    void loadLatestReportSummary();
+    return;
+  }
+
+  const latest = state.latestReport;
+  if (!latest) {
+    showToast("다운로드할 최근 리포트가 없습니다.");
+    return;
+  }
+  void downloadReportPdf(latest.reportId, elements.latestReportDownloadBtn, latest.pdfDownloadUrl);
+}
+
+function bindReportModalActions(payload) {
+  const reportId = Number(payload?.reportId);
+  const downloadUrl = normalizeText(payload?.pdfDownloadUrl);
+  const downloadButton = document.getElementById("report-pdf-download");
+  downloadButton?.addEventListener("click", () => {
+    void downloadReportPdf(reportId, downloadButton, downloadUrl);
+  });
 }
 
 function showReportErrorModal(error) {
@@ -812,13 +1544,27 @@ function showReportErrorModal(error) {
   retryButton?.addEventListener(
     "click",
     () => {
-      void openReportModal();
+      void generateReport();
     },
     { once: true }
   );
 }
 
 async function openReportModal() {
+  showReportOverviewModal();
+
+  if (
+    state.latestReportStatus === "idle" ||
+    state.latestReportStatus === "loading" ||
+    isLatestReportSummaryStale()
+  ) {
+    await loadLatestReportSummary();
+    if (!isReportOverviewModalActive()) return;
+    showReportOverviewModal();
+  }
+}
+
+async function generateReport() {
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   state.activeReportRequestId = requestId;
   setReportButtonLoading(true);
@@ -827,10 +1573,24 @@ async function openReportModal() {
   try {
     await waitForNextPaint();
     if (state.activeReportRequestId !== requestId) return;
-    const payload = await apiRequest("/platform/report");
+    const payload = await apiRequest("/platform/reports/milestone", {
+      method: "POST",
+      body: { problem_count: 10 },
+    });
     if (state.activeReportRequestId !== requestId) return;
+    state.latestReportRequestId += 1;
+    setLatestReport({
+      available: Number(payload?.reportId) > 0,
+      reportId: payload?.reportId,
+      createdAt: payload?.createdAt || null,
+      goal: payload?.reportBrief?.title || payload?.goal || "",
+      summary: payload?.reportBrief?.summary || payload?.solutionSummary || "",
+      pdfDownloadUrl: payload?.pdfDownloadUrl || "",
+    });
+    renderLatestReportSummary();
     stopReportLoadingAnimation();
     showModal("학습 리포트", renderReportContent(payload), { wide: true });
+    bindReportModalActions(payload);
   } catch (error) {
     if (state.activeReportRequestId !== requestId) return;
     stopReportLoadingAnimation();
@@ -844,6 +1604,7 @@ async function openReportModal() {
 }
 
 function handleLogout() {
+  clearLatestReportCache();
   if (authClient) {
     authClient.clearSession();
   } else {
@@ -855,13 +1616,13 @@ function handleLogout() {
 
 function showModal(title, bodyHtml, options = {}) {
   if (!elements.modal) return;
-  const { wide = false } = options;
+  const { wide = false, maxWidth = "min(1100px, 96vw)" } = options;
   const desktopWide = wide && window.matchMedia("(min-width: 1024px)").matches;
   elements.modalTitle.textContent = title;
   elements.modalBody.innerHTML = bodyHtml;
   elements.modalCard?.classList.toggle("modal-wide", wide);
   if (elements.modalCard) {
-    elements.modalCard.style.width = desktopWide ? "min(1100px, 96vw)" : "";
+    elements.modalCard.style.width = desktopWide ? maxWidth : "";
   }
   elements.modal.classList.remove("hidden");
 }
@@ -869,6 +1630,7 @@ function showModal(title, bodyHtml, options = {}) {
 function hideModal() {
   stopReportLoadingAnimation();
   state.activeReportRequestId = null;
+  state.wrongNoteAdvancedProblems.clear();
   elements.modalCard?.classList.remove("modal-wide");
   if (elements.modalCard) {
     elements.modalCard.style.width = "";
@@ -926,6 +1688,3 @@ if (document.readyState === "loading") {
 } else {
   init();
 }
-
-
-

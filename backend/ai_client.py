@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Dict, List
+from urllib import error, request
 
-from google import genai
-from google.genai import types
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:  # pragma: no cover - optional dependency
+    genai = None
+    types = None
 
 from backend.config import get_settings
 from backend.admin_metrics import get_admin_metrics
@@ -26,50 +32,136 @@ LEARNING_REPORT_MODEL = "gemini-3.1-pro-preview"
 LEARNING_REPORT_ERROR_CODE = "learning_report_generation_failed"
 
 
+@dataclass
+class _TextResponse:
+    text: str
+
+
 class AIClient:
-    """Google Gemini API로 학습 설명을 분석한다."""
+    """Configured AI provider로 학습 설명을 분석한다."""
 
     def __init__(self) -> None:
         settings = get_settings()
-        raw_key = settings.google_api_key or settings.ai_api_key
-        api_key = raw_key.strip() if raw_key and raw_key.strip() else None
-        self.model = settings.google_model
+        preferred_provider = (settings.ai_provider or "").strip().lower()
+        google_key = (settings.google_api_key or settings.ai_api_key or "").strip() or None
+        openai_key = settings.resolved_openai_api_key
+
+        self.provider: str | None = None
+        self.google_model = settings.google_model
+        self.openai_model = settings.openai_model
+        self.model = self.google_model
         self.timeout_ms = max(settings.google_timeout_seconds, 1) * 1000
+        self.timeout_seconds = max(settings.ai_request_timeout_seconds, 5)
+        self.openai_endpoint = "https://api.openai.com/v1/chat/completions"
+        self.openai_api_key: str | None = None
         self.client = None
-        if api_key:
+        if preferred_provider == "openai" and openai_key:
+            self.provider = "openai"
+            self.model = self.openai_model
+            self.openai_api_key = openai_key
+        elif google_key and genai is not None and types is not None:
+            self.provider = "google"
             self.client = genai.Client(
-                api_key=api_key,
+                api_key=google_key,
                 http_options=types.HttpOptions(timeout=self.timeout_ms),
             )
+        elif openai_key:
+            self.provider = "openai"
+            self.model = self.openai_model
+            self.openai_api_key = openai_key
         self.metrics = get_admin_metrics()
+
+    def _has_ai(self) -> bool:
+        return bool(self.provider)
+
+    def _feedback_payload(self, payload: Dict[str, object], *, source: str) -> Dict[str, object]:
+        payload["feedback_source"] = source
+        payload["ai_provider"] = self.provider
+        return payload
+
+    def _request_openai_text(
+        self,
+        *,
+        contents: str,
+        model: str,
+        temperature: float,
+        operation: str,
+    ) -> _TextResponse:
+        if not self.openai_api_key:
+            raise RuntimeError("OpenAI API 키가 설정되지 않았습니다.")
+
+        token = self.metrics.start_ai_call(provider="openai", operation=operation)
+        payload = {
+            "model": model,
+            "temperature": temperature,
+            "messages": [{"role": "user", "content": contents}],
+        }
+        req = request.Request(
+            self.openai_endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.openai_api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        try:
+            try:
+                with request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
+            except error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
+                raise RuntimeError(f"OpenAI API error ({exc.code}): {detail[:300]}") from exc
+            except Exception as exc:
+                raise RuntimeError(f"OpenAI API request failed: {exc}") from exc
+
+            try:
+                data = json.loads(raw)
+                content = data["choices"][0]["message"]["content"]
+            except Exception as exc:
+                raise RuntimeError(f"Invalid OpenAI response payload: {exc}") from exc
+
+            if isinstance(content, list):
+                content = "\n".join(
+                    part.get("text", "") if isinstance(part, dict) else str(part)
+                    for part in content
+                )
+
+            self.metrics.end_ai_call(token, success=True)
+            return _TextResponse(text=str(content or "").strip())
+        except Exception:
+            self.metrics.end_ai_call(token, success=False)
+            raise
 
     def analyze(self, prompt: str) -> Dict[str, object]:
         """학습자의 설명을 분석해 요약/강점/개선/점수/정답 여부를 반환한다."""
 
-        if not self.client:
-            return {
+        if not self._has_ai():
+            return self._feedback_payload({
                 "summary": "AI API 키가 없어 기본 피드백을 제공합니다.",
                 "strengths": ["설명 목적과 결과를 비교하며 명확히 정리했습니다."],
                 "improvements": [
-                    "GOOGLE_API_KEY를 설정하면 실제 AI 분석을 사용할 수 있습니다.",
+                    "OPENAI_API_KEY 또는 GOOGLE_API_KEY를 설정하면 실제 AI 분석을 사용할 수 있습니다.",
                     "설명 구조를 단계별로 나누어 주면 더 좋은 피드백을 받을 수 있습니다.",
                 ],
                 "score": 60.0,
                 "correct": False,
-            }
+            }, source="fallback")
 
         contents = f"{SYSTEM_PROMPT}\n\n=== 학습자 설명 ===\n{prompt}"
 
         try:
             response = self._analyze_with_thinking(contents)
         except Exception as exc:  # pragma: no cover - 네트워크 호출
-            return {
+            return self._feedback_payload({
                 "summary": f"AI 호출에 실패했습니다: {exc}",
                 "strengths": [],
                 "improvements": ["잠시 후 다시 시도하거나 API 키 설정을 확인해주세요."],
                 "score": 50.0,
                 "correct": None,
-            }
+                "error_detail": str(exc),
+            }, source="fallback")
 
         message_text = (getattr(response, "text", "") or "").strip()
         if not message_text and getattr(response, "candidates", None):
@@ -81,13 +173,13 @@ class AIClient:
             message_text = "\n".join(filter(None, parts)).strip()
 
         if not message_text:
-            return {
+            return self._feedback_payload({
                 "summary": "AI 응답이 비어 있어 결과를 만들지 못했습니다.",
                 "strengths": [],
                 "improvements": [],
                 "score": None,
                 "correct": None,
-            }
+            }, source="fallback")
 
         parsed_candidate = _extract_json_block(message_text)
         if parsed_candidate:
@@ -120,13 +212,13 @@ class AIClient:
             if all(reason not in item for item in improvements):
                 improvements.append(f"이유: {reason}")
 
-        return {
+        return self._feedback_payload({
             "summary": summary_text.strip() or message_text,
             "strengths": strengths,
             "improvements": improvements,
             "score": score_value,
             "correct": is_correct,
-        }
+        }, source="ai")
 
     def analyze_auditor_report(
         self,
@@ -142,7 +234,7 @@ class AIClient:
         expected_types = _expected_trap_types(trap_catalog)
         expected_set = set(expected_types)
 
-        if not self.client:
+        if not self._has_ai():
             report_lower = (report or "").lower()
             found_types = []
             for trap_type in expected_types:
@@ -152,7 +244,7 @@ class AIClient:
             missed_types = [item for item in expected_types if item not in set(found_types)]
             score = round((len(found_types) / max(len(expected_types), 1)) * 100.0, 1)
             correct = score >= 70.0
-            return {
+            return self._feedback_payload({
                 "summary": "AI API 키가 없어 기본 채점 로직으로 평가했습니다.",
                 "strengths": ["핵심 취약점을 명시적으로 지적했습니다."] if found_types else [],
                 "improvements": ["취약점 근거와 재현 경로를 더 구체적으로 작성하세요."],
@@ -160,7 +252,7 @@ class AIClient:
                 "correct": correct,
                 "found_types": found_types,
                 "missed_types": missed_types,
-            }
+            }, source="fallback")
 
         contents = (
             "당신은 시니어 코드 감사관입니다. 사용자 감사 리포트를 채점하세요.\n"
@@ -183,7 +275,7 @@ class AIClient:
         try:
             response = self._analyze_with_thinking(contents)
         except Exception as exc:
-            return {
+            return self._feedback_payload({
                 "summary": f"AI 호출에 실패했습니다: {exc}",
                 "strengths": [],
                 "improvements": ["잠시 후 다시 시도하세요."],
@@ -191,7 +283,8 @@ class AIClient:
                 "correct": False,
                 "found_types": [],
                 "missed_types": expected_types,
-            }
+                "error_detail": str(exc),
+            }, source="fallback")
 
         message_text = (getattr(response, "text", "") or "").strip()
         if not message_text and getattr(response, "candidates", None):
@@ -203,7 +296,7 @@ class AIClient:
             message_text = "\n".join(filter(None, parts)).strip()
 
         if not message_text:
-            return {
+            return self._feedback_payload({
                 "summary": "AI 응답이 비어 있습니다.",
                 "strengths": [],
                 "improvements": [],
@@ -211,7 +304,7 @@ class AIClient:
                 "correct": False,
                 "found_types": [],
                 "missed_types": expected_types,
-            }
+            }, source="fallback")
 
         parsed_candidate = _extract_json_block(message_text)
         if parsed_candidate:
@@ -241,7 +334,7 @@ class AIClient:
 
         missed_types = [item for item in expected_types if item not in set(found_types)]
 
-        return {
+        return self._feedback_payload({
             "summary": str(structured.get("summary") or message_text).strip(),
             "strengths": _normalize_points(structured.get("strengths")),
             "improvements": _normalize_points(structured.get("improvements")),
@@ -249,7 +342,7 @@ class AIClient:
             "correct": correct,
             "found_types": found_types,
             "missed_types": missed_types,
-        }
+        }, source="ai")
 
     def analyze_context_inference_report(
         self,
@@ -266,7 +359,7 @@ class AIClient:
         expected = _expected_facet_tokens(expected_facets)
         expected_set = set(expected)
 
-        if not self.client:
+        if not self._has_ai():
             report_lower = (report or "").lower()
             found_types = []
             for facet in expected:
@@ -275,7 +368,7 @@ class AIClient:
                     found_types.append(facet)
             missed_types = [item for item in expected if item not in set(found_types)]
             score = round((len(found_types) / max(len(expected), 1)) * 100.0, 1)
-            return {
+            return self._feedback_payload({
                 "summary": "AI API 키가 없어 기본 채점 로직으로 평가했습니다.",
                 "strengths": ["핵심 맥락을 정확히 짚었습니다."] if found_types else [],
                 "improvements": ["입력 조건, 인과관계, 상태 변화를 더 구체적으로 작성하세요."],
@@ -283,7 +376,7 @@ class AIClient:
                 "correct": score >= 70.0,
                 "found_types": found_types,
                 "missed_types": missed_types,
-            }
+            }, source="fallback")
 
         contents = (
             "당신은 시니어 아키텍처 리뷰어입니다. 사용자의 맥락 추론 리포트를 채점하세요.\n"
@@ -310,7 +403,7 @@ class AIClient:
         try:
             response = self._analyze_with_thinking(contents)
         except Exception as exc:
-            return {
+            return self._feedback_payload({
                 "summary": f"AI 호출에 실패했습니다: {exc}",
                 "strengths": [],
                 "improvements": ["잠시 후 다시 시도하세요."],
@@ -318,7 +411,8 @@ class AIClient:
                 "correct": False,
                 "found_types": [],
                 "missed_types": expected,
-            }
+                "error_detail": str(exc),
+            }, source="fallback")
 
         message_text = (getattr(response, "text", "") or "").strip()
         if not message_text and getattr(response, "candidates", None):
@@ -330,7 +424,7 @@ class AIClient:
             message_text = "\n".join(filter(None, parts)).strip()
 
         if not message_text:
-            return {
+            return self._feedback_payload({
                 "summary": "AI 응답이 비어 있습니다.",
                 "strengths": [],
                 "improvements": [],
@@ -338,7 +432,7 @@ class AIClient:
                 "correct": False,
                 "found_types": [],
                 "missed_types": expected,
-            }
+            }, source="fallback")
 
         parsed_candidate = _extract_json_block(message_text)
         if parsed_candidate:
@@ -367,7 +461,7 @@ class AIClient:
 
         missed_types = [item for item in expected if item not in set(found_types)]
 
-        return {
+        return self._feedback_payload({
             "summary": str(structured.get("summary") or message_text).strip(),
             "strengths": _normalize_points(structured.get("strengths")),
             "improvements": _normalize_points(structured.get("improvements")),
@@ -375,7 +469,7 @@ class AIClient:
             "correct": correct,
             "found_types": found_types,
             "missed_types": missed_types,
-        }
+        }, source="ai")
 
     def analyze_refactoring_choice_report(
         self,
@@ -398,7 +492,7 @@ class AIClient:
         selected = _normalize_option_id(selected_option)
         best = _normalize_option_id(best_option)
 
-        if not self.client:
+        if not self._has_ai():
             report_lower = (report or "").lower()
             found_types = []
             for facet in expected:
@@ -420,7 +514,7 @@ class AIClient:
             score = round(min(100.0, selection_points + tradeoff_points + constraint_points + clarity_points), 1)
             correct = score >= 70.0
             missed_types = [item for item in expected if item not in set(found_types)]
-            return {
+            return self._feedback_payload({
                 "summary": "AI API 키가 없어 기본 채점 로직으로 평가했습니다.",
                 "strengths": ["제약 기반 근거를 구조적으로 제시했습니다."] if found_types else [],
                 "improvements": ["제약조건과 트레이드오프를 facet 기준으로 더 구체적으로 연결하세요."],
@@ -428,7 +522,7 @@ class AIClient:
                 "correct": correct,
                 "found_types": found_types,
                 "missed_types": missed_types,
-            }
+            }, source="fallback")
 
         contents = (
             "당신은 시니어 소프트웨어 아키텍트입니다. Refactoring Choice 제출을 채점하세요.\n"
@@ -459,7 +553,7 @@ class AIClient:
         try:
             response = self._analyze_with_thinking(contents)
         except Exception as exc:
-            return {
+            return self._feedback_payload({
                 "summary": f"AI 호출에 실패했습니다: {exc}",
                 "strengths": [],
                 "improvements": ["잠시 후 다시 시도하세요."],
@@ -467,7 +561,8 @@ class AIClient:
                 "correct": False,
                 "found_types": [],
                 "missed_types": expected,
-            }
+                "error_detail": str(exc),
+            }, source="fallback")
 
         message_text = (getattr(response, "text", "") or "").strip()
         if not message_text and getattr(response, "candidates", None):
@@ -479,7 +574,7 @@ class AIClient:
             message_text = "\n".join(filter(None, parts)).strip()
 
         if not message_text:
-            return {
+            return self._feedback_payload({
                 "summary": "AI 응답이 비어 있습니다.",
                 "strengths": [],
                 "improvements": [],
@@ -487,7 +582,7 @@ class AIClient:
                 "correct": False,
                 "found_types": [],
                 "missed_types": expected,
-            }
+            }, source="fallback")
 
         parsed_candidate = _extract_json_block(message_text)
         if parsed_candidate:
@@ -516,7 +611,7 @@ class AIClient:
 
         missed_types = [item for item in expected if item not in set(found_types)]
 
-        return {
+        return self._feedback_payload({
             "summary": str(structured.get("summary") or message_text).strip(),
             "strengths": _normalize_points(structured.get("strengths")),
             "improvements": _normalize_points(structured.get("improvements")),
@@ -524,7 +619,7 @@ class AIClient:
             "correct": correct,
             "found_types": found_types,
             "missed_types": missed_types,
-        }
+        }, source="ai")
 
     def analyze_code_blame_report(
         self,
@@ -547,7 +642,7 @@ class AIClient:
         selected = _normalize_code_blame_option_ids(selected_commits, allowed_option_ids)
         culprits = _normalize_code_blame_option_ids(culprit_commits, allowed_option_ids)
 
-        if not self.client:
+        if not self._has_ai():
             report_lower = (report or "").lower()
             found_types = []
             for facet in expected:
@@ -570,7 +665,7 @@ class AIClient:
             length = len((report or "").strip())
             clarity_points = 10.0 if length >= 120 else 5.0 if length >= 50 else 0.0
             score = round(min(100.0, culprit_points + facet_points + log_points + clarity_points), 1)
-            return {
+            return self._feedback_payload({
                 "summary": "AI API 키가 없어 기본 채점 로직으로 평가했습니다.",
                 "strengths": ["로그와 diff 근거를 함께 제시했습니다."] if found_types else [],
                 "improvements": ["로그-커밋 인과관계와 장애 영향 범위를 더 구체적으로 작성하세요."],
@@ -578,7 +673,7 @@ class AIClient:
                 "correct": score >= 70.0,
                 "found_types": found_types,
                 "missed_types": missed_types,
-            }
+            }, source="fallback")
 
         contents = (
             "당신은 시니어 장애 분석가입니다. Code Blame Game 제출을 채점하세요.\n"
@@ -604,7 +699,7 @@ class AIClient:
         try:
             response = self._analyze_with_thinking(contents)
         except Exception as exc:
-            return {
+            return self._feedback_payload({
                 "summary": f"AI 호출에 실패했습니다: {exc}",
                 "strengths": [],
                 "improvements": ["잠시 후 다시 시도하세요."],
@@ -612,7 +707,8 @@ class AIClient:
                 "correct": False,
                 "found_types": [],
                 "missed_types": expected,
-            }
+                "error_detail": str(exc),
+            }, source="fallback")
 
         message_text = (getattr(response, "text", "") or "").strip()
         if not message_text and getattr(response, "candidates", None):
@@ -624,7 +720,7 @@ class AIClient:
             message_text = "\n".join(filter(None, parts)).strip()
 
         if not message_text:
-            return {
+            return self._feedback_payload({
                 "summary": "AI 응답이 비어 있습니다.",
                 "strengths": [],
                 "improvements": [],
@@ -632,7 +728,7 @@ class AIClient:
                 "correct": False,
                 "found_types": [],
                 "missed_types": expected,
-            }
+            }, source="fallback")
 
         parsed_candidate = _extract_json_block(message_text)
         if parsed_candidate:
@@ -661,7 +757,7 @@ class AIClient:
 
         missed_types = [item for item in expected if item not in set(found_types)]
 
-        return {
+        return self._feedback_payload({
             "summary": str(structured.get("summary") or message_text).strip(),
             "strengths": _normalize_points(structured.get("strengths")),
             "improvements": _normalize_points(structured.get("improvements")),
@@ -669,7 +765,7 @@ class AIClient:
             "correct": correct,
             "found_types": found_types,
             "missed_types": missed_types,
-        }
+        }, source="ai")
 
     def analyze_advanced_analysis_report(
         self,
@@ -692,7 +788,7 @@ class AIClient:
             "fullstack-analysis": "풀스택 코드 분석",
         }.get(str(mode or "").strip().lower(), "고급 코드 분석")
 
-        if not self.client:
+        if not self._has_ai():
             report_length = len((report or "").strip())
             if report_length >= 420:
                 score = 76.0
@@ -700,7 +796,7 @@ class AIClient:
                 score = 64.0
             else:
                 score = 48.0
-            return {
+            return self._feedback_payload({
                 "summary": "AI API 키가 없어 기본 채점 로직으로 평가했습니다.",
                 "strengths": ["분석 대상과 코드 흐름을 서술형 리포트로 정리했습니다."] if report_length >= 240 else [],
                 "improvements": [
@@ -709,7 +805,7 @@ class AIClient:
                 ],
                 "score": score,
                 "correct": score >= 70.0,
-            }
+            }, source="fallback")
 
         file_sections: list[str] = []
         for index, item in enumerate(normalized_files, start=1):
@@ -745,23 +841,24 @@ class AIClient:
         try:
             response = self._analyze_with_thinking(contents)
         except Exception as exc:
-            return {
+            return self._feedback_payload({
                 "summary": f"AI 호출에 실패했습니다: {exc}",
                 "strengths": [],
                 "improvements": ["잠시 후 다시 시도하세요."],
                 "score": 0.0,
                 "correct": False,
-            }
+                "error_detail": str(exc),
+            }, source="fallback")
 
         message_text = self._extract_response_text(response)
         if not message_text:
-            return {
+            return self._feedback_payload({
                 "summary": "AI 응답이 비어 있습니다.",
                 "strengths": [],
                 "improvements": [],
                 "score": 0.0,
                 "correct": False,
-            }
+            }, source="fallback")
 
         parsed_candidate = _extract_json_block(message_text)
         if parsed_candidate:
@@ -781,17 +878,25 @@ class AIClient:
         correct_value = structured.get("correct")
         correct = bool(correct_value) if correct_value is not None else score_value >= 70.0
 
-        return {
+        return self._feedback_payload({
             "summary": str(structured.get("summary") or message_text).strip(),
             "strengths": _normalize_points(structured.get("strengths")),
             "improvements": _normalize_points(structured.get("improvements")),
             "score": score_value,
             "correct": correct,
-        }
+        }, source="ai")
 
     def _analyze_with_thinking(self, contents: str):
-        if not self.client:  # pragma: no cover
+        if not self._has_ai():  # pragma: no cover
             raise RuntimeError("AI 클라이언트가 초기화되지 않았습니다.")
+
+        if self.provider == "openai":
+            return self._request_openai_text(
+                contents=contents,
+                model=self.openai_model,
+                temperature=0.2,
+                operation="analyze",
+            )
 
         token = self.metrics.start_ai_call(provider="google", operation="analyze")
         config_with_thinking = types.GenerateContentConfig(
@@ -835,8 +940,16 @@ class AIClient:
         return ""
 
     def _generate_learning_report_once(self, contents: str):
-        if not self.client:
+        if not self._has_ai():
             raise RuntimeError(f"{LEARNING_REPORT_ERROR_CODE}: ai_client_not_configured")
+
+        if self.provider == "openai":
+            return self._request_openai_text(
+                contents=contents,
+                model=self.openai_model,
+                temperature=0.7,
+                operation="learning_report_generation",
+            )
 
         token = self.metrics.start_ai_call(provider="google", operation="learning_report_generation")
         config = types.GenerateContentConfig(
@@ -873,7 +986,7 @@ class AIClient:
         metric_snapshot: Dict[str, object],
         detail_records: List[Dict[str, object]] | None = None,
     ) -> Dict[str, object]:
-        if not self.client:
+        if not self._has_ai():
             raise RuntimeError(f"{LEARNING_REPORT_ERROR_CODE}: ai_client_not_configured")
 
         system_prompt = (
@@ -884,7 +997,11 @@ class AIClient:
             '"metricsToTrack": 문자열 배열, "checkpoints": 문자열 배열, "riskMitigation": 문자열 배열}\n'
             "- 모든 항목은 한국어로 작성하세요.\n"
             "- 학습자 평가/판정 문구 대신 실행 계획 중심으로 작성하세요.\n"
-            "- 각 배열에는 중복 없이 구체적인 실행 항목을 제시하세요."
+            "- 각 배열에는 중복 없이 구체적인 실행 항목을 제시하세요.\n"
+            "- 반드시 최근 문제 풀이 기록과 세부 내역에 근거한 계획만 작성하고, 일반론이나 교과서식 조언은 피하세요.\n"
+            "- 반복되는 오답 패턴 2~3개와 이미 잘하고 있는 강점 1~2개를 먼저 파악한 뒤 계획을 세우세요.\n"
+            "- 개념 이해 부족, 검증 부족, 디버깅 부족, 속도/복잡도 문제를 구분해서 다른 처방을 제시하세요.\n"
+            "- solutionSummary와 priorityActions에는 최근 풀이에서 드러난 구체적 실수 유형이나 습관을 직접 언급하세요."
         )
 
         normalized_details = _sanitize_learning_report_detail(detail_records or [])
@@ -900,7 +1017,10 @@ class AIClient:
             "=== 문제별 세부 내역 ===\n"
             f"{detail_section}\n\n"
             "- 문제별 세부 내역에는 학습자가 무엇을 제출했고, 어떤 점을 맞췄으며, 어떤 점을 놓쳤는지가 담겨 있습니다.\n"
-            "- 반복되는 오답 패턴과 이미 잘하고 있는 방식 모두를 근거로 실행 계획을 작성하세요."
+            "- 반복되는 오답 패턴과 이미 잘하고 있는 방식 모두를 근거로 실행 계획을 작성하세요.\n"
+            "- 최근 기록에서 반복된 언어, 난이도, 모드, 놓친 포인트, 개선 피드백을 우선순위 결정에 직접 반영하세요.\n"
+            "- priorityActions의 첫 2개는 가장 자주 반복된 실수와 가장 시급한 보완 행동에 대응해야 합니다.\n"
+            "- metricsToTrack과 checkpoints는 최근 지표 스냅샷에 실제로 나온 문제를 다시 추적할 수 있게 작성하세요."
         )
 
         response = self._generate_learning_report_with_retry(contents)
@@ -946,7 +1066,7 @@ class AIClient:
     def evaluate_tier(self, context: str, current_tier: str) -> Dict[str, object]:
         """AI에게 승급/유지/강등 여부를 판단시킨다."""
 
-        if not self.client:
+        if not self._has_ai():
             return {
                 "tier": current_tier,
                 "reason": "AI API 키가 없어 기존 티어를 유지합니다.",
@@ -1275,12 +1395,12 @@ def _sanitize_learning_report_detail(value: object, *, depth: int = 0) -> object
         return value
 
     if isinstance(value, str):
-        return _truncate_learning_report_text(value, 700 if depth == 0 else 400)
+        return _truncate_learning_report_text(value, 900 if depth == 0 else 520)
 
     if isinstance(value, dict):
         normalized: dict[str, object] = {}
         for idx, (key, item) in enumerate(value.items()):
-            if idx >= 20:
+            if idx >= 24:
                 normalized["_truncated"] = True
                 break
             key_text = _truncate_learning_report_text(key, 80)
@@ -1295,7 +1415,7 @@ def _sanitize_learning_report_detail(value: object, *, depth: int = 0) -> object
     if isinstance(value, (list, tuple, set)):
         rows: list[object] = []
         for idx, item in enumerate(value):
-            if idx >= 12:
+            if idx >= 15:
                 rows.append("...(truncated)")
                 break
             normalized_item = _sanitize_learning_report_detail(item, depth=depth + 1)

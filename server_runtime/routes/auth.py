@@ -2,11 +2,14 @@
 
 import threading
 import time
+from ipaddress import ip_address, ip_network
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.db.session import SessionLocal
+from app.services.auth_service import logout as revoke_platform_session
 from server_runtime.context import (
     build_google_auth_url,
     clear_access_cookie,
@@ -37,16 +40,34 @@ OAUTH_SERVICE_UNAVAILABLE_DETAIL = "로그인 서비스 연결에 실패했습�
 PASSWORD_AUTH_DISABLED_DETAIL = "이메일/비밀번호 로그인은 비활성화되어 있습니다. Google 로그인만 지원합니다."
 GUEST_DB_UNAVAILABLE_DETAIL = "인증 서비스(DB) 연결에 실패했습니다. MySQL 상태를 확인해 주세요."
 GUEST_POST_ONLY_DETAIL = "게스트 로그인은 POST /api/auth/guest 로만 지원합니다."
-
+_TRUSTED_PROXY_NETWORKS = (
+    ip_network("127.0.0.0/8"),
+    ip_network("10.0.0.0/8"),
+    ip_network("172.16.0.0/12"),
+    ip_network("192.168.0.0/16"),
+    ip_network("::1/128"),
+    ip_network("fc00::/7"),
+)
+def _is_trusted_forwarded_for_source(host: str) -> bool:
+    normalized = str(host or "").strip()
+    if not normalized:
+        return False
+    if normalized.lower() == "localhost":
+        return True
+    try:
+        address = ip_address(normalized)
+    except ValueError:
+        return False
+    return any(address in network for network in _TRUSTED_PROXY_NETWORKS)
 
 
 def _guest_client_id(request: Request) -> str:
-    forwarded_for = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-    if forwarded_for:
-        return forwarded_for
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
+    client_host = request.client.host if request.client and request.client.host else ""
+    if _is_trusted_forwarded_for_source(client_host):
+        forwarded_for = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        if forwarded_for:
+            return forwarded_for
+    return client_host or "unknown"
 
 
 
@@ -72,6 +93,17 @@ def _issue_guest_jwt() -> str:
     legacy_token = user_service.create_guest()
     username = legacy_token.partition(":")[0]
     return issue_platform_access_token(username=username, guest=True)
+
+
+def _access_token_from_request(request: Request) -> str | None:
+    authorization = (request.headers.get("authorization") or "").strip()
+    if authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        if token:
+            return token
+
+    cookie_token = (request.cookies.get("code_learning_access") or "").strip()
+    return cookie_token or None
 
 
 @router.get("/api/auth/google/start")
@@ -176,7 +208,11 @@ def guest_login_start() -> Response:
 
 
 @router.post("/api/auth/logout")
-def logout(response: Response) -> dict:
+def logout(request: Request, response: Response) -> dict:
+    access_token = _access_token_from_request(request)
+    if access_token:
+        with SessionLocal() as db:
+            revoke_platform_session(db, access_token=access_token)
     clear_access_cookie(response)
     response.headers["Cache-Control"] = "no-store"
     return {"ok": True}

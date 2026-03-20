@@ -104,8 +104,8 @@ class LearningContinuityApiTests(unittest.TestCase):
             ],
         }
         with (
-            patch("app.api.routes.public_learning.platform_public_bridge.get_public_history", return_value=[]),
-            patch("app.api.routes.public_learning.platform_public_bridge.get_public_profile", return_value={"skillLevel": "beginner"}),
+            patch("app.api.routes.public_learning.platform_public_bridge.get_public_history", return_value=[]) as mock_history,
+            patch("app.api.routes.public_learning.platform_public_bridge.get_public_profile", return_value={"skillLevel": "beginner"}) as mock_profile,
             patch("app.api.routes.public_learning.platform_public_bridge.get_public_me", return_value={"displayName": "Tester"}),
             patch("app.api.routes.public_learning.build_learning_home", return_value=expected),
         ):
@@ -113,6 +113,25 @@ class LearningContinuityApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), expected)
+        mock_history.assert_called_once_with("continuity-user", limit=200)
+        mock_profile.assert_called_once_with("continuity-user", history=[])
+
+    def test_platform_learning_history_returns_metadata_payload(self) -> None:
+        expected = {
+            "history": [{"problem_id": "an-1"}],
+            "total": 3,
+            "hasMore": True,
+            "limit": 25,
+        }
+        with patch(
+            "app.api.routes.public_learning.platform_public_bridge.get_public_history_page",
+            return_value=expected,
+        ) as mock_history_page:
+            response = self.client.get("/platform/learning/history?limit=25")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), expected)
+        mock_history_page.assert_called_once_with("continuity-user", limit=25)
 
     def test_platform_review_queue_returns_due_items(self) -> None:
         payload = [{

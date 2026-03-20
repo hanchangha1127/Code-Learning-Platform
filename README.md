@@ -87,6 +87,12 @@ python run_server.py
 python run_server.py --without-docker-socket
 ```
 
+주의:
+
+- `ANALYSIS_QUEUE_MODE=rq`를 사용할 때는 `api`뿐 아니라 `worker`에도 AI 관련 환경변수(`GOOGLE_API_KEY`, `GOOGLE_API_KEY_FILE`, `GOOGLE_MODEL` 등)가 같이 전달되어야 합니다.
+- 그렇지 않으면 고급 분석/고급 제출 채점이 큐에서 기본 fallback 로직으로 처리되어 실제 AI 피드백이 나오지 않습니다.
+- 게스트/대시보드 초기화에서 `user_learning_goals` 기본 행은 여러 API가 동시에 요청돼도 중복 INSERT로 깨지지 않도록 `get_or_create + IntegrityError rollback` 패턴으로 유지해야 합니다.
+
 브라우저 자동 오픈을 끄려면:
 
 ```bash
@@ -196,15 +202,16 @@ ALLOW_PLATFORM_PASSWORD_AUTH=true
 
 현재 제공 모드:
 
-- 코드 분석
-- 코드 블록
-- 코드 배치
-- 코드 계산
-- 코드 오류
-- 감사관 모드
-- 맥락 추론
-- 최적의 선택
-- 범인 찾기
+- 코드 분석 (`analysis`)
+- 코드 블록 (`codeblock`)
+- 코드 배치 (`arrange`)
+- 코드 계산 (`codecalc`)
+- 감사관 모드 (`auditor`)
+- 최적의 선택 (`refactoring-choice`)
+- 범인 찾기 (`code-blame`)
+- 단일 파일 분석 (`single-file-analysis`)
+- 멀티 파일 분석 (`multi-file-analysis`)
+- 풀스택 분석 (`fullstack-analysis`)
 
 `/platform`은 모든 모드의 문제 생성과 제출 경로를 제공합니다.
 
@@ -216,20 +223,29 @@ ALLOW_PLATFORM_PASSWORD_AUTH=true
 - `POST /platform/arrange/submit`
 - `POST /platform/codecalc/problem`
 - `POST /platform/codecalc/submit`
-- `POST /platform/codeerror/problem`
-- `POST /platform/codeerror/submit`
 - `POST /platform/auditor/problem`
 - `POST /platform/auditor/submit`
-- `POST /platform/context-inference/problem`
-- `POST /platform/context-inference/submit`
 - `POST /platform/refactoring-choice/problem`
 - `POST /platform/refactoring-choice/submit`
 - `POST /platform/code-blame/problem`
 - `POST /platform/code-blame/submit`
+- `POST /platform/single-file-analysis/problem`
+- `POST /platform/single-file-analysis/submit`
+- `POST /platform/multi-file-analysis/problem`
+- `POST /platform/multi-file-analysis/submit`
+- `POST /platform/fullstack-analysis/problem`
+- `POST /platform/fullstack-analysis/submit`
 
-고급 모드 제출(`auditor`, `context-inference`, `refactoring-choice`, `code-blame`)은 `ANALYSIS_QUEUE_MODE=rq`일 때 queued 응답을 반환할 수 있습니다. 이 경우 상태 조회는 다음 경로를 사용합니다.
+고급 모드 제출(`auditor`, `refactoring-choice`, `code-blame`, `single-file-analysis`, `multi-file-analysis`, `fullstack-analysis`)은 `ANALYSIS_QUEUE_MODE=rq`일 때 queued 응답을 반환할 수 있습니다. 이 경우 상태 조회는 다음 경로를 사용합니다.
 
 - `GET /platform/mode-jobs/{job_id}`
+- 프런트엔드에서 queued 응답을 최종 채점 결과로 바로 렌더링하면 AI 피드백이 비어 보일 수 있으므로, `jobId`로 완료 상태를 polling한 뒤 `result.feedback`를 표시해야 합니다.
+
+문제 생성 스트리밍 참고:
+
+- 대부분의 모드는 SSE를 우선 사용하고, 실패 시 JSON 요청으로 fallback합니다.
+- SSE에서는 `queued`/`generating` 같은 상태 이벤트가 먼저 도착하고, 실제 문제 본문은 생성 완료 뒤 최종 `payload` 1회로 전달됩니다.
+- `arrange` 모드는 의도적으로 서버 본문 스트리밍 대신 클라이언트 애니메이션 기반 가짜 스트리밍을 사용합니다.
 
 ## 주요 공개 경로
 
@@ -285,9 +301,7 @@ ALLOW_PLATFORM_PASSWORD_AUTH=true
 - `/api/code-block/problem`
 - `/api/code-arrange/problem`
 - `/api/code-calc/problem`
-- `/api/code-error/problem`
 - `/api/auditor/problem`
-- `/api/context-inference/problem`
 - `/api/refactoring-choice/problem`
 - `/api/code-blame/problem`
 

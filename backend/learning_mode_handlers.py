@@ -312,6 +312,7 @@ def request_code_block_problem(
             "mode": mode,
             "difficulty": difficulty_id,
             "title": generated["title"],
+            "objective": generated.get("objective"),
             "code": generated["code"],
             "options": generated["options"],
             "answer_index": generated["answer_index"],
@@ -323,6 +324,7 @@ def request_code_block_problem(
     return {
         "problemId": problem_id,
         "title": generated["title"],
+        "objective": generated.get("objective"),
         "code": generated["code"],
         "options": generated["options"],
         "difficulty": difficulty_id,
@@ -676,6 +678,8 @@ def submit_auditor_report(
     }
     found_types = evaluation.get("found_types") if isinstance(evaluation.get("found_types"), list) else []
     missed_types = evaluation.get("missed_types") if isinstance(evaluation.get("missed_types"), list) else []
+    feedback_source = str(evaluation.get("feedback_source") or "fallback")
+    ai_provider = str(evaluation.get("ai_provider") or "").strip() or None
     reference_report = str(instance.get("reference_report") or "")
 
     storage.append(
@@ -691,6 +695,8 @@ def submit_auditor_report(
             "correct": is_passed,
             "verdict": verdict,
             "feedback": feedback,
+            "feedback_source": feedback_source,
+            "ai_provider": ai_provider,
             "found_types": found_types,
             "missed_types": missed_types,
             "reference_report": reference_report,
@@ -705,6 +711,8 @@ def submit_auditor_report(
         "score": score,
         "verdict": verdict,
         "feedback": feedback,
+        "feedbackSource": feedback_source,
+        "aiProvider": ai_provider,
         "foundTypes": found_types,
         "missedTypes": missed_types,
         "referenceReport": reference_report,
@@ -1011,6 +1019,8 @@ def _submit_advanced_analysis_report(
         "improvements": _normalize_str_list((evaluation or {}).get("improvements")),
     }
     analysis_error_detail = str((evaluation or {}).get("error_detail") or "")
+    feedback_source = str((evaluation or {}).get("feedback_source") or "fallback")
+    ai_provider = str((evaluation or {}).get("ai_provider") or "").strip() or None
 
     storage.append(
         {
@@ -1025,6 +1035,8 @@ def _submit_advanced_analysis_report(
             "correct": is_passed,
             "verdict": verdict,
             "feedback": feedback,
+            "feedback_source": feedback_source,
+            "ai_provider": ai_provider,
             "reference_report": reference_report,
             "pass_threshold": ADVANCED_ANALYSIS_PASS_THRESHOLD,
             "analysis_error_detail": analysis_error_detail,
@@ -1038,6 +1050,8 @@ def _submit_advanced_analysis_report(
         "score": score,
         "verdict": verdict,
         "feedback": feedback,
+        "feedbackSource": feedback_source,
+        "aiProvider": ai_provider,
         "referenceReport": reference_report,
         "passThreshold": int(ADVANCED_ANALYSIS_PASS_THRESHOLD),
     }
@@ -1247,6 +1261,8 @@ def submit_context_inference_report(
     found_types = _normalize_str_list((evaluation or {}).get("found_types"))
     missed_types = _normalize_str_list((evaluation or {}).get("missed_types"))
     analysis_error_detail = str((evaluation or {}).get("error_detail") or "")
+    feedback_source = str((evaluation or {}).get("feedback_source") or "fallback")
+    ai_provider = str((evaluation or {}).get("ai_provider") or "").strip() or None
 
     storage.append(
         {
@@ -1262,6 +1278,8 @@ def submit_context_inference_report(
             "correct": is_passed,
             "verdict": verdict,
             "feedback": feedback,
+            "feedback_source": feedback_source,
+            "ai_provider": ai_provider,
             "found_types": found_types,
             "missed_types": missed_types,
             "reference_report": reference_report,
@@ -1277,6 +1295,8 @@ def submit_context_inference_report(
         "score": score,
         "verdict": verdict,
         "feedback": feedback,
+        "feedbackSource": feedback_source,
+        "aiProvider": ai_provider,
         "foundTypes": found_types,
         "missedTypes": missed_types,
         "referenceReport": reference_report,
@@ -1475,6 +1495,8 @@ def submit_refactoring_choice_report(
                 found_types.append(token)
     missed_types = [token for token in decision_facets if token not in set(found_types)]
     analysis_error_detail = str((evaluation or {}).get("error_detail") or "")
+    feedback_source = str((evaluation or {}).get("feedback_source") or "fallback")
+    ai_provider = str((evaluation or {}).get("ai_provider") or "").strip() or None
 
     storage.append(
         {
@@ -1491,6 +1513,8 @@ def submit_refactoring_choice_report(
             "correct": is_passed,
             "verdict": verdict,
             "feedback": feedback,
+            "feedback_source": feedback_source,
+            "ai_provider": ai_provider,
             "found_types": found_types,
             "missed_types": missed_types,
             "reference_report": reference_report,
@@ -1507,6 +1531,8 @@ def submit_refactoring_choice_report(
         "score": score,
         "verdict": verdict,
         "feedback": feedback,
+        "feedbackSource": feedback_source,
+        "aiProvider": ai_provider,
         "foundTypes": found_types,
         "missedTypes": missed_types,
         "referenceReport": reference_report,
@@ -1712,6 +1738,8 @@ def submit_code_blame_report(
                 found_types.append(token)
     missed_types = [token for token in decision_facets if token not in set(found_types)]
     analysis_error_detail = str((evaluation or {}).get("error_detail") or "")
+    feedback_source = str((evaluation or {}).get("feedback_source") or "fallback")
+    ai_provider = str((evaluation or {}).get("ai_provider") or "").strip() or None
 
     storage.append(
         {
@@ -1728,6 +1756,8 @@ def submit_code_blame_report(
             "correct": is_passed,
             "verdict": verdict,
             "feedback": feedback,
+            "feedback_source": feedback_source,
+            "ai_provider": ai_provider,
             "found_types": found_types,
             "missed_types": missed_types,
             "reference_report": reference_report,
@@ -1744,6 +1774,8 @@ def submit_code_blame_report(
         "score": score,
         "verdict": verdict,
         "feedback": feedback,
+        "feedbackSource": feedback_source,
+        "aiProvider": ai_provider,
         "foundTypes": found_types,
         "missedTypes": missed_types,
         "referenceReport": reference_report,
@@ -1866,6 +1898,7 @@ def request_code_arrange_problem(
         raise ValueError("지원하지 않는 난이도입니다.")
 
     storage = service._get_user_storage(username)
+    history_context = service._code_arrange_history_context(storage)
 
     problem_id = generate_token("carrange")
     generated = service.problem_generator.generate_sync(
@@ -1874,7 +1907,7 @@ def request_code_arrange_problem(
         language_id=language_id,
         difficulty=difficulty_choices[difficulty_id]["generator"],
         mode="code-arrange",
-        history_context=None,
+        history_context=history_context,
         retry_context=None,
     )
 

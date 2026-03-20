@@ -71,6 +71,8 @@ class _FakeAIClient:
             "improvements": ["예외 처리 흐름을 조금 더 보완해 보세요."],
             "score": 82.0,
             "correct": True,
+            "feedback_source": "ai",
+            "ai_provider": "openai",
         }
 
 
@@ -169,9 +171,13 @@ class AdvancedAnalysisRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result["verdict"], "passed")
         self.assertEqual(result["referenceReport"], "모범 단일 파일 리포트")
+        self.assertEqual(result["feedbackSource"], "ai")
+        self.assertEqual(result["aiProvider"], "openai")
         event = service.storage.find_one(lambda item: item.get("type") == "single_file_analysis_event")
         self.assertIsNotNone(event)
         self.assertEqual(event.get("reference_report"), "모범 단일 파일 리포트")
+        self.assertEqual(event.get("feedback_source"), "ai")
+        self.assertEqual(event.get("ai_provider"), "openai")
         self.assertEqual(service.tier_updates, 1)
 
     def test_submit_runtime_report_rejects_blank_report(self) -> None:

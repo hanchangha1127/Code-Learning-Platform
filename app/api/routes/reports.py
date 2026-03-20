@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.api.security_deps import get_current_user
 from app.db.models import User
-from app.schemas.report import LearningSolutionReportRead, MilestoneReportRequest
+from app.schemas.report import LatestLearningReportRead, LearningSolutionReportRead, MilestoneReportRequest
+from app.services.report_pdf_service import generate_report_pdf_download, get_latest_report_download_metadata
 from app.services.report_service import create_milestone_report
 
 router = APIRouter()
@@ -29,3 +30,33 @@ def post_milestone_report(
             ) from exc
         raise
     return report_payload
+
+
+@router.get("/reports/latest", response_model=LatestLearningReportRead)
+def get_latest_report(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict:
+    return get_latest_report_download_metadata(db, current.id)
+
+
+@router.get("/reports/{report_id}/pdf")
+def get_report_pdf(
+    report_id: int,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> Response:
+    try:
+        filename, pdf_bytes = generate_report_pdf_download(db, current.id, report_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="리포트를 찾지 못했습니다.") from exc
+    except RuntimeError as exc:
+        if "report_pdf_generation_unavailable" in str(exc):
+            raise HTTPException(status_code=503, detail="PDF 생성 기능을 현재 사용할 수 없습니다.") from exc
+        raise HTTPException(status_code=503, detail="PDF 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.") from exc
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""},
+    )

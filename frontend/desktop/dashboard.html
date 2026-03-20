@@ -18,16 +18,16 @@
       <div>
         <p class="eyebrow">오늘의 학습 대시보드</p>
         <h1>오늘의 학습 홈</h1>
-        <p class="header-status">복습, 목표, 리포트를 한 화면에서 정리하고 바로 다음 학습으로 이어가세요.</p>
+        <p class="header-status">오늘 필요한 목표와 복습만 가볍게 확인하고 바로 다음 학습으로 이어가세요.</p>
       </div>
     </header>
 
     <main class="dashboard-main">
       <section class="card dashboard-hero">
         <div class="dashboard-hero-copy">
-          <p class="dashboard-hero-kicker">학습 지속성 레이어</p>
+          <p class="dashboard-hero-kicker">오늘의 흐름</p>
           <h2 id="dashboard-hero-title">오늘 학습 흐름을 정리하는 중입니다.</h2>
-          <p id="dashboard-hero-summary" class="dashboard-hero-summary">최근 학습 기록을 바탕으로 오늘 처리할 작업과 복습 우선순위를 정리합니다.</p>
+          <p id="dashboard-hero-summary" class="dashboard-hero-summary">최근 학습 기록을 바탕으로 오늘 목표와 복습 우선순위를 간단히 정리합니다.</p>
           <div id="dashboard-recommended-modes" class="mode-chip-row"></div>
           <div id="dashboard-weak-topics" class="weak-topic-list"></div>
         </div>
@@ -37,27 +37,28 @@
             <a href="/profile.html" class="ghost">프로필 열기</a>
             <button id="dashboard-logout-btn" type="button" class="ghost">로그아웃</button>
           </div>
-          <p class="panel-description">목표를 먼저 채우고, 남은 시간에는 복습 큐를 정리하는 흐름으로 이어집니다.</p>
         </aside>
       </section>
 
-      <section class="dashboard-highlight-grid">
-        <article class="card home-stat-card">
-          <span class="home-stat-label">연속 학습</span>
-          <strong id="dashboard-streak-days">0일</strong>
-          <p>하루 목표를 달성한 날만 스트릭에 포함됩니다.</p>
-        </article>
-
-        <article class="card dashboard-panel dashboard-goal-card">
-          <div class="dashboard-panel-head">
+      <section class="dashboard-focus-grid">
+        <article class="card dashboard-panel dashboard-goal-card dashboard-goal-card--merged">
+          <div class="dashboard-panel-head dashboard-panel-head--split">
             <div>
-              <h3>일간 목표</h3>
-              <p>한 번 설정한 값은 바꾸지 않으면 다음날도 그대로 유지됩니다.</p>
+              <h3>오늘 목표</h3>
+              <p>하루 목표와 연속 학습 상태를 한 번에 확인합니다.</p>
+            </div>
+            <div class="dashboard-streak-mini" aria-label="연속 학습 현황">
+              <span class="dashboard-streak-label">연속 학습</span>
+              <strong id="dashboard-streak-days">0일</strong>
             </div>
           </div>
-          <div class="dashboard-goal-summary">
-            <strong id="dashboard-goal-progress">0 / 0</strong>
-            <p id="dashboard-goal-hint">오늘 목표를 불러오는 중입니다.</p>
+          <div class="dashboard-goal-overview">
+            <div class="dashboard-goal-progress-block">
+              <span class="dashboard-section-label">오늘 진행</span>
+              <strong id="dashboard-goal-progress">0 / 0</strong>
+              <p id="dashboard-goal-hint">오늘 목표를 불러오는 중입니다.</p>
+            </div>
+            <p class="dashboard-goal-note">스트릭은 하루 목표를 달성한 날만 이어집니다.</p>
           </div>
           <form id="dashboard-goal-form" class="goal-form">
             <label for="dashboard-goal-input">하루 목표 문제 수</label>
@@ -72,35 +73,15 @@
             </div>
           </form>
         </article>
-      </section>
-
-      <section class="dashboard-two-column">
-        <article class="card dashboard-panel">
-          <div class="dashboard-panel-head"><div><h3>오늘 할 일</h3><p>지금 바로 처리할 작업만 남겼습니다.</p></div></div>
-          <div id="dashboard-task-list" class="task-list"></div>
-        </article>
 
         <article class="card dashboard-panel">
-          <div class="dashboard-panel-head"><div><h3>복습 큐</h3><p>같은 문제를 다시 열어 정확히 복습할 수 있습니다.</p></div></div>
+          <div class="dashboard-panel-head"><div><h3>복습 큐</h3><p>지금 다시 보면 좋은 문제만 남겨 두었습니다.</p></div></div>
           <div id="dashboard-review-list" class="review-list"></div>
         </article>
       </section>
 
-      <section class="dashboard-two-column">
-        <article id="weekly-report-card" class="card dashboard-panel">
-          <div class="dashboard-panel-head"><div><h3>주간 리포트</h3><p>최근 저장된 리포트를 확인하고 필요할 때만 다시 생성합니다.</p></div></div>
-          <div id="dashboard-weekly-report-card" class="weekly-report-card"></div>
-          <p id="dashboard-report-status" class="panel-status" aria-live="polite"></p>
-        </article>
-
-        <article class="card dashboard-panel">
-          <div class="dashboard-panel-head"><div><h3>알림</h3><p>현재 학습 상태를 기준으로 꼭 봐야 할 항목만 계산해 보여줍니다.</p></div></div>
-          <div id="dashboard-notification-list" class="notification-list"></div>
-        </article>
-      </section>
-
       <section class="card dashboard-panel dashboard-mode-section">
-        <div class="dashboard-panel-head"><div><h3>학습 모드</h3><p>원하는 모드로 바로 이동하거나 추천 모드부터 이어서 학습하세요.</p></div></div>
+        <div class="dashboard-panel-head"><div><h3>학습 모드</h3><p>추천 모드부터 시작하거나 원하는 모드로 바로 이동하세요.</p></div></div>
         <div id="dashboard-mode-tabs" class="dashboard-mode-tabs" role="tablist" aria-label="학습 모드 전환">
           <button
             id="dashboard-mode-tab-general"

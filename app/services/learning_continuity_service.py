@@ -1,16 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.base import utcnow
 from app.db.models import (
     Problem,
-    Report,
-    ReportType,
     ReviewQueueItem,
     ReviewQueueStatus,
     Submission,
@@ -18,6 +17,7 @@ from app.db.models import (
     User,
     UserLearningGoal,
 )
+from app.services.report_pdf_service import get_latest_report_detail
 
 DEFAULT_DAILY_TARGET_SESSIONS = 10
 DEFAULT_REVIEW_LIMIT = 5
@@ -28,11 +28,12 @@ MODE_LABELS: dict[str, str] = {
     "code-block": "\uCF54\uB4DC \uBE14\uB85D",
     "code-arrange": "\uCF54\uB4DC \uBC30\uCE58",
     "code-calc": "\uCF54\uB4DC \uACC4\uC0B0",
-    "code-error": "\uCF54\uB4DC \uC624\uB958",
     "auditor": "\uAC10\uC0AC\uAD00 \uBAA8\uB4DC",
-    "context-inference": "\uB9E5\uB77D \uCD94\uB860",
     "refactoring-choice": "\uCD5C\uC801\uC758 \uC120\uD0DD",
     "code-blame": "\uBC94\uC778 \uCC3E\uAE30",
+    "single-file-analysis": "\uB2E8\uC77C \uD30C\uC77C \uBD84\uC11D",
+    "multi-file-analysis": "\uBA40\uD2F0 \uD30C\uC77C \uBD84\uC11D",
+    "fullstack-analysis": "\uD480\uC2A4\uD0DD \uBD84\uC11D",
 }
 
 MODE_LINKS: dict[str, str] = {
@@ -40,11 +41,12 @@ MODE_LINKS: dict[str, str] = {
     "code-block": "/codeblock.html",
     "code-arrange": "/arrange.html",
     "code-calc": "/codecalc.html",
-    "code-error": "/codeerror.html",
     "auditor": "/auditor.html",
-    "context-inference": "/context-inference.html",
     "refactoring-choice": "/refactoring-choice.html",
     "code-blame": "/code-blame.html",
+    "single-file-analysis": "/single-file-analysis.html",
+    "multi-file-analysis": "/multi-file-analysis.html",
+    "fullstack-analysis": "/fullstack-analysis.html",
 }
 
 WEAKNESS_LABELS: dict[str, str] = {
@@ -70,9 +72,16 @@ def get_or_create_learning_goal(db: Session, user_id: int) -> UserLearningGoal:
         focus_topics=[],
     )
     db.add(goal)
-    db.commit()
-    db.refresh(goal)
-    return goal
+    try:
+        db.commit()
+        db.refresh(goal)
+        return goal
+    except IntegrityError:
+        db.rollback()
+        existing = db.get(UserLearningGoal, user_id)
+        if existing is not None:
+            return existing
+        raise
 
 
 def update_learning_goal(
@@ -104,9 +113,10 @@ def serialize_learning_goal(goal: UserLearningGoal) -> dict[str, Any]:
         or goal.weekly_target_sessions
         or DEFAULT_DAILY_TARGET_SESSIONS
     )
+    focus_modes = [mode for mode in _normalize_string_list(goal.focus_modes) if mode in MODE_LABELS]
     return {
         "dailyTargetSessions": daily_target,
-        "focusModes": _normalize_string_list(goal.focus_modes),
+        "focusModes": focus_modes,
         "focusTopics": _normalize_string_list(goal.focus_topics),
         "updatedAt": goal.updated_at.isoformat() if goal.updated_at else None,
     }
@@ -167,7 +177,7 @@ def build_learning_home(
             "totalAttempts": int(profile.get("totalAttempts") or len(ordered_history)),
             "accuracy": float(profile.get("accuracy") or 0.0),
         },
-        "focusModes": _normalize_string_list(goal.focus_modes),
+        "focusModes": [mode for mode in _normalize_string_list(goal.focus_modes) if mode in MODE_LABELS],
         "focusTopics": _normalize_string_list(goal.focus_topics),
         "weeklyReportCard": weekly_report_card,
         "notifications": notifications,
@@ -187,7 +197,11 @@ def list_due_review_queue(db: Session, user_id: int, *, limit: int = DEFAULT_REV
         .limit(limit)
         .all()
     )
-    return [serialize_review_item(row) for row in rows]
+    return [
+        serialize_review_item(row)
+        for row in rows
+        if str(row.mode or "").strip().lower() in MODE_LINKS
+    ]
 
 
 def serialize_review_item(item: ReviewQueueItem) -> dict[str, Any]:
@@ -520,14 +534,9 @@ def _build_today_tasks(
 
 
 def _build_weekly_report_card(db: Session, user_id: int) -> dict[str, Any]:
-    report = (
-        db.query(Report)
-        .filter(Report.user_id == user_id, Report.report_type == ReportType.milestone)
-        .order_by(Report.created_at.desc(), Report.id.desc())
-        .first()
-    )
     action_link = "/profile.html"
-    if report is None:
+    detail = get_latest_report_detail(db, user_id)
+    if detail is None:
         return {
             "available": False,
             "reportId": None,
@@ -538,28 +547,23 @@ def _build_weekly_report_card(db: Session, user_id: int) -> dict[str, Any]:
             "stale": True,
         }
 
-    solution_plan = _extract_solution_plan(report)
-    created_at = report.created_at.isoformat() if report.created_at else None
-    stale = _is_report_stale(report.created_at)
-    goal = str(solution_plan.get("goal") or report.title or "").strip()
-    summary = str(solution_plan.get("solutionSummary") or report.summary or "").strip()
+    created_at = detail.get("createdAt")
+    parsed_created_at = None
+    if isinstance(created_at, str) and created_at:
+        try:
+            parsed_created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except ValueError:
+            parsed_created_at = None
+    stale = _is_report_stale(parsed_created_at)
     return {
         "available": True,
-        "reportId": int(report.id),
+        "reportId": int(detail.get("reportId")),
         "createdAt": created_at,
-        "goal": goal,
-        "solutionSummary": summary,
+        "goal": str(detail.get("goal") or "").strip(),
+        "solutionSummary": str(detail.get("solutionSummary") or "").strip(),
         "actionLink": action_link,
         "stale": stale,
     }
-
-
-def _extract_solution_plan(report: Report) -> dict[str, Any]:
-    stats = report.stats if isinstance(report.stats, dict) else {}
-    solution_plan = stats.get("solutionPlan")
-    if isinstance(solution_plan, dict):
-        return solution_plan
-    return {}
 
 
 def _is_report_stale(created_at: datetime | None) -> bool:
@@ -656,6 +660,37 @@ def _resume_link(mode: str, item_id: int) -> str:
 
 
 def _mode_from_problem(problem: Problem) -> str:
+    problem_payload = problem.problem_payload if isinstance(problem.problem_payload, dict) else {}
+    raw_mode = str(problem_payload.get("mode") or "").strip()
+    if raw_mode:
+        return raw_mode
+
+    workspace = str(problem_payload.get("workspace") or "").strip().lower()
+    workspace_mode = {
+        "single-file-analysis.workspace": "single-file-analysis",
+        "multi-file-analysis.workspace": "multi-file-analysis",
+        "fullstack-analysis.workspace": "fullstack-analysis",
+    }.get(workspace)
+    if workspace_mode:
+        return workspace_mode
+
+    external_id = str(problem.external_id or "").strip().lower()
+    if external_id:
+        prefix = external_id.split(":", 1)[0]
+        inferred_mode = {
+            "sfile": "single-file-analysis",
+            "mfile": "multi-file-analysis",
+            "fstack": "fullstack-analysis",
+            "rchoice": "refactoring-choice",
+            "cblame": "code-blame",
+            "auditor": "auditor",
+            "ccalc": "code-calc",
+            "cblock": "code-block",
+            "analysis": "analysis",
+        }.get(prefix)
+        if inferred_mode:
+            return inferred_mode
+
     mapping = {
         "analysis": "analysis",
         "code_block": "code-block",

@@ -106,11 +106,15 @@
 ### 고급 모드 제출
 
 - `auditor`
-- `context-inference`
 - `refactoring-choice`
 - `code-blame`
+- `single-file-analysis`
+- `multi-file-analysis`
+- `fullstack-analysis`
 
 이 모드들은 `rq`가 켜져 있으면 queued 응답을 반환할 수 있습니다. 상태 조회는 `GET /platform/mode-jobs/{job_id}`를 사용합니다.
+
+문제 생성 경로는 대부분 SSE 상태 이벤트를 먼저 보내고, 최종 문제 본문은 `payload` 1회로 전달합니다. `arrange`는 예외로 클라이언트 애니메이션 기반 가짜 스트리밍을 사용합니다.
 
 ## 7. 레거시 호환 정책
 

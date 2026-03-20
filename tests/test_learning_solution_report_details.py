@@ -5,31 +5,22 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.db.models import (
-    AIAnalysis,
-    AnalysisType,
-    Problem,
-    ProblemDifficulty,
-    ProblemKind,
-    Submission,
-    SubmissionStatus,
-    UserProblemStat,
-)
+from app.db.models import AIAnalysis, AnalysisType, Problem, ProblemDifficulty, ProblemKind, Submission, SubmissionStatus, UserProblemStat
 from app.services import report_service
 from backend import learning_reporting
 
 
 def _solution_plan() -> dict[str, object]:
     return {
-        "goal": "오답 패턴을 줄이기 위한 주간 목표를 세운다.",
-        "solutionSummary": "문제별 오답 원인을 바탕으로 재학습 루틴을 구성한다.",
-        "priorityActions": ["오답 복기 3개", "반례 노트 정리"],
-        "phasePlan": ["1주차: 오답 복기", "2주차: 재도전"],
-        "dailyHabits": ["매일 2문제 풀이"],
-        "focusTopics": ["조건 분기", "반례 검증"],
-        "metricsToTrack": ["정확도", "logic_error 감소"],
-        "checkpoints": ["주말 정확도 70% 달성"],
-        "riskMitigation": ["틀린 문제는 즉시 복기"],
+        "goal": "Lower repeated wrong-answer frequency this week.",
+        "solutionSummary": "Use a tighter review loop anchored on recent mistakes.",
+        "priorityActions": ["Replay three wrong answers", "Write a short hint note"],
+        "phasePlan": ["Week 1: review", "Week 2: apply"],
+        "dailyHabits": ["Solve two problems daily"],
+        "focusTopics": ["branching", "validation"],
+        "metricsToTrack": ["accuracy", "logic_error frequency"],
+        "checkpoints": ["reach 70% weekly accuracy"],
+        "riskMitigation": ["review difficult prompts immediately"],
     }
 
 
@@ -54,17 +45,43 @@ class _FakeLegacyService:
 
 
 class _FakeDB:
-    def __init__(self) -> None:
+    def __init__(self, existing_reports: list[object] | None = None) -> None:
+        self._existing_reports = list(existing_reports or [])
         self.added: list[object] = []
+        self.deleted: list[object] = []
+        self._next_id = 901
 
     def add(self, obj: object) -> None:
         self.added.append(obj)
 
+    def flush(self) -> None:
+        for obj in self.added:
+            if getattr(obj, "id", None) is None:
+                setattr(obj, "id", self._next_id)
+                self._next_id += 1
+
     def commit(self) -> None:
         pass
 
+    def delete(self, obj: object) -> None:
+        self.deleted.append(obj)
+
+    def query(self, model):
+        db = self
+
+        class _FakeQuery:
+            def filter(self, *args, **kwargs):
+                return self
+
+            def all(self):
+                rows = [*db._existing_reports, *db.added]
+                return [row for row in rows if row not in db.deleted]
+
+        return _FakeQuery()
+
     def refresh(self, obj: object) -> None:
-        setattr(obj, "id", 901)
+        if getattr(obj, "id", None) is None:
+            setattr(obj, "id", 901)
         if getattr(obj, "created_at", None) is None:
             setattr(obj, "created_at", datetime.now(timezone.utc))
 
@@ -74,23 +91,24 @@ class LearningSolutionReportDetailTests(unittest.TestCase):
         history = [
             {
                 "mode": "code-block",
-                "problem_title": "조건문 빈칸 채우기",
+                "problem_title": "Fill the branch condition",
                 "correct": False,
                 "score": 30,
                 "feedback": {
-                    "summary": "비교 연산자를 잘못 선택했습니다.",
-                    "strengths": ["반복문 구조는 이해했습니다."],
-                    "improvements": ["조건 경계값을 다시 확인하세요."],
+                    "summary": "The comparison operator was chosen incorrectly.",
+                    "strengths": ["You understood the loop structure."],
+                    "improvements": ["Recheck branch boundary values."],
                 },
                 "duration_seconds": 18,
-                "problem_prompt": "빈칸에 올바른 조건식을 넣으세요.",
+                "problem_prompt": "Choose the branch condition that matches the loop.",
                 "problem_code": "for i in range(3):\n    if ____:\n        print(i)",
                 "problem_options": ["i < 3", "i <= 3"],
                 "selected_option_text": "i <= 3",
                 "correct_option_text": "i < 3",
                 "selected_option": 1,
                 "correct_answer_index": 0,
-                "summary": "조건식 선택 문제",
+                "missed_types": ["branch boundary", "comparison operator"],
+                "summary": "Branch selection exercise",
                 "difficulty": "easy",
                 "language": "python",
             }
@@ -105,26 +123,39 @@ class LearningSolutionReportDetailTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(service.captured)
-        captured = service.captured or {}
-        detail_records = captured.get("detail_records")
+        detail_records = (service.captured or {}).get("detail_records")
         self.assertIsInstance(detail_records, list)
         record = detail_records[0]
-        self.assertEqual(record["title"], "조건문 빈칸 채우기")
+        self.assertEqual(record["title"], "Fill the branch condition")
         self.assertEqual(record["expectedAnswer"], "i < 3")
-        self.assertIn("정답은", record["evaluation"]["comparison"])
+        self.assertEqual(record["durationSeconds"], 18)
+        self.assertTrue(record["evaluation"]["comparison"])
+        metric_snapshot = (service.captured or {}).get("metric_snapshot")
+        self.assertEqual(metric_snapshot["detailRecordCount"], 1)
+        self.assertEqual(metric_snapshot["averageDurationSeconds"], 18.0)
+        self.assertEqual(metric_snapshot["repeatedMissedPoints"][0]["label"], "branch boundary")
 
-    def test_milestone_report_passes_detailed_submission_records(self) -> None:
+    def test_milestone_report_persists_strengths_and_download_metadata(self) -> None:
         now = datetime(2026, 3, 16, 10, 0, tzinfo=timezone.utc)
+        old_report = report_service.Report(
+            id=700,
+            user_id=1,
+            report_type=report_service.ReportType.milestone,
+            title="Old report",
+            summary="Older saved report",
+            stats={"source": "milestone_report"},
+            created_at=now,
+        )
         problem = Problem(
             id=21,
             external_id="prob-21",
             kind=ProblemKind.coding,
-            title="배열 합 구하기",
-            description="배열의 합을 반환하세요.",
+            title="Return array sum",
+            description="Return the sum of the array.",
             difficulty=ProblemDifficulty.medium,
             language="python",
             starter_code="def solve(nums):\n    pass",
-            problem_payload={"prompt": "배열의 합을 반환하세요."},
+            problem_payload={"prompt": "Return the sum of the array."},
             answer_payload={},
         )
         submission = Submission(
@@ -133,7 +164,7 @@ class LearningSolutionReportDetailTests(unittest.TestCase):
             problem_id=21,
             language="python",
             code="def solve(nums):\n    return nums[0]",
-            submission_payload={"bridgeId": "bridge-11"},
+            submission_payload={"bridgeId": "bridge-11", "durationSeconds": 74},
             status=SubmissionStatus.failed,
             score=40,
             created_at=now,
@@ -148,9 +179,9 @@ class LearningSolutionReportDetailTests(unittest.TestCase):
             result_detail="expected sum of all values but returned only first item",
             result_payload={
                 "feedback": {
-                    "summary": "첫 원소만 반환해서 누적 로직이 빠졌습니다.",
-                    "strengths": ["함수 시그니처는 맞았습니다."],
-                    "improvements": ["반복 누적 또는 sum 사용을 검토하세요."],
+                    "summary": "The accumulation logic is missing.",
+                    "strengths": ["The function signature is correct."],
+                    "improvements": ["Use a running total or sum()."],
                 },
                 "foundTypes": ["function_signature"],
                 "missedTypes": ["accumulation_logic", "edge_case"],
@@ -172,7 +203,7 @@ class LearningSolutionReportDetailTests(unittest.TestCase):
             )
         }
 
-        fake_db = _FakeDB()
+        fake_db = _FakeDB(existing_reports=[old_report])
         captured: dict[str, object] = {}
 
         def _capture_generate(**kwargs):
@@ -189,12 +220,71 @@ class LearningSolutionReportDetailTests(unittest.TestCase):
             result = report_service.create_milestone_report(fake_db, user_id=1, problem_count=10)
 
         self.assertEqual(result["reportId"], 901)
+        self.assertIn("reportBrief", result)
+        self.assertEqual(result["pdfDownloadUrl"], "/platform/reports/901/pdf")
         detail_records = captured.get("detail_records")
         self.assertIsInstance(detail_records, list)
-        record = detail_records[0]
-        self.assertEqual(record["title"], "배열 합 구하기")
-        self.assertEqual(record["evaluation"]["wrongType"], "logic_error")
-        self.assertIn("누적 로직", record["evaluation"]["feedbackSummary"])
+        self.assertEqual(detail_records[0]["evaluation"]["wrongType"], "logic_error")
+        self.assertEqual(detail_records[0]["durationSeconds"], 74)
+        self.assertEqual(detail_records[0]["attemptsOnProblem"], 2)
+        metric_snapshot = captured.get("metric_snapshot")
+        self.assertEqual(metric_snapshot["detailRecordCount"], 1)
+        self.assertEqual(metric_snapshot["topWrongTypes"][0]["type"], "logic_error")
+        self.assertEqual(metric_snapshot["repeatedWrongTypes"][0]["label"], "logic_error")
+        stored_report = fake_db.added[-1]
+        self.assertTrue(stored_report.strengths)
+        self.assertTrue(stored_report.weaknesses)
+        self.assertIn("learningEvidence", stored_report.stats)
+        self.assertEqual([item.id for item in fake_db.deleted], [700])
+
+    def test_milestone_report_detail_records_keep_advanced_analysis_mode(self) -> None:
+        now = datetime(2026, 3, 16, 10, 0, tzinfo=timezone.utc)
+        problem = Problem(
+            id=22,
+            external_id="sfile:22",
+            kind=ProblemKind.analysis,
+            title="Review a single file",
+            description="Inspect the service layer.",
+            difficulty=ProblemDifficulty.medium,
+            language="python",
+            starter_code="def handler():\n    return None",
+            problem_payload={
+                "workspace": "single-file-analysis.workspace",
+                "files": [{"path": "app/service.py", "content": "def handler():\n    return None"}],
+            },
+            answer_payload={},
+        )
+        submission = Submission(
+            id=12,
+            user_id=1,
+            problem_id=22,
+            language="python",
+            code="analysis report body",
+            submission_payload={"report": "analysis report body"},
+            status=SubmissionStatus.failed,
+            score=55,
+            created_at=now,
+        )
+        submission.problem = problem
+        analysis = AIAnalysis(
+            id=32,
+            user_id=1,
+            submission_id=12,
+            analysis_type=AnalysisType.review,
+            result_summary="analysis_error",
+            result_detail="missed service edge case",
+            result_payload={"feedback": {"summary": "Need deeper file-level reasoning."}},
+            created_at=now,
+        )
+
+        detail_records = report_service._build_learning_detail_records(
+            [submission],
+            analyses_by_submission={12: analysis},
+            stats_by_problem={},
+        )
+
+        self.assertEqual(detail_records[0]["mode"], "single-file-analysis")
+        self.assertTrue(detail_records[0]["modeLabel"])
 
 
 if __name__ == "__main__":

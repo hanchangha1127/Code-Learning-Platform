@@ -5,14 +5,16 @@ from datetime import date
 from fastapi import Header, HTTPException, Request, Response, status
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.core.security import is_sidless_cookie_compat_active
 from server_runtime.context import (
     ACCESS_TOKEN_COOKIE_NAME,
     admin_metrics,
     request_client_id,
+    set_access_cookie,
     settings,
     user_service,
 )
-from server_runtime.platform_auth import resolve_username_from_access_token
+from server_runtime.platform_auth import resolve_username_from_access_token, upgrade_legacy_access_cookie
 
 
 def _extract_bearer_token(authorization: str | None) -> tuple[str | None, bool]:
@@ -39,13 +41,20 @@ def _legacy_auth_allowed_now() -> bool:
     return date.today() <= sunset
 
 
+def _sidless_cookie_compat_allowed_now() -> bool:
+    return is_sidless_cookie_compat_active(
+        bool(getattr(settings, "allow_sidless_cookie_compat", False)),
+        str(getattr(settings, "sidless_cookie_sunset_at", "") or ""),
+    )
+
+
 def _resolve_username_from_jwt(token: str) -> str | None:
     try:
         jwt_username = resolve_username_from_access_token(token)
     except SQLAlchemyError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="인증 서비스(DB) 연결에 실패했습니다. MySQL 상태를 확인해 주세요.",
+            detail="인증 서비스의 DB 연결에 실패했습니다. MySQL 상태를 확인해 주세요.",
         ) from exc
 
     if not jwt_username:
@@ -67,6 +76,15 @@ def get_current_username(
     cookie_token = (request.cookies.get(ACCESS_TOKEN_COOKIE_NAME) or "").strip()
     if cookie_token:
         username = _resolve_username_from_jwt(cookie_token)
+        if not username and _sidless_cookie_compat_allowed_now():
+            upgraded = upgrade_legacy_access_cookie(cookie_token)
+            if upgraded is not None:
+                username, replacement_token = upgraded
+                set_access_cookie(response, replacement_token)
+                response.headers["X-Auth-Legacy-Token"] = "true"
+                response.headers["X-Auth-Legacy-Sunset-At"] = str(
+                    getattr(settings, "sidless_cookie_sunset_at", "")
+                )
 
     if not username:
         token, header_invalid = _extract_bearer_token(authorization)
@@ -85,7 +103,7 @@ def get_current_username(
                 username = user_service.get_user_by_token(token, max_age_seconds=max_age)
             if username:
                 response.headers["X-Auth-Legacy-Token"] = "true"
-                response.headers["X-Auth-Legacy-Sunset-Date"] = str(
+                response.headers["X-Auth-Legacy-Sunset-At"] = str(
                     getattr(settings, "legacy_token_sunset_date", "")
                 )
 

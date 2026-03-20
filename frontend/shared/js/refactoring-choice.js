@@ -7,6 +7,8 @@ const DIFFICULTY_KEY = "code-learning-difficulty";
 const DEFAULT_LANGUAGE = "python";
 const DEFAULT_DIFFICULTY = "beginner";
 const DEFAULT_TOAST_DURATION = 3200;
+const MODE_JOB_POLL_INTERVAL = 1200;
+const MODE_JOB_MAX_POLL_ATTEMPTS = 60;
 
 const DIFFICULTY_OPTIONS = new Set(["beginner", "intermediate", "advanced"]);
 const DIFFICULTY_LABELS = {
@@ -25,6 +27,9 @@ const state = {
   currentProblemId: null,
   currentOptions: [],
   problemStreamController: null,
+  submitJobId: null,
+  submitPollAttempts: 0,
+  submitPollTimer: null,
   toastTimer: null,
 };
 
@@ -52,7 +57,7 @@ function cacheDom() {
   elements.problemFacets = document.getElementById("rc-problem-facets");
   elements.reportForm = document.getElementById("rc-report-form");
   elements.reportText = document.getElementById("rc-report-text");
-  elements.optionRadios = document.querySelectorAll("input[name='selected-option']");
+  elements.reportSubmitBtn = document.getElementById("rc-submit-btn");
   elements.score = document.getElementById("rc-score");
   elements.verdict = document.getElementById("rc-verdict");
   elements.thresholdText = document.getElementById("rc-threshold-text");
@@ -98,9 +103,10 @@ async function init() {
 function bindEvents() {
   elements.loadBtn?.addEventListener("click", handleLoadProblem);
   elements.reportForm?.addEventListener("submit", handleSubmitReport);
-  elements.optionRadios?.forEach((radio) => {
-    radio.addEventListener("change", () => highlightSelectedOption(radio.value));
-  });
+  elements.reportSubmitBtn?.addEventListener("click", handleSubmitButtonClick);
+  elements.problemOptions?.addEventListener("change", handleOptionSelectionChange);
+  elements.problemOptions?.addEventListener("click", handleOptionCardClick);
+  window.addEventListener("beforeunload", stopSubmitPolling);
 }
 
 async function bootstrapWorkspace() {
@@ -218,6 +224,9 @@ async function animateRefactoringChoiceProblem(problem) {
     return;
   }
 
+  applyProblemState(problem);
+  resetReportDraft();
+
   const languageId = problem.language || state.selectedLanguage;
   const languageLabel = state.languageMap[languageId]?.title || languageId || "-";
   const difficultyId = problem.difficulty || state.selectedDifficulty;
@@ -274,15 +283,8 @@ async function animateRefactoringChoiceProblem(problem) {
     elements.problemOptions.innerHTML = "";
     const rows = Array.isArray(problem.options) ? problem.options : [];
     for (const option of rows) {
-      const optionId = String(option.optionId || "").trim().toUpperCase();
-      const card = document.createElement("article");
-      card.className = "choice-option-card";
-      const title = document.createElement("h4");
-      title.textContent = `${optionId} - ${option.title || "옵션"}`;
-      const code = document.createElement("pre");
-      code.className = "code-block";
-      card.appendChild(title);
-      card.appendChild(code);
+      const { card, code } = buildOptionCard(option);
+      code.textContent = "";
       elements.problemOptions.appendChild(card);
       await streamClient.revealLines(code, option.code || "// 코드 없음", { lineDelay: 70 });
       await streamClient.sleep(70);
@@ -299,8 +301,6 @@ async function animateRefactoringChoiceProblem(problem) {
       }
     );
   }
-
-  renderProblem(problem);
 }
 
 async function handleLoadProblem() {
@@ -312,6 +312,7 @@ async function handleLoadProblem() {
   state.selectedLanguage = getSavedLanguage(state.languages);
   state.selectedDifficulty = getSavedDifficulty();
   renderLanguageDifficulty();
+  clearFeedback();
 
   setLoadingState(elements.loadBtn, true, "문제 생성 중...");
   if (elements.loadStatus) {
@@ -363,7 +364,6 @@ async function handleLoadProblem() {
       renderProblem(payload);
     }
 
-    clearFeedback();
     showToast("최적의 선택 문제를 불러왔습니다.");
   } catch (error) {
     showToast(error.message || "문제 생성에 실패했습니다. 다시 시도해 주세요.");
@@ -376,8 +376,7 @@ async function handleLoadProblem() {
 }
 
 function renderProblem(problem) {
-  state.currentProblemId = problem.problemId || null;
-  state.currentOptions = Array.isArray(problem.options) ? problem.options : [];
+  applyProblemState(problem);
 
   if (elements.problemTitle) {
     elements.problemTitle.textContent = problem.title || "최적의 선택 문제";
@@ -405,6 +404,15 @@ function renderProblem(problem) {
 
   renderConstraintList(problem.constraints);
   renderOptionCards(state.currentOptions);
+  resetReportDraft();
+}
+
+function applyProblemState(problem) {
+  state.currentProblemId = problem.problemId || null;
+  state.currentOptions = Array.isArray(problem.options) ? problem.options : [];
+}
+
+function resetReportDraft() {
   resetOptionSelection();
   elements.reportForm?.reset();
 }
@@ -429,6 +437,47 @@ function renderConstraintList(constraints) {
   });
 }
 
+function buildOptionCard(option) {
+  const optionId = String(option.optionId || "").trim().toUpperCase();
+  const card = document.createElement("article");
+  card.className = "choice-option-card";
+  card.dataset.optionId = optionId;
+
+  const head = document.createElement("div");
+  head.className = "choice-option-head";
+
+  const selector = document.createElement("label");
+  selector.className = "choice-option-selector";
+
+  const radio = document.createElement("input");
+  radio.type = "radio";
+  radio.name = "selected-option";
+  radio.value = optionId;
+  radio.ariaLabel = `${optionId} 선택`;
+
+  const selectorText = document.createElement("span");
+  selectorText.className = "choice-option-selector-text";
+  selectorText.textContent = `${optionId}안 선택`;
+
+  selector.appendChild(radio);
+  selector.appendChild(selectorText);
+
+  const title = document.createElement("h4");
+  title.textContent = `${optionId} - ${option.title || "옵션"}`;
+
+  head.appendChild(selector);
+  head.appendChild(title);
+
+  const code = document.createElement("pre");
+  code.className = "code-block";
+  code.textContent = option.code || "// 코드 없음";
+
+  card.appendChild(head);
+  card.appendChild(code);
+
+  return { card, code, radio };
+}
+
 function renderOptionCards(options) {
   if (!elements.problemOptions) return;
   elements.problemOptions.innerHTML = "";
@@ -441,29 +490,51 @@ function renderOptionCards(options) {
     return;
   }
   rows.forEach((option) => {
-    const optionId = String(option.optionId || "").trim().toUpperCase();
-    const card = document.createElement("article");
-    card.className = "choice-option-card";
-    card.dataset.optionId = optionId;
-
-    const title = document.createElement("h4");
-    title.textContent = `${optionId} - ${option.title || "옵션"}`;
-
-    const code = document.createElement("pre");
-    code.className = "code-block";
-    code.textContent = option.code || "// 코드 없음";
-
-    card.appendChild(title);
-    card.appendChild(code);
+    const { card } = buildOptionCard(option);
     elements.problemOptions.appendChild(card);
   });
 }
 
 function resetOptionSelection() {
-  elements.optionRadios?.forEach((radio) => {
+  listOptionRadios().forEach((radio) => {
     radio.checked = false;
   });
   highlightSelectedOption("");
+}
+
+function listOptionRadios() {
+  if (!elements.problemOptions) {
+    return [];
+  }
+  return Array.from(elements.problemOptions.querySelectorAll("input[name='selected-option']"));
+}
+
+function handleOptionSelectionChange(event) {
+  const radio = event.target;
+  if (!(radio instanceof HTMLInputElement) || radio.name !== "selected-option") {
+    return;
+  }
+  highlightSelectedOption(radio.value);
+}
+
+function handleOptionCardClick(event) {
+  if (event.target instanceof Element && event.target.closest("input[name='selected-option']")) {
+    return;
+  }
+  const card = event.target instanceof Element
+    ? event.target.closest(".choice-option-card")
+    : null;
+  if (!(card instanceof HTMLElement)) {
+    return;
+  }
+  const radio = card.querySelector("input[name='selected-option']");
+  if (!(radio instanceof HTMLInputElement)) {
+    return;
+  }
+  if (!radio.checked) {
+    radio.checked = true;
+    radio.dispatchEvent(new Event("change", { bubbles: true }));
+  }
 }
 
 function highlightSelectedOption(optionId) {
@@ -475,6 +546,15 @@ function highlightSelectedOption(optionId) {
 
 async function handleSubmitReport(event) {
   event.preventDefault();
+  await submitCurrentReport();
+}
+
+async function handleSubmitButtonClick(event) {
+  event.preventDefault();
+  await submitCurrentReport();
+}
+
+async function submitCurrentReport() {
   if (!state.currentProblemId) {
     showToast("먼저 문제를 생성해 주세요.");
     return;
@@ -492,11 +572,11 @@ async function handleSubmitReport(event) {
     return;
   }
 
-  const submitBtn = elements.reportForm?.querySelector("button[type='submit']");
+  const submitBtn = elements.reportSubmitBtn || elements.reportForm?.querySelector("button[type='submit']");
   setLoadingState(submitBtn, true, "채점 중...");
 
   try {
-    const payload = await apiRequest("/platform/refactoring-choice/submit", {
+    let payload = await apiRequest("/platform/refactoring-choice/submit", {
       method: "POST",
       body: {
         problemId: state.currentProblemId,
@@ -504,8 +584,15 @@ async function handleSubmitReport(event) {
         report,
       },
     });
+    if (payload?.queued && payload?.jobId) {
+      if (elements.feedbackSummary) {
+        elements.feedbackSummary.textContent = "AI가 선택 근거를 채점하는 중입니다.";
+      }
+      showToast("AI 피드백 요청이 접수되었습니다.");
+      payload = await pollSubmitJob(payload.jobId);
+    }
     renderFeedback(payload);
-    showToast("채점이 완료되었습니다.");
+    showToast(isFallbackFeedback(payload) ? "기본 피드백으로 결과를 표시했습니다." : "AI 피드백이 완료되었습니다.");
   } catch (error) {
     showToast(error.message || "채점에 실패했습니다. 잠시 후 다시 시도해 주세요.");
   } finally {
@@ -513,8 +600,58 @@ async function handleSubmitReport(event) {
   }
 }
 
+function startSubmitPolling(jobId) {
+  stopSubmitPolling();
+  state.submitJobId = String(jobId || "").trim();
+  state.submitPollAttempts = 0;
+}
+
+function stopSubmitPolling() {
+  if (state.submitPollTimer) {
+    window.clearTimeout(state.submitPollTimer);
+    state.submitPollTimer = null;
+  }
+  state.submitJobId = null;
+  state.submitPollAttempts = 0;
+}
+
+async function pollSubmitJob(jobId) {
+  startSubmitPolling(jobId);
+  if (!state.submitJobId) {
+    throw new Error("채점 작업 정보를 확인하지 못했습니다.");
+  }
+
+  while (state.submitPollAttempts < MODE_JOB_MAX_POLL_ATTEMPTS) {
+    state.submitPollAttempts += 1;
+    const payload = await apiRequest(`/platform/mode-jobs/${encodeURIComponent(state.submitJobId)}`);
+    if (payload?.finished) {
+      const result = payload.result && typeof payload.result === "object" ? payload.result : {};
+      stopSubmitPolling();
+      return result;
+    }
+    if (payload?.failed) {
+      stopSubmitPolling();
+      throw new Error(payload.error || "채점 작업이 실패했습니다.");
+    }
+
+    await waitForNextPoll();
+  }
+
+  stopSubmitPolling();
+  throw new Error("채점 결과를 불러오는 데 시간이 너무 오래 걸립니다. 잠시 후 다시 시도해 주세요.");
+}
+
+function waitForNextPoll() {
+  return new Promise((resolve) => {
+    state.submitPollTimer = window.setTimeout(() => {
+      state.submitPollTimer = null;
+      resolve();
+    }, MODE_JOB_POLL_INTERVAL);
+  });
+}
+
 function getSelectedOption() {
-  for (const radio of elements.optionRadios || []) {
+  for (const radio of listOptionRadios()) {
     if (radio.checked) {
       return radio.value;
     }
@@ -552,7 +689,7 @@ function renderFeedback(payload) {
     elements.thresholdText.textContent = `합격 기준: ${Number.isFinite(threshold) ? threshold : 70}점`;
   }
   if (elements.feedbackSummary) {
-    elements.feedbackSummary.textContent = feedback.summary || "요약 정보가 없습니다.";
+    elements.feedbackSummary.textContent = formatFeedbackSummary(payload, feedback.summary, "AI 피드백 요약이 없습니다.");
   }
   renderList(elements.strengths, feedback.strengths, "강점이 없습니다.");
   renderList(elements.improvements, feedback.improvements, "개선 포인트가 없습니다.");
@@ -641,7 +778,7 @@ function clearFeedback() {
     elements.thresholdText.textContent = "합격 기준: 70점";
   }
   if (elements.feedbackSummary) {
-    elements.feedbackSummary.textContent = "리포트를 제출하면 AI가 요약을 제공합니다.";
+    elements.feedbackSummary.textContent = "리포트를 제출하면 AI 피드백이 여기에 표시됩니다.";
   }
   if (elements.selectedOption) {
     elements.selectedOption.textContent = "-";
@@ -715,16 +852,35 @@ function showToast(message) {
   }, DEFAULT_TOAST_DURATION);
 }
 
-function getSavedLanguage(languages = []) {
+function getSavedLanguage(languages = null) {
   const saved = window.localStorage.getItem(LANGUAGE_KEY);
-  if (saved && languages.some((lang) => lang.id === saved)) {
-    return saved;
+  if (Array.isArray(languages) && languages.length > 0) {
+    if (saved && languages.some((lang) => lang.id === saved)) {
+      return saved;
+    }
+    const fallback = languages[0]?.id || DEFAULT_LANGUAGE;
+    if (fallback) {
+      window.localStorage.setItem(LANGUAGE_KEY, fallback);
+    }
+    return fallback;
   }
-  const fallback = languages[0]?.id || DEFAULT_LANGUAGE;
-  if (fallback) {
-    window.localStorage.setItem(LANGUAGE_KEY, fallback);
+  return saved || DEFAULT_LANGUAGE;
+}
+
+function getFeedbackSource(payload) {
+  return String(payload?.feedbackSource || "").trim().toLowerCase() || "ai";
+}
+
+function isFallbackFeedback(payload) {
+  return getFeedbackSource(payload) === "fallback";
+}
+
+function formatFeedbackSummary(payload, summary, emptyText) {
+  const normalized = String(summary || "").trim();
+  if (!normalized) {
+    return isFallbackFeedback(payload) ? "기본 피드백 요약이 없습니다." : emptyText;
   }
-  return fallback;
+  return isFallbackFeedback(payload) ? `기본 피드백: ${normalized}` : normalized;
 }
 
 function getSavedDifficulty() {

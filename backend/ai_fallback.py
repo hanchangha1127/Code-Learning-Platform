@@ -22,6 +22,8 @@ def build_ai_evaluation_fallback(
         "found_types": [],
         "missed_types": list(missed_types or []),
         "error_detail": str(error or ""),
+        "feedback_source": "fallback",
+        "ai_provider": None,
     }
 
 
@@ -29,4 +31,3 @@ def extract_analysis_error_detail(evaluation: Mapping[str, Any] | None) -> str:
     if not isinstance(evaluation, Mapping):
         return ""
     return str(evaluation.get("error_detail") or "")
-

@@ -74,11 +74,76 @@ class _FakeDockerClient:
         return None
 
 
-def _build_client(admin_key: str = "unit-test-admin-key") -> TestClient:
+class _FakeRedisPipeline:
+    def __init__(self, redis):
+        self._redis = redis
+        self._ops: list[tuple[str, tuple]] = []
+
+    def delete(self, *keys: str):
+        self._ops.append(("delete", keys))
+        return self
+
+    def setex(self, key: str, ttl: int, value: str):
+        self._ops.append(("setex", (key, ttl, value)))
+        return self
+
+    def execute(self):
+        for command, args in self._ops:
+            getattr(self._redis, command)(*args)
+        self._ops.clear()
+        return True
+
+
+class _FakeRedis:
+    def __init__(self) -> None:
+        self._values: dict[str, int] = {}
+        self._ttls: dict[str, int] = {}
+
+    def incr(self, key: str) -> int:
+        next_value = int(self._values.get(key, 0)) + 1
+        self._values[key] = next_value
+        return next_value
+
+    def expire(self, key: str, ttl: int) -> bool:
+        if key not in self._values:
+            return False
+        self._ttls[key] = int(ttl)
+        return True
+
+    def ttl(self, key: str) -> int:
+        return int(self._ttls.get(key, -2))
+
+    def delete(self, *keys: str) -> int:
+        removed = 0
+        for key in keys:
+            removed += int(key in self._values or key in self._ttls)
+            self._values.pop(key, None)
+            self._ttls.pop(key, None)
+        return removed
+
+    def setex(self, key: str, ttl: int, value: str) -> bool:
+        self._values[key] = str(value)
+        self._ttls[key] = int(ttl)
+        return True
+
+    def pipeline(self) -> _FakeRedisPipeline:
+        return _FakeRedisPipeline(self)
+
+
+def _build_client(
+    admin_key: str = "unit-test-admin-key",
+    *,
+    enable_admin_shutdown: bool = True,
+    admin_throttle_backend: str = "memory",
+) -> TestClient:
     app = FastAPI()
     register_admin_api(
         app=app,
-        settings=SimpleNamespace(admin_panel_key=admin_key),
+        settings=SimpleNamespace(
+            admin_panel_key=admin_key,
+            enable_admin_shutdown=enable_admin_shutdown,
+            admin_throttle_backend=admin_throttle_backend,
+        ),
         admin_metrics=_FakeMetrics(),
         admin_file=Path("frontend/admin.html"),
     )
@@ -105,6 +170,16 @@ class AdminShutdownTests(unittest.TestCase):
         self.assertEqual(detail.get("code"), "docker_control_unavailable")
         self.assertTrue(detail.get("requires_socket_override"))
         self.assertIn("with-docker-socket", detail.get("detail", ""))
+
+    def test_shutdown_returns_503_when_disabled_by_config(self):
+        client = _build_client(enable_admin_shutdown=False)
+
+        response = client.post("/api/admin/shutdown", headers={"X-Admin-Key": "unit-test-admin-key"})
+
+        self.assertEqual(response.status_code, 503)
+        detail = response.json().get("detail") or {}
+        self.assertEqual(detail.get("code"), "disabled_by_config")
+        self.assertIn("CODE_PLATFORM_ENABLE_ADMIN_SHUTDOWN=true", detail.get("detail", ""))
 
     def test_shutdown_accepted_when_docker_control_is_available(self):
         client = _build_client()
@@ -222,6 +297,49 @@ class AdminShutdownTests(unittest.TestCase):
         valid_response = client.get("/api/admin/metrics", headers={"X-Admin-Key": "unit-test-admin-key"})
         self.assertEqual(valid_response.status_code, 200)
 
+    def test_admin_key_rate_limit_accumulates_across_rotating_user_agents(self):
+        client = _build_client()
+        responses = []
+        for attempt in range(5):
+            responses.append(
+                client.get(
+                    "/api/admin/metrics",
+                    headers={
+                        "X-Admin-Key": "wrong-key",
+                        "User-Agent": f"pytest-agent-{attempt}",
+                    },
+                )
+            )
+
+        self.assertEqual([response.status_code for response in responses[:4]], [403, 403, 403, 403])
+        self.assertEqual(responses[4].status_code, 429)
+
+    def test_redis_admin_throttle_state_survives_guard_rebuild_and_clears_on_success(self):
+        shared_redis = _FakeRedis()
+
+        with patch("server_runtime.admin_api._get_admin_redis_connection", return_value=shared_redis):
+            first_client = _build_client(admin_throttle_backend="redis")
+            for _ in range(4):
+                response = first_client.get("/api/admin/metrics", headers={"X-Admin-Key": "wrong-key"})
+                self.assertEqual(response.status_code, 403)
+
+            blocked = first_client.get("/api/admin/metrics", headers={"X-Admin-Key": "wrong-key"})
+            self.assertEqual(blocked.status_code, 429)
+            self.assertIn("Retry-After", blocked.headers)
+
+            second_client = _build_client(admin_throttle_backend="redis")
+            still_blocked = second_client.get("/api/admin/metrics", headers={"X-Admin-Key": "wrong-key"})
+            self.assertEqual(still_blocked.status_code, 429)
+
+            recovered = second_client.get(
+                "/api/admin/metrics",
+                headers={"X-Admin-Key": "unit-test-admin-key"},
+            )
+            self.assertEqual(recovered.status_code, 200)
+
+            post_clear = second_client.get("/api/admin/metrics", headers={"X-Admin-Key": "wrong-key"})
+            self.assertEqual(post_clear.status_code, 403)
+
     def test_resolve_current_container_uses_hints(self):
         container = _FakeContainer(
             cid="0123456789ab",
@@ -256,10 +374,50 @@ class AdminShutdownTests(unittest.TestCase):
             "server_runtime.admin_api._self_container_hints",
             return_value=["abc123abc123"],
         ):
-            status_info = admin_api._docker_control_status()
+            status_info = admin_api._docker_control_status(SimpleNamespace(enable_admin_shutdown=True))
 
         self.assertEqual(status_info.get("supported"), False)
         self.assertEqual(status_info.get("reason"), "shutdown_targets_incomplete")
+
+    def test_docker_control_status_returns_disabled_without_opt_in(self):
+        status_info = admin_api._docker_control_status(SimpleNamespace(enable_admin_shutdown=False))
+
+        self.assertEqual(status_info.get("supported"), False)
+        self.assertEqual(status_info.get("reason"), "disabled_by_config")
+
+    def test_docker_control_status_disables_local_process_shutdown_even_when_opted_in(self):
+        with patch("server_runtime.admin_api._is_in_docker", return_value=False):
+            status_info = admin_api._docker_control_status(SimpleNamespace(enable_admin_shutdown=True))
+
+        self.assertEqual(status_info.get("supported"), False)
+        self.assertEqual(status_info.get("reason"), "local_process_disabled")
+
+    def test_admin_client_id_prefers_forwarded_for_from_trusted_proxy(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="127.0.0.1"),
+            headers={"x-forwarded-for": "198.51.100.10, 127.0.0.1"},
+        )
+
+        self.assertEqual(admin_api._admin_client_id(request), "198.51.100.10")
+
+    def test_admin_client_id_ignores_forwarded_for_from_untrusted_source(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="203.0.113.10"),
+            headers={"x-forwarded-for": "198.51.100.10"},
+        )
+
+        self.assertEqual(admin_api._admin_client_id(request), "203.0.113.10")
+
+    def test_admin_client_id_uses_only_client_ip_for_rate_limit_bucket(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="203.0.113.10"),
+            headers={"user-agent": "pytest-admin-agent"},
+        )
+
+        self.assertEqual(
+            admin_api._admin_client_id(request),
+            "203.0.113.10",
+        )
 
 
 if __name__ == "__main__":

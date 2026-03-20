@@ -5,6 +5,8 @@ import re
 from typing import Any
 from urllib import error, request
 
+from backend.admin_metrics import get_admin_metrics
+
 from .base import AnalysisResult
 
 
@@ -39,13 +41,30 @@ class OpenAIProvider:
         api_key: str,
         model: str = "gpt-4o-mini",
         timeout_seconds: int = 30,
+        metrics: Any | None = None,
     ):
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = max(timeout_seconds, 5)
         self.endpoint = "https://api.openai.com/v1/chat/completions"
+        self.metrics = metrics or get_admin_metrics()
+
+    def _start_metrics_token(self) -> Any | None:
+        try:
+            return self.metrics.start_ai_call(provider="openai", operation="submission_analysis")
+        except Exception:
+            return None
+
+    def _finish_metrics_token(self, token: Any | None, *, success: bool) -> None:
+        if token is None:
+            return
+        try:
+            self.metrics.end_ai_call(token, success=success)
+        except Exception:
+            return
 
     def analyze(self, *, language: str, code: str, problem_prompt: str) -> AnalysisResult:
+        metrics_token = self._start_metrics_token()
         system_prompt = (
             "You are a strict code reviewer. Return ONLY JSON with this schema: "
             '{"status":"passed|failed","score":0-100,"summary":"short text","detail":{"strengths":[],"improvements":[]}}.'
@@ -77,44 +96,51 @@ class OpenAIProvider:
         )
 
         try:
-            with request.urlopen(req, timeout=self.timeout_seconds) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
-        except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
-            raise RuntimeError(f"OpenAI API error ({exc.code}): {detail[:300]}") from exc
-        except Exception as exc:
-            raise RuntimeError(f"OpenAI API request failed: {exc}") from exc
+            try:
+                with request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
+            except error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
+                raise RuntimeError(f"OpenAI API error ({exc.code}): {detail[:300]}") from exc
+            except Exception as exc:
+                raise RuntimeError(f"OpenAI API request failed: {exc}") from exc
 
-        try:
-            data = json.loads(raw)
-            content = data["choices"][0]["message"]["content"]
-        except Exception as exc:
-            raise RuntimeError(f"Invalid OpenAI response payload: {exc}") from exc
+            try:
+                data = json.loads(raw)
+                content = data["choices"][0]["message"]["content"]
+            except Exception as exc:
+                raise RuntimeError(f"Invalid OpenAI response payload: {exc}") from exc
 
-        if isinstance(content, list):
-            # Defensive: some SDK/formatters may return segmented content.
-            content = "\n".join(
-                part.get("text", "") if isinstance(part, dict) else str(part)
-                for part in content
+            if isinstance(content, list):
+                # Defensive: some SDK/formatters may return segmented content.
+                content = "\n".join(
+                    part.get("text", "") if isinstance(part, dict) else str(part)
+                    for part in content
+                )
+
+            try:
+                parsed = json.loads(_extract_json_blob(str(content)))
+            except json.JSONDecodeError:
+                parsed = {
+                    "status": "failed",
+                    "score": 0,
+                    "summary": "ai_response_parse_failed",
+                    "detail": {"raw": str(content)[:1000]},
+                }
+
+            status_raw = str(parsed.get("status", "failed")).lower()
+            if status_raw not in {"passed", "failed"}:
+                status_raw = "passed" if bool(parsed.get("correct")) else "failed"
+
+            result = AnalysisResult(
+                status="passed" if status_raw == "passed" else "failed",
+                score=_clamp_score(parsed.get("score")),
+                summary=str(parsed.get("summary") or "analysis_completed")[:200],
+                detail=parsed.get("detail") if isinstance(parsed.get("detail"), (dict, list, str, int, float, bool, type(None))) else str(parsed.get("detail")),
             )
+        except Exception:
+            self._finish_metrics_token(metrics_token, success=False)
+            raise
 
-        try:
-            parsed = json.loads(_extract_json_blob(str(content)))
-        except json.JSONDecodeError:
-            parsed = {
-                "status": "failed",
-                "score": 0,
-                "summary": "ai_response_parse_failed",
-                "detail": {"raw": str(content)[:1000]},
-            }
-
-        status_raw = str(parsed.get("status", "failed")).lower()
-        if status_raw not in {"passed", "failed"}:
-            status_raw = "passed" if bool(parsed.get("correct")) else "failed"
-
-        return AnalysisResult(
-            status="passed" if status_raw == "passed" else "failed",
-            score=_clamp_score(parsed.get("score")),
-            summary=str(parsed.get("summary") or "analysis_completed")[:200],
-            detail=parsed.get("detail") if isinstance(parsed.get("detail"), (dict, list, str, int, float, bool, type(None))) else str(parsed.get("detail")),
-        )
+        self._finish_metrics_token(metrics_token, success=True)
+        return result

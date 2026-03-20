@@ -116,10 +116,14 @@ class Settings:
     app_env: str = os.getenv("APP_ENV", "development")
     data_dir: Path = Path(os.getenv("CODE_PLATFORM_DATA_DIR", "data")).resolve()
     users_dir: Path = Path(os.getenv("CODE_PLATFORM_USERS_DIR", "data/users")).resolve()
+    ai_provider: str = os.getenv("AI_PROVIDER", "").strip().lower()
     ai_api_key: Optional[str] = _get_secret_env("AI_API_KEY")
     google_api_key: Optional[str] = _get_secret_env("GOOGLE_API_KEY")
     google_model: str = os.getenv("GOOGLE_MODEL", "gemini-3-flash-preview")
     google_timeout_seconds: int = _get_int_env("GOOGLE_TIMEOUT_SECONDS", 30)
+    openai_api_key: Optional[str] = _get_secret_env("OPENAI_API_KEY")
+    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    ai_request_timeout_seconds: int = _get_int_env("AI_REQUEST_TIMEOUT_SECONDS", 30)
     google_oauth_client_id: Optional[str] = _get_secret_env("GOOGLE_OAUTH_CLIENT_ID")
     google_oauth_client_secret: Optional[str] = _get_secret_env("GOOGLE_OAUTH_CLIENT_SECRET")
     google_oauth_redirect_uri: Optional[str] = _normalize_optional(os.getenv("GOOGLE_OAUTH_REDIRECT_URI"))
@@ -130,7 +134,6 @@ class Settings:
             "http://127.0.0.1:8000/platform/auth/google/callback",
             "https://localhost:8443/platform/auth/google/callback",
             "https://127.0.0.1:8443/platform/auth/google/callback",
-            "http://hhtj.site/platform/auth/google/callback",
             "https://hhtj.site/platform/auth/google/callback",
         ),
     )
@@ -138,12 +141,19 @@ class Settings:
         "GOOGLE_API_ENDPOINT", "https://generativelanguage.googleapis.com"
     )
     guest_ttl_seconds: int = _get_int_env("CODE_PLATFORM_GUEST_TTL_SECONDS", 300)
-    admin_panel_key: str = os.getenv("ADMIN_PANEL_KEY", "")
+    admin_panel_key: str = _get_secret_env("ADMIN_PANEL_KEY") or ""
     admin_metrics_window_minutes: int = _get_int_env("ADMIN_METRICS_WINDOW_MINUTES", 60)
     admin_active_window_seconds: int = _get_int_env("ADMIN_ACTIVE_WINDOW_SECONDS", 300)
+    enable_admin_shutdown: bool = _get_bool_env("CODE_PLATFORM_ENABLE_ADMIN_SHUTDOWN", False)
+    admin_throttle_backend: str = (os.getenv("ADMIN_THROTTLE_BACKEND", "redis").strip().lower() or "redis")
     allow_legacy_jsonl_tokens: bool = _get_bool_env("CODE_PLATFORM_ALLOW_LEGACY_JSONL_TOKENS", False)
     legacy_token_sunset_date: str = os.getenv("CODE_PLATFORM_LEGACY_TOKEN_SUNSET_DATE", "2026-03-31")
     legacy_token_max_age_seconds: int = _get_int_env("CODE_PLATFORM_LEGACY_TOKEN_MAX_AGE_SECONDS", 86400)
+    allow_sidless_cookie_compat: bool = _get_bool_env("CODE_PLATFORM_ALLOW_SIDLESS_COOKIE_COMPAT", True)
+    sidless_cookie_sunset_at: str = os.getenv(
+        "CODE_PLATFORM_SIDLESS_COOKIE_SUNSET_AT",
+        "2026-04-03T23:59:59+09:00",
+    )
     cors_origins: tuple[str, ...] = _get_csv_env(
         "CODE_PLATFORM_CORS_ORIGINS",
         ("http://127.0.0.1:8000", "http://localhost:8000"),
@@ -189,6 +199,14 @@ class Settings:
             raise ValueError(f"SSL cert file not found: {certfile}")
         if not keyfile.exists() or not keyfile.is_file():
             raise ValueError(f"SSL key file not found: {keyfile}")
+
+    @property
+    def resolved_openai_api_key(self) -> str | None:
+        key = self.openai_api_key or self.ai_api_key
+        if not key:
+            return None
+        normalized = key.strip()
+        return normalized or None
 
 
 def get_settings() -> Settings:

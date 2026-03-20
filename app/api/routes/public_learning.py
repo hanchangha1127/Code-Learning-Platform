@@ -1,12 +1,18 @@
 ﻿from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.api.security_deps import get_current_user
 from app.db.models import User
-from app.schemas.learning_continuity import LearningHomeRead, ReviewQueueRead, ReviewResumeRead
+from app.schemas.learning_continuity import (
+    LearningHistoryPageRead,
+    LearningHomeRead,
+    ReviewQueueRead,
+    ReviewResumeRead,
+)
+from app.schemas.report import LearningSolutionReportRead
 from app.services.learning_continuity_service import (
     build_learning_home,
     list_due_review_queue,
@@ -22,14 +28,14 @@ from server_runtime.schemas import (
     CodeArrangeSubmitRequest,
     CodeBlockSubmitRequest,
     CodeCalcSubmitRequest,
-    CodeErrorSubmitRequest,
     ExplanationSubmission,
     ProblemRequest,
 )
 
 router = APIRouter()
 
-LEARNING_REPORT_FAILURE_DETAIL = "학습 리포트 생성에 실패했습니다. 잠시 후 다시 시도해 주세요."
+HISTORY_DEFAULT_LIMIT = 200
+HISTORY_MAX_LIMIT = 500
 
 
 @router.get("/languages")
@@ -47,7 +53,7 @@ def get_home(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ) -> dict:
-    history = platform_public_bridge.get_public_history(current.username)
+    history = platform_public_bridge.get_public_history(current.username, limit=HISTORY_DEFAULT_LIMIT)
     profile = platform_public_bridge.get_public_profile(current.username, history=history)
     me = platform_public_bridge.get_public_me(current)
     return build_learning_home(
@@ -59,25 +65,26 @@ def get_home(
     )
 
 
-@router.get("/report")
+@router.get("/report", response_model=LearningSolutionReportRead)
 def get_report(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ) -> dict:
     try:
         return platform_public_bridge.get_public_report(current.username, current.id, db)
-    except RuntimeError as exc:
-        if "learning_report_generation_failed" in str(exc):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=LEARNING_REPORT_FAILURE_DETAIL,
-            ) from exc
-        raise
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="저장된 학습 리포트를 찾지 못했습니다.",
+        ) from exc
 
 
-@router.get("/learning/history")
-def get_history(current: User = Depends(get_current_user)) -> dict:
-    return {"history": platform_public_bridge.get_public_history(current.username)}
+@router.get("/learning/history", response_model=LearningHistoryPageRead)
+def get_history(
+    limit: int = Query(default=HISTORY_DEFAULT_LIMIT, ge=1, le=HISTORY_MAX_LIMIT),
+    current: User = Depends(get_current_user),
+) -> dict:
+    return platform_public_bridge.get_public_history_page(current.username, limit=limit)
 
 
 @router.get("/learning/memory")
@@ -241,22 +248,3 @@ def post_code_calc_submit(
     current: User = Depends(get_current_user),
 ) -> dict:
     return _submit_mode(mode="code-calc", body=body.model_dump(by_alias=True), db=db, current=current)
-
-
-@router.post("/codeerror/problem")
-def post_code_error_problem(
-    body: ProblemRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-    current: User = Depends(get_current_user),
-):
-    return _request_problem_with_optional_stream(request=request, mode="code-error", body=body, db=db, current=current)
-
-
-@router.post("/codeerror/submit")
-def post_code_error_submit(
-    body: CodeErrorSubmitRequest,
-    db: Session = Depends(get_db),
-    current: User = Depends(get_current_user),
-) -> dict:
-    return _submit_mode(mode="code-error", body=body.model_dump(by_alias=True), db=db, current=current)

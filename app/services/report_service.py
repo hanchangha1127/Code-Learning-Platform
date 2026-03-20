@@ -9,8 +9,12 @@ from backend.ai_client import AIClient
 from app.db.base import utcnow
 from app.db.models import AIAnalysis, Report, ReportType, Submission, SubmissionStatus, UserProblemStat
 from app.services.problem_stat_service import classify_wrong_answer_type
+from app.services.report_pdf_service import build_report_brief, build_report_pdf_download_url
 
 _learning_report_ai = AIClient()
+
+_REPORT_CONTEXT_LIMIT = 15
+_REPORT_SIGNAL_LIMIT = 5
 
 
 def _to_int(value: Any) -> int | None:
@@ -357,6 +361,8 @@ def _normalize_detail_list(value: Any, *, limit: int = 6, item_limit: int = 180)
                 or item.get("path")
                 or item.get("title")
                 or item.get("summary")
+                or item.get("code")
+                or item.get("content")
                 or item.get("diff")
                 or item,
                 item_limit,
@@ -387,6 +393,46 @@ def _mode_from_problem_kind(kind: Any) -> str:
     }.get(value, value or "analysis")
 
 
+def _mode_from_problem(
+    problem: Problem | None,
+    *,
+    problem_payload: dict[str, Any],
+    answer_payload: dict[str, Any],
+) -> str:
+    for payload in (problem_payload, answer_payload):
+        raw_mode = str(payload.get("mode") or "").strip()
+        if raw_mode:
+            return raw_mode
+
+    workspace = str(problem_payload.get("workspace") or "").strip().lower()
+    workspace_mode = {
+        "single-file-analysis.workspace": "single-file-analysis",
+        "multi-file-analysis.workspace": "multi-file-analysis",
+        "fullstack-analysis.workspace": "fullstack-analysis",
+    }.get(workspace)
+    if workspace_mode:
+        return workspace_mode
+
+    external_id = str(getattr(problem, "external_id", "") or "").strip().lower()
+    if external_id:
+        prefix = external_id.split(":", 1)[0]
+        inferred_mode = {
+            "sfile": "single-file-analysis",
+            "mfile": "multi-file-analysis",
+            "fstack": "fullstack-analysis",
+            "rchoice": "refactoring-choice",
+            "cblame": "code-blame",
+            "auditor": "auditor",
+            "ccalc": "code-calc",
+            "cblock": "code-block",
+            "analysis": "analysis",
+        }.get(prefix)
+        if inferred_mode:
+            return inferred_mode
+
+    return _mode_from_problem_kind(problem.kind if problem is not None else "analysis")
+
+
 def _mode_label(mode: str) -> str:
     return {
         "analysis": "코드 설명",
@@ -398,6 +444,9 @@ def _mode_label(mode: str) -> str:
         "context-inference": "맥락 추론",
         "refactoring-choice": "리팩토링 선택",
         "code-blame": "코드 블레임",
+        "single-file-analysis": "단일 파일 분석",
+        "multi-file-analysis": "멀티 파일 분석",
+        "fullstack-analysis": "풀스택 분석",
     }.get(mode, mode or "unknown")
 
 
@@ -446,6 +495,193 @@ def _extract_feedback_summary(analysis: AIAnalysis | None) -> str | None:
         or _clip_detail_text(analysis.result_summary, 280)
         or _clip_detail_text(analysis.result_detail, 280)
     )
+
+
+def _collect_feedback_items(
+    analyses_by_submission: dict[int, AIAnalysis],
+    *,
+    key: str,
+    limit: int = 3,
+    item_limit: int = 180,
+) -> list[str]:
+    rows: list[str] = []
+    for analysis in analyses_by_submission.values():
+        result_payload = analysis.result_payload if isinstance(analysis.result_payload, dict) else {}
+        feedback = result_payload.get("feedback") if isinstance(result_payload.get("feedback"), dict) else {}
+        value = feedback.get(key)
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            normalized = _clip_detail_text(item, item_limit)
+            if not normalized or normalized in rows:
+                continue
+            rows.append(normalized)
+            if len(rows) >= limit:
+                return rows
+    return rows
+
+
+def _normalize_counter_rows(
+    counter: Counter[str],
+    *,
+    limit: int = _REPORT_SIGNAL_LIMIT,
+    item_limit: int = 180,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for label, count in counter.most_common(limit):
+        normalized_label = _clip_detail_text(label, item_limit)
+        if not normalized_label or count <= 0:
+            continue
+        rows.append({"label": normalized_label, "count": int(count)})
+    return rows
+
+
+def _extract_duration_seconds(payload: dict[str, Any]) -> int | None:
+    for key in ("durationSeconds", "duration_seconds", "elapsedSeconds", "elapsed_seconds"):
+        value = payload.get(key)
+        try:
+            if value is None:
+                continue
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed >= 0:
+            return parsed
+    return None
+
+
+def _build_learning_history_context_from_records(detail_records: list[dict[str, Any]]) -> str:
+    if not detail_records:
+        return "최근 제출 이력이 없습니다."
+
+    lines: list[str] = []
+    for idx, record in enumerate(detail_records[:_REPORT_CONTEXT_LIMIT], 1):
+        evaluation = record.get("evaluation") if isinstance(record.get("evaluation"), dict) else {}
+        question_context = record.get("questionContext") if isinstance(record.get("questionContext"), dict) else {}
+
+        header = (
+            f"{idx}. [{record.get('modeLabel') or record.get('mode') or 'practice'}] "
+            f"{record.get('title') or 'Untitled'}"
+        )
+        meta_parts = [
+            f"result={record.get('result') or '-'}",
+            f"score={record.get('score') if record.get('score') is not None else 'N/A'}",
+        ]
+        if record.get("difficulty"):
+            meta_parts.append(f"difficulty={record['difficulty']}")
+        if record.get("language"):
+            meta_parts.append(f"language={record['language']}")
+        duration_seconds = record.get("durationSeconds")
+        if duration_seconds is not None:
+            meta_parts.append(f"duration={duration_seconds}s")
+        attempts_on_problem = record.get("attemptsOnProblem")
+        if attempts_on_problem is not None:
+            meta_parts.append(f"attemptsOnProblem={attempts_on_problem}")
+        lines.append(header)
+        lines.append(f"   {' | '.join(meta_parts)}")
+
+        prompt = _clip_detail_text(question_context.get("prompt"), 180)
+        if prompt:
+            lines.append(f"   question={prompt}")
+        learner_response = _clip_detail_text(record.get("learnerResponse"), 260)
+        if learner_response:
+            lines.append(f"   learner={learner_response}")
+        expected_answer = _clip_detail_text(record.get("expectedAnswer"), 220)
+        if expected_answer:
+            lines.append(f"   expected={expected_answer}")
+
+        feedback_summary = _clip_detail_text(
+            evaluation.get("feedbackSummary") or evaluation.get("analysisSummary"),
+            220,
+        )
+        if feedback_summary:
+            lines.append(f"   feedback={feedback_summary}")
+        comparison = _clip_detail_text(evaluation.get("comparison"), 260)
+        if comparison:
+            lines.append(f"   comparison={comparison}")
+        missed_points = _normalize_detail_list(evaluation.get("missedPoints"), limit=3, item_limit=120)
+        if missed_points:
+            lines.append(f"   missed={'; '.join(missed_points)}")
+        improvements = _normalize_detail_list(evaluation.get("improvements"), limit=3, item_limit=120)
+        if improvements:
+            lines.append(f"   improve={'; '.join(improvements)}")
+
+    return "\n".join(lines)
+
+
+def _build_learning_evidence_from_records(detail_records: list[dict[str, Any]]) -> dict[str, Any]:
+    mode_counter: Counter[str] = Counter()
+    result_counter: Counter[str] = Counter()
+    wrong_type_counter: Counter[str] = Counter()
+    missed_counter: Counter[str] = Counter()
+    strength_counter: Counter[str] = Counter()
+    improvement_counter: Counter[str] = Counter()
+    duration_values: list[int] = []
+
+    for record in detail_records:
+        mode = _clip_detail_text(record.get("modeLabel") or record.get("mode"), 80)
+        if mode:
+            mode_counter[mode] += 1
+
+        result = _clip_detail_text(record.get("result"), 40)
+        if result:
+            result_counter[result] += 1
+
+        duration_seconds = record.get("durationSeconds")
+        try:
+            if duration_seconds is not None:
+                duration_values.append(int(duration_seconds))
+        except (TypeError, ValueError):
+            pass
+
+        evaluation = record.get("evaluation") if isinstance(record.get("evaluation"), dict) else {}
+        wrong_type = _clip_detail_text(evaluation.get("wrongType"), 80)
+        if wrong_type:
+            wrong_type_counter[wrong_type] += 1
+
+        for item in _normalize_detail_list(evaluation.get("missedPoints"), limit=6, item_limit=120):
+            missed_counter[item] += 1
+        for item in _normalize_detail_list(evaluation.get("strengths"), limit=6, item_limit=120):
+            strength_counter[item] += 1
+        for item in _normalize_detail_list(evaluation.get("improvements"), limit=6, item_limit=120):
+            improvement_counter[item] += 1
+
+    average_duration_seconds = None
+    if duration_values:
+        average_duration_seconds = round(sum(duration_values) / len(duration_values), 1)
+
+    return {
+        "recentModes": _normalize_counter_rows(mode_counter, item_limit=100),
+        "recentResults": _normalize_counter_rows(result_counter, item_limit=60),
+        "repeatedWrongTypes": _normalize_counter_rows(wrong_type_counter, item_limit=80),
+        "repeatedMissedPoints": _normalize_counter_rows(missed_counter, item_limit=120),
+        "repeatedStrengths": _normalize_counter_rows(strength_counter, item_limit=120),
+        "repeatedImprovements": _normalize_counter_rows(improvement_counter, item_limit=120),
+        "averageDurationSeconds": average_duration_seconds,
+        "detailRecordCount": len(detail_records),
+    }
+
+
+def _load_user_milestone_reports(db: Session, user_id: int) -> list[Report]:
+    return (
+        db.query(Report)
+        .filter(
+            Report.user_id == user_id,
+            Report.report_type == ReportType.milestone,
+        )
+        .all()
+    )
+
+
+def _prune_old_milestone_reports(db: Session, *, user_id: int, keep_report_id: int | None) -> None:
+    if keep_report_id is None:
+        return
+
+    for report in _load_user_milestone_reports(db, user_id):
+        report_id = getattr(report, "id", None)
+        if report_id is None or int(report_id) == int(keep_report_id):
+            continue
+        db.delete(report)
 
 
 def _extract_reference_answer(
@@ -701,7 +937,7 @@ def _build_learning_detail_records(
     stats_by_problem: dict[int, UserProblemStat],
 ) -> list[dict[str, Any]]:
     detail_records: list[dict[str, Any]] = []
-    for idx, submission in enumerate(submissions[:10], 1):
+    for idx, submission in enumerate(submissions[:_REPORT_CONTEXT_LIMIT], 1):
         problem = submission.problem
         problem_payload = problem.problem_payload if problem and isinstance(problem.problem_payload, dict) else {}
         answer_payload = problem.answer_payload if problem and isinstance(problem.answer_payload, dict) else {}
@@ -712,7 +948,11 @@ def _build_learning_detail_records(
         stat = stats_by_problem.get(int(submission.problem_id))
         wrong_payload = stat.wrong_answer_types if stat and isinstance(stat.wrong_answer_types, dict) else {}
 
-        mode = _mode_from_problem_kind(problem.kind if problem is not None else "analysis")
+        mode = _mode_from_problem(
+            problem,
+            problem_payload=problem_payload,
+            answer_payload=answer_payload,
+        )
         question_context: dict[str, Any] = {}
         prompt = _clip_detail_text(problem_payload.get("prompt") or (problem.description if problem is not None else ""), 700)
         if prompt:
@@ -737,6 +977,18 @@ def _build_learning_detail_records(
         commits = _normalize_detail_list(problem_payload.get("commits"), limit=4, item_limit=220)
         if commits:
             question_context["commits"] = commits
+        blocks = _normalize_detail_list(problem_payload.get("blocks"), limit=8, item_limit=220)
+        if blocks:
+            question_context["blocks"] = blocks
+        workspace_files = _normalize_detail_list(
+            problem_payload.get("files")
+            or problem_payload.get("workspaceFiles")
+            or problem_payload.get("workspace_files"),
+            limit=6,
+            item_limit=220,
+        )
+        if workspace_files:
+            question_context["workspaceFiles"] = workspace_files
 
         learner_response = _extract_learner_response(
             mode=mode,
@@ -810,6 +1062,12 @@ def _build_learning_detail_records(
         )
         if reference_report:
             evaluation["referenceExplanation"] = reference_report
+        analysis_summary = _clip_detail_text(analysis.result_summary if analysis else None, 220)
+        if analysis_summary:
+            evaluation["analysisSummary"] = analysis_summary
+        analysis_detail = _clip_detail_text(analysis.result_detail if analysis else None, 420)
+        if analysis_detail:
+            evaluation["analysisDetail"] = analysis_detail
 
         record: dict[str, Any] = {
             "attempt": idx,
@@ -818,6 +1076,7 @@ def _build_learning_detail_records(
             "modeLabel": _mode_label(mode),
             "title": _clip_detail_text(problem.title if problem is not None else "", 160) or "Untitled",
             "result": _safe_enum_value(submission.status),
+            "summary": _clip_detail_text(problem.description if problem is not None else "", 240),
             "questionContext": question_context,
             "evaluation": evaluation,
         }
@@ -827,52 +1086,26 @@ def _build_learning_detail_records(
             record["expectedAnswer"] = expected_answer
         if submission.score is not None:
             record["score"] = submission.score
+        duration_seconds = _extract_duration_seconds(submission_payload)
+        if duration_seconds is not None:
+            record["durationSeconds"] = duration_seconds
         difficulty = _safe_enum_value(problem.difficulty) if problem is not None else None
         if difficulty:
             record["difficulty"] = difficulty
         language = (submission.language or (problem.language if problem is not None else "unknown")).lower()
         if language:
             record["language"] = language
+        if stat is not None:
+            record["attemptsOnProblem"] = int(getattr(stat, "attempts", 0) or 0)
+            if stat.last_submitted_at is not None:
+                record["lastSubmittedAt"] = stat.last_submitted_at.isoformat()
+        last_wrong_at = wrong_payload.get("last_wrong_at")
+        if isinstance(last_wrong_at, str) and last_wrong_at.strip():
+            record["lastWrongAt"] = last_wrong_at.strip()
         if submission.created_at is not None:
             record["submittedAt"] = submission.created_at.isoformat()
         detail_records.append(record)
     return detail_records
-
-
-def _build_learning_history_context(
-    submissions: list[Submission],
-    *,
-    analyses_by_submission: dict[int, AIAnalysis],
-    stats_by_problem: dict[int, UserProblemStat],
-) -> str:
-    if not submissions:
-        return "최근 제출 이력이 없습니다."
-
-    lines: list[str] = []
-    for idx, submission in enumerate(submissions[:10], 1):
-        problem = submission.problem
-        title = (problem.title if problem is not None else "") or "Untitled"
-        difficulty = _safe_enum_value(problem.difficulty) if problem is not None else "unknown"
-        language = (submission.language or (problem.language if problem is not None else "unknown")).lower()
-        status = _safe_enum_value(submission.status)
-        score = submission.score if submission.score is not None else "N/A"
-        analysis = analyses_by_submission.get(int(submission.id))
-        stat = stats_by_problem.get(int(submission.problem_id))
-        wrong_payload = stat.wrong_answer_types if stat and isinstance(stat.wrong_answer_types, dict) else {}
-        wrong_type = wrong_payload.get("last_wrong_type")
-        if not isinstance(wrong_type, str):
-            wrong_type = classify_wrong_answer_type(
-                submission.status,
-                analysis_summary=analysis.result_summary if analysis else None,
-                analysis_detail=analysis.result_detail if analysis else None,
-            )
-        feedback_summary = _extract_feedback_summary(analysis) or "요약 없음"
-        line = f"{idx}. status={status}, score={score}, language={language}, difficulty={difficulty}, title={title}"
-        if wrong_type:
-            line += f", wrongType={wrong_type}"
-        lines.append(line)
-        lines.append(f"   feedback={feedback_summary}")
-    return "\n".join(lines)
 
 
 def create_milestone_report(db: Session, user_id: int, problem_count: int) -> dict[str, Any]:
@@ -907,31 +1140,55 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> di
         difficulty_breakdown=difficulty_breakdown,
         language_breakdown=language_breakdown,
     )
+    feedback_strengths = _collect_feedback_items(analyses_by_submission, key="strengths")
+    feedback_improvements = _collect_feedback_items(analyses_by_submission, key="improvements")
+    if not strengths and feedback_strengths:
+        strengths = feedback_strengths
+    for item in feedback_improvements:
+        if item not in recommendations:
+            recommendations.append(item)
 
-    metric_snapshot: dict[str, Any] = {
-        "attempts": int(total),
-        "accuracy": overall.get("accuracy"),
-        "avgScore": overall.get("avg_score"),
-        "trend": _trend_text_from_stats(trend),
-    }
-    history_context = _build_learning_history_context(
-        submissions,
-        analyses_by_submission=analyses_by_submission,
-        stats_by_problem=stats_by_problem,
-    )
     detail_records = _build_learning_detail_records(
         submissions,
         analyses_by_submission=analyses_by_submission,
         stats_by_problem=stats_by_problem,
     )
+    learning_evidence = _build_learning_evidence_from_records(detail_records)
+    history_context = _build_learning_history_context_from_records(detail_records)
+    metric_snapshot: dict[str, Any] = {
+        "attempts": int(total),
+        "accuracy": overall.get("accuracy"),
+        "avgScore": overall.get("avg_score"),
+        "trend": _trend_text_from_stats(trend),
+        "passed": overall.get("passed"),
+        "failed": overall.get("failed"),
+        "error": overall.get("error"),
+        "processing": overall.get("processing"),
+        "pending": overall.get("pending"),
+        "analysisCount": len(analyses),
+        "problemCount": len(problem_ids),
+        "topWrongTypes": top_wrong_types,
+        "weakDifficulties": weak_difficulties,
+        "weakLanguages": weak_languages,
+        "feedbackStrengths": feedback_strengths[:_REPORT_SIGNAL_LIMIT],
+        "feedbackImprovements": feedback_improvements[:_REPORT_SIGNAL_LIMIT],
+        **learning_evidence,
+    }
     solution_plan = _learning_report_ai.generate_learning_solution_report(
         history_context=history_context,
         metric_snapshot=metric_snapshot,
         detail_records=detail_records,
     )
+    report_brief = build_report_brief(
+        solution_plan=solution_plan,
+        metric_snapshot=metric_snapshot,
+        fallback_title=title,
+        fallback_summary=summary,
+    )
 
     stats = {
         **overall,
+        "source": "milestone_report",
         "analysis_count": len(analyses),
         "problem_count": len(problem_ids),
         "wrong_type_breakdown": dict(wrong_type_counter),
@@ -943,7 +1200,9 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> di
         "weak_languages": weak_languages,
         "solutionPlan": solution_plan,
         "metricSnapshot": metric_snapshot,
+        "reportBrief": report_brief,
         "detailRecords": detail_records,
+        "learningEvidence": learning_evidence,
     }
 
     goal_for_db = str(solution_plan.get("goal") or title).strip() or title
@@ -957,13 +1216,15 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> di
         milestone_problem_count=problem_count,
         title=goal_for_db[:200],
         summary=summary_for_db,
-        strengths=[],
-        weaknesses=[],
+        strengths=strengths,
+        weaknesses=weaknesses,
         recommendations=solution_plan.get("priorityActions") if isinstance(solution_plan.get("priorityActions"), list) else [],
         stats=stats,
         created_at=utcnow(),
     )
     db.add(report)
+    db.flush()
+    _prune_old_milestone_reports(db, user_id=user_id, keep_report_id=report.id)
     db.commit()
     db.refresh(report)
     return {
@@ -971,4 +1232,6 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> di
         "createdAt": report.created_at.isoformat() if report.created_at is not None else utcnow().isoformat(),
         **solution_plan,
         "metricSnapshot": metric_snapshot,
+        "reportBrief": report_brief,
+        "pdfDownloadUrl": build_report_pdf_download_url(report.id),
     }

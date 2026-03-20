@@ -43,6 +43,7 @@ function cacheDom() {
   elements.nextBtn = document.getElementById("cb-next-btn");
   elements.status = document.getElementById("cb-status");
   elements.title = document.getElementById("cb-problem-title");
+  elements.objective = document.getElementById("cb-problem-purpose");
   elements.code = document.getElementById("cb-code-display");
   elements.options = document.getElementById("cb-options-container");
   elements.feedbackArea = document.getElementById("cb-feedback-area");
@@ -173,6 +174,31 @@ function prepareOptionSlots(optionCount) {
   state.optionButtons = Array.from(elements.options.querySelectorAll(".cb-option-btn"));
 }
 
+function getProblemObjective(problem) {
+  const candidates = [problem?.objective, problem?.goal, problem?.prompt, problem?.summary];
+  for (const candidate of candidates) {
+    const normalized = String(candidate || "").trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  const title = String(problem?.title || "").trim();
+  if (title && title !== "코드 빈칸 채우기") {
+    return `${title} 흐름을 완성하는 빈칸입니다.`;
+  }
+  return "이 코드가 어떤 동작을 완성하려는지 먼저 읽고 빈칸의 역할을 추론해 보세요.";
+}
+
+function renderProblemHeading(problem) {
+  if (elements.title) {
+    elements.title.textContent = problem?.title || "코드 블록 문제";
+  }
+  if (elements.objective) {
+    elements.objective.textContent = getProblemObjective(problem);
+  }
+}
+
 function wireOptionButton(button, index) {
   button.disabled = false;
   button.onclick = () => submitCodeBlockAnswer(index, button);
@@ -184,6 +210,9 @@ function resetProblemDisplay() {
 
   if (elements.title) {
     elements.title.textContent = "문제를 불러와 주세요.";
+  }
+  if (elements.objective) {
+    elements.objective.textContent = "빈칸이 어떤 동작을 완성하는지 여기에 표시됩니다.";
   }
   if (elements.code) {
     elements.code.textContent = "# 문제를 불러오는 중입니다...";
@@ -287,9 +316,7 @@ function renderProblem(problem) {
   state.currentProblemId = problem.problemId || null;
   state.currentOptions = Array.isArray(problem.options) ? problem.options : [];
 
-  if (elements.title) {
-    elements.title.textContent = problem.title || "코드 블록 문제";
-  }
+  renderProblemHeading(problem);
 
   if (elements.code) {
     renderCodeWithBlanks(elements.code, problem.code || "# 코드가 없습니다.");
@@ -323,6 +350,12 @@ async function animateCodeBlockProblem(problem) {
     await streamClient.typeText(elements.title, problem.title || "코드 블록 문제", {
       minDelay: 10,
       maxDelay: 16,
+    });
+  }
+  if (elements.objective) {
+    await streamClient.typeText(elements.objective, getProblemObjective(problem), {
+      minDelay: 4,
+      maxDelay: 8,
     });
   }
 
@@ -425,6 +458,9 @@ async function handleLoadProblem() {
   } catch (err) {
     console.error(err);
     setStatus(err?.message || "문제를 불러오지 못했습니다.");
+    if (elements.objective) {
+      elements.objective.textContent = "문제 목적을 불러오지 못했습니다. 다시 시도해 주세요.";
+    }
     if (elements.code) {
       elements.code.textContent = "# 다시 시도해 주세요.";
     }

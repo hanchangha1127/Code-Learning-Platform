@@ -13,10 +13,11 @@ router = APIRouter()
 
 
 def _normalized_status(raw_status: str) -> str:
-    if isinstance(raw_status, bytes):
-        token = raw_status.decode("utf-8", errors="ignore").strip().lower()
+    status_value = getattr(raw_status, "value", raw_status)
+    if isinstance(status_value, bytes):
+        token = status_value.decode("utf-8", errors="ignore").strip().lower()
     else:
-        token = str(raw_status or "").strip().lower()
+        token = str(status_value or "").strip().lower()
     if token in {"queued", "deferred", "scheduled"}:
         return "queued"
     if token in {"started", "busy"}:

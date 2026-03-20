@@ -192,11 +192,10 @@ function renderHome() {
     elements.heroTitle.textContent = `${displayName}님의 오늘 학습 홈`;
   }
   if (elements.heroSummary) {
-    const weakText = weakTopics.length ? `약점 주제: ${weakTopics.slice(0, 2).join(", ")}` : "아직 뚜렷한 약점 주제가 없습니다.";
     const goalText = dailyGoal.achieved
-      ? "오늘 목표를 달성했습니다. 복습 큐를 먼저 정리해 보세요."
+      ? "오늘 목표를 달성했습니다."
       : `오늘 목표까지 ${dailyGoal.remainingSessions || 0}문제가 남았습니다.`;
-    elements.heroSummary.textContent = `최근 7일 ${last7Attempts}회 시도, 전체 정확도 ${accuracy}. ${goalText} ${weakText}`;
+    elements.heroSummary.textContent = `최근 7일 ${last7Attempts}회 시도, 정확도 ${accuracy}. ${goalText}`;
   }
   if (elements.streakDays) {
     elements.streakDays.textContent = `${home.streakDays || 0}일`;
@@ -206,8 +205,8 @@ function renderHome() {
   }
   if (elements.goalHint) {
     elements.goalHint.textContent = dailyGoal.achieved
-      ? "오늘 목표를 달성했습니다. 이 값은 내일도 그대로 유지됩니다."
-      : `오늘 목표까지 ${dailyGoal.remainingSessions || 0}문제가 남았습니다. 오늘 달성해야 스트릭이 이어집니다.`;
+      ? "오늘 목표를 채웠습니다."
+      : `오늘 목표까지 ${dailyGoal.remainingSessions || 0}문제가 남았습니다.`;
   }
   if (elements.goalInput) {
     elements.goalInput.value = String(goal.dailyTargetSessions || dailyGoal.targetSessions || DEFAULT_DAILY_TARGET);
@@ -251,13 +250,17 @@ function renderReviewQueue(items) {
 
   elements.reviewList.innerHTML = items.map((item) => `
     <article class="review-card">
-      <div class="review-card-top">
-        <span class="pill soft">${escapeHtml(item.modeLabel || item.mode || "학습")}</span>
-        <span class="review-priority">우선순위 ${escapeHtml(item.priority ?? 0)}</span>
+      <div class="review-card-main">
+        <div class="review-card-top">
+          <h4>${escapeHtml(item.title || "복습 문제")}</h4>
+          <span class="review-priority">우선순위 ${escapeHtml(item.priority ?? 0)}</span>
+        </div>
+        <div class="review-card-meta">
+          <span class="pill soft">${escapeHtml(item.modeLabel || item.mode || "학습")}</span>
+          <span class="review-weakness">${escapeHtml(item.weaknessLabel || item.weaknessTag || "약점 보강")}</span>
+        </div>
       </div>
-      <h4>${escapeHtml(item.title || "복습 문제")}</h4>
-      <p>${escapeHtml(item.weaknessLabel || item.weaknessTag || "약점 보강")}</p>
-      <a class="ghost" href="${escapeAttr(item.resumeLink || item.actionLink || "/dashboard.html")}">같은 문제 다시 열기</a>
+      <a class="ghost review-card-action" href="${escapeAttr(item.resumeLink || item.actionLink || "/dashboard.html")}">다시 열기</a>
     </article>
   `).join("");
 }
@@ -274,11 +277,15 @@ function renderWeakTopics(topics, totalAttempts, accuracyText) {
     return;
   }
 
+  const visibleTopics = topics.slice(0, 2);
+  const extraCount = Math.max(topics.length - visibleTopics.length, 0);
+
   elements.weakTopics.innerHTML = `
     <div class="dashboard-inline-note">
       <span class="pill soft">누적 시도 ${escapeHtml(totalAttempts)}</span>
       <span class="pill soft">전체 정확도 ${escapeHtml(accuracyText)}</span>
-      ${topics.map((topic) => `<span class="mode-chip weak">${escapeHtml(topic)}</span>`).join("")}
+      ${visibleTopics.map((topic) => `<span class="mode-chip weak">${escapeHtml(topic)}</span>`).join("")}
+      ${extraCount ? `<span class="pill soft">+${escapeHtml(extraCount)}개</span>` : ""}
     </div>
   `;
 }
@@ -289,7 +296,7 @@ function renderRecommendedModes(modes) {
     elements.recommendedModes.innerHTML = "";
     return;
   }
-  elements.recommendedModes.innerHTML = modes.map((mode) => `
+  elements.recommendedModes.innerHTML = modes.slice(0, 3).map((mode) => `
     <a class="mode-chip" href="${escapeAttr(mode.link || "/dashboard.html")}">${escapeHtml(mode.label || mode.mode || "추천")}</a>
   `).join("");
 }
@@ -432,7 +439,7 @@ function seedDefaultFeatures() {
   registerFeature({
     id: "analysis",
     title: "코드 분석",
-    description: "AI가 출제한 알고리즘 문제를 읽고 설명해 보세요.",
+    description: "코드를 읽고 흐름, 상태 변화, 의도를 설명해 보세요.",
     icon: "🔍",
     link: "/analysis.html",
   });
@@ -458,25 +465,11 @@ function seedDefaultFeatures() {
     link: "/arrange.html",
   });
   registerFeature({
-    id: "code-error",
-    title: "코드 오류",
-    description: "여러 블록 중 오류가 있는 코드를 찾아보세요.",
-    icon: "🐞",
-    link: "/codeerror.html",
-  });
-  registerFeature({
     id: "auditor",
     title: "감사관 모드",
     description: "치명적 함정을 찾아 자유서술 감사 리포트를 제출하세요.",
     icon: "🕵️",
     link: "/auditor.html",
-  });
-  registerFeature({
-    id: "context-inference",
-    title: "맥락 추론",
-    description: "코드 일부와 질문을 보고 전후 맥락을 추론해 보세요.",
-    icon: "🧭",
-    link: "/context-inference.html",
   });
   registerFeature({
     id: "refactoring-choice",
@@ -587,6 +580,12 @@ function renderModePanels() {
 
 function renderErrorState(error) {
   const message = error?.message || "대시보드를 불러오지 못했습니다.";
+  if (elements.heroSummary) {
+    elements.heroSummary.textContent = message;
+  }
+  if (elements.goalHint) {
+    elements.goalHint.textContent = "잠시 후 다시 시도해 주세요.";
+  }
   if (elements.taskList) {
     elements.taskList.innerHTML = `<p class="empty">${escapeHtml(message)}</p>`;
   }

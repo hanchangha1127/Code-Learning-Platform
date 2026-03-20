@@ -116,6 +116,7 @@
 
 - `.env.example` 기본값은 `inline`입니다.
 - Docker Compose 실행에서는 `api`와 `worker` 컨테이너에 `ANALYSIS_QUEUE_MODE=rq`가 주입됩니다.
+- `rq`에서는 `auditor`, `refactoring-choice`, `code-blame`, `single-file-analysis`, `multi-file-analysis`, `fullstack-analysis` 제출이 queued 응답을 반환할 수 있으며, 상태 조회는 `GET /platform/mode-jobs/{job_id}`를 사용합니다.
 
 ### 관리자 / 관측
 

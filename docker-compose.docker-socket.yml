@@ -1,4 +1,6 @@
 services:
   api:
+    environment:
+      CODE_PLATFORM_ENABLE_ADMIN_SHUTDOWN: "true"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

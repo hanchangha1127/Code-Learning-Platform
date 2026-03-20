@@ -58,9 +58,7 @@ class PlatformModeContractTests(unittest.TestCase):
             ("/platform/codeblock/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "cb-1", "title": "Code block problem", "code": "x = [BLANK]"}),
             ("/platform/arrange/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "arr-1", "title": "Arrange problem", "blocks": ["a", "b"]}),
             ("/platform/codecalc/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "calc-1", "title": "Calc problem", "code": "print(1)"}),
-            ("/platform/codeerror/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "err-1", "title": "Error problem", "blocks": ["a", "b"]}),
             ("/platform/auditor/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "aud-1", "title": "Auditor problem", "code": "pass", "prompt": "Inspect this code."}),
-            ("/platform/context-inference/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "ctx-1", "title": "Context problem", "snippet": "pass", "prompt": "Infer the missing context."}),
             ("/platform/refactoring-choice/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "ref-1", "title": "Choice problem", "options": []}),
             ("/platform/code-blame/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "blame-1", "title": "Blame problem", "commits": []}),
             ("/platform/single-file-analysis/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "sfa-1", "title": "Single file analysis", "files": [{"id": "one", "path": "app/main.py", "name": "main.py", "language": "python", "role": "entrypoint", "content": "print('ok')"}]}),
@@ -78,15 +76,40 @@ class PlatformModeContractTests(unittest.TestCase):
                 if path == "/platform/analysis/problem":
                     self.assertEqual(response.json()["problem"]["problemId"], "an-1")
 
+    def test_problem_routes_forward_selected_language_without_forcing_python(self):
+        scenarios = [
+            ("/platform/analysis/problem", {"languageId": "javascript", "difficulty": "advanced"}),
+            ("/platform/codeblock/problem", {"language": "javascript", "difficulty": "advanced"}),
+            ("/platform/arrange/problem", {"language": "javascript", "difficulty": "advanced"}),
+            ("/platform/codecalc/problem", {"language": "javascript", "difficulty": "advanced"}),
+            ("/platform/auditor/problem", {"language": "javascript", "difficulty": "advanced"}),
+            ("/platform/refactoring-choice/problem", {"language": "javascript", "difficulty": "advanced"}),
+            ("/platform/code-blame/problem", {"language": "javascript", "difficulty": "advanced"}),
+            ("/platform/single-file-analysis/problem", {"language": "javascript", "difficulty": "advanced"}),
+            ("/platform/multi-file-analysis/problem", {"language": "javascript", "difficulty": "advanced"}),
+            ("/platform/fullstack-analysis/problem", {"language": "javascript", "difficulty": "advanced"}),
+        ]
+
+        for path, body in scenarios:
+            with self.subTest(path=path):
+                with patch(
+                    "app.services.platform_public_bridge.request_mode_problem",
+                    return_value={"problemId": "forward-1"},
+                ) as mock_request:
+                    response = self.client.post(path, json=body)
+
+                self.assertEqual(response.status_code, 200, response.text)
+                _, kwargs = mock_request.call_args
+                self.assertEqual(kwargs["language"], "javascript")
+                self.assertEqual(kwargs["difficulty"], "advanced")
+
     def test_platform_submit_response_contract_keys(self):
         scenarios = [
             ("/platform/analysis/submit", {"languageId": "python", "problemId": "an-1", "explanation": "explain"}, {"correct": True, "score": 80, "feedback": {"summary": "Good"}}),
             ("/platform/codeblock/submit", {"problemId": "cb-1", "selectedOption": 1}, {"correct": True, "score": 100, "feedback": {"summary": "Correct"}}),
             ("/platform/arrange/submit", {"problemId": "arr-1", "order": ["a", "b"]}, {"correct": False, "score": 50, "feedback": {"summary": "Try the order again"}}),
             ("/platform/codecalc/submit", {"problemId": "calc-1", "output": "1"}, {"correct": True, "score": 100, "feedback": {"summary": "Accurate"}}),
-            ("/platform/codeerror/submit", {"problemId": "err-1", "selectedIndex": 0}, {"correct": False, "score": 40, "feedback": {"summary": "Wrong option"}}),
             ("/platform/auditor/submit", {"problemId": "aud-1", "report": "report"}, {"correct": True, "score": 90, "feedback": {"summary": "Solid review"}}),
-            ("/platform/context-inference/submit", {"problemId": "ctx-1", "report": "report"}, {"correct": True, "score": 90, "feedback": {"summary": "Solid review"}}),
             ("/platform/refactoring-choice/submit", {"problemId": "ref-1", "selectedOption": "A", "report": "report"}, {"correct": True, "score": 90, "feedback": {"summary": "Solid review"}}),
             ("/platform/code-blame/submit", {"problemId": "blame-1", "selectedCommits": ["B"], "report": "report"}, {"correct": True, "score": 90, "feedback": {"summary": "Solid review"}}),
             ("/platform/single-file-analysis/submit", {"problemId": "sfa-1", "report": "report"}, {"correct": True, "score": 90, "feedback": {"summary": "Solid review"}, "referenceReport": "reference", "passThreshold": 70}),
@@ -102,6 +125,23 @@ class PlatformModeContractTests(unittest.TestCase):
                 self.assertEqual(response.json(), payload)
                 self.assertIn("correct", response.json())
 
+    def test_learning_history_route_forwards_limit_parameter(self):
+        payload = {
+            "history": [],
+            "total": 0,
+            "hasMore": False,
+            "limit": 25,
+        }
+        with patch(
+            "app.services.platform_public_bridge.get_public_history_page",
+            return_value=payload,
+        ) as mock_history:
+            response = self.client.get("/platform/learning/history?limit=25")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), payload)
+        mock_history.assert_called_once_with("contract-user", limit=25)
+
     def test_legacy_api_routes_return_410_guidance(self):
         scenarios = [
             ("/api/profile", "GET", None, "/platform/profile"),
@@ -112,9 +152,7 @@ class PlatformModeContractTests(unittest.TestCase):
             ("/api/code-block/problem", "POST", {"language": "python", "difficulty": "beginner"}, "/platform/codeblock/problem"),
             ("/api/code-arrange/problem", "POST", {"language": "python", "difficulty": "beginner"}, "/platform/arrange/problem"),
             ("/api/code-calc/problem", "POST", {"language": "python", "difficulty": "beginner"}, "/platform/codecalc/problem"),
-            ("/api/code-error/problem", "POST", {"language": "python", "difficulty": "beginner"}, "/platform/codeerror/problem"),
             ("/api/auditor/problem", "POST", {"language": "python", "difficulty": "beginner"}, "/platform/auditor/problem"),
-            ("/api/context-inference/problem", "POST", {"language": "python", "difficulty": "beginner"}, "/platform/context-inference/problem"),
             ("/api/refactoring-choice/problem", "POST", {"language": "python", "difficulty": "beginner"}, "/platform/refactoring-choice/problem"),
             ("/api/code-blame/problem", "POST", {"language": "python", "difficulty": "beginner"}, "/platform/code-blame/problem"),
         ]

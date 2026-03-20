@@ -87,11 +87,8 @@ def analyze(
             return {"analysis_id": submission_id, "message": "Already analyzed", "job_id": None}
 
         if sub.status == SubmissionStatus.error:
-            return {
-                "analysis_id": submission_id,
-                "message": "Analysis previously failed",
-                "job_id": None,
-            }
+            sub.status = SubmissionStatus.pending
+            sub.score = None
 
         if sub.status == SubmissionStatus.processing and not _recover_stale_processing(db, sub):
             raise HTTPException(
@@ -169,4 +166,7 @@ def get_analyses(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    return list_analyses_for_submission(db, submission_id, current.id)
+    try:
+        return list_analyses_for_submission(db, submission_id, current.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Submission not found") from exc

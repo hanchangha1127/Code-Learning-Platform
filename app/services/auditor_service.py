@@ -137,6 +137,29 @@ def create_auditor_problem(
     }
 
 
+def _resolve_auditor_problem(db: Session, *, user_id: int, problem_id: str) -> Problem:
+    normalized_problem_id = str(problem_id or "").strip()
+    if not normalized_problem_id:
+        raise ValueError("problemId가 올바르지 않습니다.")
+
+    problem: Problem | None = None
+    try:
+        problem = db.get(Problem, int(normalized_problem_id))
+    except (TypeError, ValueError):
+        problem = None
+
+    if problem is None:
+        query = getattr(db, "query", None)
+        if callable(query):
+            problem = query(Problem).filter(Problem.external_id == normalized_problem_id).first()
+
+    if not problem or problem.kind != ProblemKind.auditor:
+        raise ValueError("problemId가 올바르지 않습니다.")
+    if problem.created_by is not None and int(problem.created_by) != int(user_id):
+        raise ValueError("problemId가 올바르지 않습니다.")
+    return problem
+
+
 def submit_auditor_report(
     db: Session,
     *,
@@ -144,22 +167,13 @@ def submit_auditor_report(
     problem_id: str,
     report: str,
 ) -> dict[str, Any]:
-    try:
-        parsed_problem_id = int(str(problem_id).strip())
-    except (TypeError, ValueError) as exc:
-        raise ValueError("problemId가 올바르지 않습니다.") from exc
-
     normalized_report = (report or "").strip()
     if not normalized_report:
         raise ValueError("report must not be empty")
     if len(normalized_report) > 12000:
         raise ValueError("report must be <= 12000 chars")
 
-    problem = db.get(Problem, parsed_problem_id)
-    if not problem or problem.kind != ProblemKind.auditor:
-        raise ValueError("problemId가 올바르지 않습니다.")
-    if problem.created_by is not None and int(problem.created_by) != int(user_id):
-        raise ValueError("problemId가 올바르지 않습니다.")
+    problem = _resolve_auditor_problem(db, user_id=user_id, problem_id=problem_id)
 
     options = problem.options if isinstance(problem.options, dict) else {}
     trap_catalog = options.get("trap_catalog") if isinstance(options.get("trap_catalog"), list) else []
@@ -248,6 +262,9 @@ def submit_auditor_report(
     )
 
     db.commit()
+    from app.services.platform_public_bridge import invalidate_public_history_total_for_user_id
+
+    invalidate_public_history_total_for_user_id(db, user_id)
 
     return {
         "correct": is_correct,

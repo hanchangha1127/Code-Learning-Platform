@@ -31,16 +31,14 @@ body[data-template-variant="desktop"] .header-actions {
 }
 
 body[data-template-variant="desktop"] .auth-shell {
-  display: grid;
-  width: min(1280px, 100%);
-  grid-template-columns: minmax(0, 1fr) minmax(540px, 0.98fr);
-  gap: 24px;
-  align-items: stretch;
+  width: min(560px, 100%);
+  grid-template-columns: 1fr;
+  gap: 0;
 }
 
-body[data-template-variant="desktop"] .auth-hero-card,
 body[data-template-variant="desktop"] .auth-panel {
-  min-height: 620px;
+  min-height: auto;
+  justify-content: center;
 }
 
 body[data-template-variant="desktop"] .auth-panel-actions {
@@ -79,6 +77,7 @@ body[data-template-variant="desktop"] .dashboard-hero {
 }
 
 body[data-template-variant="desktop"] .dashboard-highlight-grid,
+body[data-template-variant="desktop"] .dashboard-focus-grid,
 body[data-template-variant="desktop"] .dashboard-two-column {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -99,9 +98,14 @@ body[data-template-variant="desktop"] .home-stat-card {
 }
 
 body[data-template-variant="desktop"] .dashboard-side-note,
+body[data-template-variant="desktop"] .dashboard-focus-grid > *,
 body[data-template-variant="desktop"] .dashboard-highlight-grid > *,
 body[data-template-variant="desktop"] .dashboard-two-column > * {
   align-self: start;
+}
+
+body[data-template-variant="desktop"] .dashboard-focus-grid {
+  grid-template-columns: minmax(0, 1.16fr) minmax(320px, 0.84fr);
 }
 
 body[data-template-variant="desktop"] .dashboard-goal-card .goal-form-row {
@@ -123,7 +127,7 @@ body[data-template-variant="desktop"] .preset-row {
 
 body[data-template-variant="desktop"] .dashboard-mode-section .feature-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
+  gap: 16px;
 }
 
 body[data-template-variant="desktop"] .dashboard-mode-section .feature-card {
@@ -213,6 +217,18 @@ body[data-template-variant="desktop"] .choice-options {
   gap: 12px;
 }
 
+body[data-template-variant="desktop"] #refactoring-choice-section .mode-shell--three {
+  grid-template-columns: minmax(280px, 0.76fr) minmax(0, 2.12fr) minmax(320px, 0.9fr);
+}
+
+body[data-template-variant="desktop"] #refactoring-choice-section .choice-options {
+  grid-template-columns: 1fr;
+}
+
+body[data-template-variant="desktop"] #refactoring-choice-section .choice-option-card .code-block {
+  min-height: 220px;
+}
+
 body[data-template-variant="desktop"] .code-block,
 body[data-template-variant="desktop"] #cb-code-display,
 body[data-template-variant="desktop"] #calc-code-display,
@@ -240,6 +256,7 @@ body[data-template-variant="desktop"] .modal-card.modal-wide {
 @media (max-width: 1240px) {
   body[data-template-variant="desktop"] .auth-shell,
   body[data-template-variant="desktop"] .dashboard-hero,
+  body[data-template-variant="desktop"] .dashboard-focus-grid,
   body[data-template-variant="desktop"] .dashboard-highlight-grid,
   body[data-template-variant="desktop"] .dashboard-two-column,
   body[data-template-variant="desktop"] .profile-grid {

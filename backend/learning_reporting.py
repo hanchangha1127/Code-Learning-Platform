@@ -1,9 +1,13 @@
 ﻿from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List
 
 from backend.content import LANGUAGES
+
+_REPORT_CONTEXT_LIMIT = 15
+_REPORT_SIGNAL_LIMIT = 5
 
 
 def trend_summary(recent_accuracy: float | None, previous_accuracy: float | None) -> str:
@@ -32,6 +36,12 @@ def _mode_from_event(item: Dict[str, Any]) -> str:
         return "refactoring-choice"
     if item.get("type") == "code_blame_event":
         return "code-blame"
+    if item.get("type") == "single_file_analysis_event":
+        return "single-file-analysis"
+    if item.get("type") == "multi_file_analysis_event":
+        return "multi-file-analysis"
+    if item.get("type") == "fullstack_analysis_event":
+        return "fullstack-analysis"
     return item.get("mode") or "practice"
 
 
@@ -55,6 +65,12 @@ def _build_prompt(mode: str, instance: Dict[str, Any]) -> str:
         return "A/B/C 옵션 중 최적의 코드를 선택하고 근거를 작성하세요."
     if mode == "code-blame":
         return "에러 로그와 커밋 diff를 비교해 범인 커밋을 추리하세요."
+    if mode == "single-file-analysis":
+        return "단일 파일 코드를 분석하고 개선 리포트를 작성하세요."
+    if mode == "multi-file-analysis":
+        return "여러 파일의 상호작용을 분석하고 개선 리포트를 작성하세요."
+    if mode == "fullstack-analysis":
+        return "프런트엔드와 백엔드 흐름을 함께 분석하고 개선 리포트를 작성하세요."
     return "문제를 해결해 주세요."
 
 
@@ -62,6 +78,19 @@ def _extract_code(instance: Dict[str, Any]) -> str | None:
     code = instance.get("code")
     if code:
         return code
+    files = instance.get("files")
+    if isinstance(files, list):
+        rendered: list[str] = []
+        for item in files[:6]:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or item.get("name") or "").strip()
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            rendered.append(f"File: {path}\n{content}" if path else content)
+        if rendered:
+            return "\n\n".join(rendered)
     snippet = instance.get("snippet")
     if snippet:
         return snippet
@@ -117,6 +146,15 @@ def _build_answer(event: Dict[str, Any], instance: Dict[str, Any]) -> str | None
     if event_type == "code_blame_event":
         submitted = (event.get("report") or "").strip()
         return submitted or None
+    if event_type == "single_file_analysis_event":
+        submitted = (event.get("report") or "").strip()
+        return submitted or None
+    if event_type == "multi_file_analysis_event":
+        submitted = (event.get("report") or "").strip()
+        return submitted or None
+    if event_type == "fullstack_analysis_event":
+        submitted = (event.get("report") or "").strip()
+        return submitted or None
 
     return None
 
@@ -139,6 +177,9 @@ def _build_summary(event: Dict[str, Any], instance: Dict[str, Any], mode: str) -
         "context-inference": "맥락 추론",
         "refactoring-choice": "최적의 선택",
         "code-blame": "범인 찾기",
+        "single-file-analysis": "단일 파일 분석",
+        "multi-file-analysis": "멀티 파일 분석",
+        "fullstack-analysis": "풀스택 분석",
         "diagnostic": "진단 문제",
         "practice": "맞춤 문제",
     }.get(mode, "학습 기록")
@@ -158,13 +199,143 @@ def _normalize_detail_list(value: Any, *, limit: int = 6, item_limit: int = 160)
         return []
     rows: list[str] = []
     for item in value:
-        normalized = _clip_detail_text(item, item_limit)
+        if isinstance(item, dict):
+            normalized = _clip_detail_text(
+                item.get("label")
+                or item.get("optionId")
+                or item.get("path")
+                or item.get("title")
+                or item.get("summary")
+                or item.get("code")
+                or item.get("content")
+                or item,
+                item_limit,
+            )
+        else:
+            normalized = _clip_detail_text(item, item_limit)
         if not normalized or normalized in rows:
             continue
         rows.append(normalized)
         if len(rows) >= limit:
             break
     return rows
+
+
+def _normalize_counter_rows(
+    counter: Counter[str],
+    *,
+    limit: int = _REPORT_SIGNAL_LIMIT,
+    item_limit: int = 160,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for label, count in counter.most_common(limit):
+        normalized = _clip_detail_text(label, item_limit)
+        if not normalized or count <= 0:
+            continue
+        rows.append({"label": normalized, "count": int(count)})
+    return rows
+
+
+def _build_history_context_from_records(detail_records: List[Dict[str, Any]]) -> str:
+    if not detail_records:
+        return "최근 학습 기록이 없습니다."
+
+    lines: list[str] = []
+    for idx, record in enumerate(detail_records[:_REPORT_CONTEXT_LIMIT], 1):
+        evaluation = record.get("evaluation") if isinstance(record.get("evaluation"), dict) else {}
+        question_context = record.get("questionContext") if isinstance(record.get("questionContext"), dict) else {}
+
+        header = (
+            f"{idx}. [{record.get('modeLabel') or record.get('mode') or 'practice'}] "
+            f"{record.get('title') or '제목 없음'}"
+        )
+        meta_parts = [
+            f"result={record.get('result') or '-'}",
+            f"score={record.get('score') if record.get('score') is not None else 'N/A'}",
+        ]
+        if record.get("difficulty"):
+            meta_parts.append(f"difficulty={record['difficulty']}")
+        if record.get("language"):
+            meta_parts.append(f"language={record['language']}")
+        if record.get("durationSeconds") is not None:
+            meta_parts.append(f"duration={record['durationSeconds']}s")
+        lines.append(header)
+        lines.append(f"   {' | '.join(meta_parts)}")
+
+        prompt = _clip_detail_text(question_context.get("prompt"), 180)
+        if prompt:
+            lines.append(f"   question={prompt}")
+        learner = _clip_detail_text(record.get("learnerResponse"), 260)
+        if learner:
+            lines.append(f"   learner={learner}")
+        expected = _clip_detail_text(record.get("expectedAnswer"), 220)
+        if expected:
+            lines.append(f"   expected={expected}")
+
+        feedback_summary = _clip_detail_text(
+            evaluation.get("feedbackSummary") or evaluation.get("analysisSummary"),
+            220,
+        )
+        if feedback_summary:
+            lines.append(f"   feedback={feedback_summary}")
+        comparison = _clip_detail_text(evaluation.get("comparison"), 260)
+        if comparison:
+            lines.append(f"   comparison={comparison}")
+        missed_points = _normalize_detail_list(evaluation.get("missedPoints"), limit=3, item_limit=120)
+        if missed_points:
+            lines.append(f"   missed={'; '.join(missed_points)}")
+        improvements = _normalize_detail_list(evaluation.get("improvements"), limit=3, item_limit=120)
+        if improvements:
+            lines.append(f"   improve={'; '.join(improvements)}")
+
+    return "\n".join(lines)
+
+
+def _build_evidence_from_records(detail_records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    mode_counter: Counter[str] = Counter()
+    result_counter: Counter[str] = Counter()
+    missed_counter: Counter[str] = Counter()
+    strength_counter: Counter[str] = Counter()
+    improvement_counter: Counter[str] = Counter()
+    duration_values: list[int] = []
+
+    for record in detail_records:
+        mode = _clip_detail_text(record.get("modeLabel") or record.get("mode"), 80)
+        if mode:
+            mode_counter[mode] += 1
+
+        result = _clip_detail_text(record.get("result"), 40)
+        if result:
+            result_counter[result] += 1
+
+        try:
+            duration = record.get("durationSeconds")
+            if duration is not None:
+                duration_values.append(int(duration))
+        except (TypeError, ValueError):
+            pass
+
+        evaluation = record.get("evaluation") if isinstance(record.get("evaluation"), dict) else {}
+        for item in _normalize_detail_list(evaluation.get("missedPoints"), limit=6, item_limit=120):
+            missed_counter[item] += 1
+        for item in _normalize_detail_list(evaluation.get("strengths"), limit=6, item_limit=120):
+            strength_counter[item] += 1
+        for item in _normalize_detail_list(evaluation.get("improvements"), limit=6, item_limit=120):
+            improvement_counter[item] += 1
+
+    average_duration_seconds = None
+    if duration_values:
+        average_duration_seconds = round(sum(duration_values) / len(duration_values), 1)
+
+    return {
+        "recentModes": _normalize_counter_rows(mode_counter, item_limit=100),
+        "recentResults": _normalize_counter_rows(result_counter, item_limit=60),
+        "repeatedMissedPoints": _normalize_counter_rows(missed_counter, item_limit=120),
+        "repeatedStrengths": _normalize_counter_rows(strength_counter, item_limit=120),
+        "repeatedImprovements": _normalize_counter_rows(improvement_counter, item_limit=120),
+        "averageDurationSeconds": average_duration_seconds,
+        "detailRecordCount": len(detail_records),
+    }
 
 
 def _mode_label(mode: str) -> str:
@@ -178,6 +349,9 @@ def _mode_label(mode: str) -> str:
         "context-inference": "맥락 추론",
         "refactoring-choice": "리팩토링 선택",
         "code-blame": "코드 블레임",
+        "single-file-analysis": "단일 파일 분석",
+        "multi-file-analysis": "멀티 파일 분석",
+        "fullstack-analysis": "풀스택 분석",
         "diagnostic": "진단",
         "practice": "연습",
     }.get(mode, mode or "unknown")
@@ -286,7 +460,7 @@ def _build_legacy_response_comparison(event: Dict[str, Any]) -> str | None:
 
 def _build_legacy_detail_records(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     detail_records: List[Dict[str, Any]] = []
-    for idx, event in enumerate(history[:10], 1):
+    for idx, event in enumerate(history[:_REPORT_CONTEXT_LIMIT], 1):
         mode = str(event.get("mode") or "").strip() or "practice"
         feedback = event.get("feedback") if isinstance(event.get("feedback"), dict) else {}
         score = event.get("score")
@@ -311,6 +485,16 @@ def _build_legacy_detail_records(history: List[Dict[str, Any]]) -> List[Dict[str
         commits = _normalize_detail_list(event.get("problem_commits"), limit=4, item_limit=220)
         if commits:
             question_context["commits"] = commits
+        blocks = _normalize_detail_list(event.get("problem_blocks"), limit=8, item_limit=220)
+        if blocks:
+            question_context["blocks"] = blocks
+        workspace_files = _normalize_detail_list(
+            event.get("problem_files") or event.get("workspace_files"),
+            limit=6,
+            item_limit=220,
+        )
+        if workspace_files:
+            question_context["workspaceFiles"] = workspace_files
 
         scenario = _clip_detail_text(event.get("problem_scenario"), 400)
         if scenario:
@@ -351,6 +535,12 @@ def _build_legacy_detail_records(history: List[Dict[str, Any]]) -> List[Dict[str
         reference_report = _clip_detail_text(event.get("reference_report"), 700)
         if reference_report:
             evaluation["referenceExplanation"] = reference_report
+        option_reviews = _normalize_detail_list(event.get("option_reviews"), limit=6, item_limit=180)
+        if option_reviews:
+            evaluation["optionReviews"] = option_reviews
+        commit_reviews = _normalize_detail_list(event.get("commit_reviews"), limit=6, item_limit=180)
+        if commit_reviews:
+            evaluation["commitReviews"] = commit_reviews
 
         record: Dict[str, Any] = {
             "attempt": idx,
@@ -376,6 +566,9 @@ def _build_legacy_detail_records(history: List[Dict[str, Any]]) -> List[Dict[str
         language = _clip_detail_text(event.get("language"), 40)
         if language:
             record["language"] = language
+        created_at = _clip_detail_text(event.get("created_at"), 60)
+        if created_at:
+            record["submittedAt"] = created_at
         detail_records.append(record)
     return detail_records
 
@@ -385,6 +578,7 @@ def user_history(
     username: str,
     *,
     duration_seconds: Callable[[str | None, str | None], float | None],
+    limit: int | None = None,
 ) -> List[Dict[str, Any]]:
     storage = service._get_user_storage(username)
     events = service._collect_attempt_events(storage)
@@ -476,7 +670,14 @@ def user_history(
 
         enriched_events.append(enriched_event)
 
-    return sorted(enriched_events, key=lambda item: item.get("created_at", ""), reverse=True)
+    ordered = sorted(enriched_events, key=lambda item: item.get("created_at", ""), reverse=True)
+    if limit is None:
+        return ordered
+    try:
+        effective_limit = max(int(limit), 1)
+    except (TypeError, ValueError):
+        return ordered
+    return ordered[:effective_limit]
 
 
 def learning_report(
@@ -497,45 +698,34 @@ def learning_report(
     recent_accuracy = accuracy_from_events(recent_window)
     previous_accuracy = accuracy_from_events(previous_window)
 
-    recent_history = history[:10]
-    detail_records = _build_legacy_detail_records(recent_history)
-    context_lines: list[str] = []
-    score_values: list[float] = []
-    for idx, event in enumerate(recent_history, 1):
-        problem_title = event.get("problem_title") or "제목 없음"
-        is_correct = "정답" if event.get("correct") else "오답"
-        score = event.get("score") or 0
-        try:
-            score_values.append(float(score))
-        except (TypeError, ValueError):
-            pass
-        feedback_summary = (event.get("feedback") or {}).get("summary", "")
-
-        duration = event.get("duration_seconds")
-        if duration is None:
+    recent_history: List[Dict[str, Any]] = []
+    for event in history[:_REPORT_CONTEXT_LIMIT]:
+        enriched_event = dict(event)
+        if enriched_event.get("duration_seconds") is None:
             instance = service._get_problem_instance(storage, event.get("problem_id"))
             duration = duration_seconds((instance or {}).get("created_at"), event.get("created_at"))
-
-        duration_label = f"{int(duration)}초" if duration is not None else "시간 미기록"
-        comparison = _build_legacy_response_comparison(event)
-        missed_points = _normalize_detail_list(event.get("missed_types"), limit=4, item_limit=80)
-        context_lines.append(
-            f"{idx}. [{is_correct}] {problem_title} (점수: {score})\n"
-            f"   피드백 요약: {feedback_summary}\n"
-            f"   소요시간: {duration_label}"
-        )
-        if comparison:
-            context_lines.append(f"   정오답 세부: {comparison}")
-        if missed_points:
-            context_lines.append(f"   놓친 포인트: {', '.join(missed_points)}")
-
-    history_context = "\n".join(context_lines) if context_lines else "최근 학습 기록이 없습니다."
-    avg_score = round(sum(score_values) / len(score_values), 1) if score_values else None
+            if duration is not None:
+                enriched_event["duration_seconds"] = duration
+        recent_history.append(enriched_event)
+    detail_records = _build_legacy_detail_records(recent_history)
+    history_context = _build_history_context_from_records(detail_records)
+    score_values: list[float] = []
+    for event in recent_history:
+        score = event.get("score")
+        try:
+            if score is not None:
+                score_values.append(float(score))
+        except (TypeError, ValueError):
+            pass
+    evidence = _build_evidence_from_records(detail_records)
     metric_snapshot: Dict[str, Any] = {
         "attempts": attempts,
         "accuracy": accuracy if attempts > 0 else None,
-        "avgScore": avg_score,
+        "avgScore": round(sum(score_values) / len(score_values), 1) if score_values else None,
         "trend": trend_summary(recent_accuracy, previous_accuracy),
+        "correct": correct_count,
+        "incorrect": max(attempts - correct_count, 0),
+        **evidence,
     }
     solution_plan = service.ai_client.generate_learning_solution_report(
         history_context=history_context,
@@ -548,5 +738,7 @@ def learning_report(
         "createdAt": datetime.now(timezone.utc).isoformat(),
         **solution_plan,
         "metricSnapshot": metric_snapshot,
+        "detailRecords": detail_records,
+        "learningEvidence": evidence,
     }
 

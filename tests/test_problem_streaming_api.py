@@ -17,6 +17,7 @@ os.environ.setdefault("DB_USER", "appuser")
 from app.api.deps import get_db
 from app.api.security_deps import get_current_user
 from app.main import app as platform_app
+from app.services.platform_public_bridge import ProblemFollowUpUnavailableError
 from server_runtime.webapp import app
 
 
@@ -58,7 +59,12 @@ class ProblemStreamingApiTests(unittest.TestCase):
             {
                 "path": "/platform/codeblock/problem",
                 "body": {"language": "python", "difficulty": "beginner"},
-                "payload": {"problemId": "cbk1", "title": "code block", "code": "x = [BLANK]"},
+                "payload": {
+                    "problemId": "cbk1",
+                    "title": "반복문 누적",
+                    "objective": "반복문 안에서 값을 누적해 최종 합계를 완성하세요.",
+                    "code": "x = [BLANK]",
+                },
             },
             {
                 "path": "/platform/arrange/problem",
@@ -71,19 +77,9 @@ class ProblemStreamingApiTests(unittest.TestCase):
                 "payload": {"problemId": "cc1", "title": "calc", "code": "print(1)"},
             },
             {
-                "path": "/platform/codeerror/problem",
-                "body": {"language": "python", "difficulty": "beginner"},
-                "payload": {"problemId": "ce1", "title": "error", "blocks": ["a", "b"]},
-            },
-            {
                 "path": "/platform/auditor/problem",
                 "body": {"language": "python", "difficulty": "beginner"},
                 "payload": {"problemId": "a1", "title": "auditor"},
-            },
-            {
-                "path": "/platform/context-inference/problem",
-                "body": {"language": "python", "difficulty": "beginner"},
-                "payload": {"problemId": "ci1", "title": "context"},
             },
             {
                 "path": "/platform/refactoring-choice/problem",
@@ -147,9 +143,7 @@ class ProblemStreamingApiTests(unittest.TestCase):
             ("/platform/codeblock/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "b1"}),
             ("/platform/arrange/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "c1"}),
             ("/platform/codecalc/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "d1"}),
-            ("/platform/codeerror/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "e1"}),
             ("/platform/auditor/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "f1"}),
-            ("/platform/context-inference/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "g1"}),
             ("/platform/refactoring-choice/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "h1"}),
             ("/platform/code-blame/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "i1"}),
             ("/platform/single-file-analysis/problem", {"language": "python", "difficulty": "beginner"}, {"problemId": "j1", "files": []}),
@@ -197,6 +191,23 @@ class ProblemStreamingApiTests(unittest.TestCase):
         self.assertIn("event: error", response.text)
         self.assertIn('"code": "request_timeout"', response.text)
         self.assertIn('"httpStatus": 504', response.text)
+
+    def test_streaming_problem_capacity_failure_emits_retryable_503_error_event(self) -> None:
+        with patch(
+            "app.services.platform_public_bridge.request_mode_problem",
+            side_effect=ProblemFollowUpUnavailableError("stream_capacity_exceeded"),
+        ):
+            response = self.client.post(
+                "/platform/auditor/problem",
+                json={"language": "python", "difficulty": "beginner"},
+                headers={"Accept": "text/event-stream"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("event: error", response.text)
+        self.assertIn('"code": "stream_capacity_exceeded"', response.text)
+        self.assertIn('"httpStatus": 503', response.text)
+        self.assertIn('"retryable": true', response.text)
 
 
 if __name__ == "__main__":

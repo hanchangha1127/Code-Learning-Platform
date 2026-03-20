@@ -220,9 +220,11 @@ async function tryLoadLanguages() {
       }
       return acc;
     }, {});
+    state.selectedLanguage = getSavedLanguage(languages);
   } catch (error) {
     console.error(error);
     state.languageMap = {};
+    state.selectedLanguage = getSavedLanguage();
   }
 }
 
@@ -259,7 +261,7 @@ function renderStaticChrome() {
     elements.submitButton.textContent = "리포트 제출";
   }
   if (elements.statusHeadMessage) {
-    elements.statusHeadMessage.textContent = "문제 생성, 리포트 제출, 채점 결과가 이 영역에서 단계별로 갱신됩니다.";
+    elements.statusHeadMessage.textContent = "문제 생성, 리포트 제출, AI 피드백 결과가 이 영역에서 단계별로 갱신됩니다.";
   }
   renderStatusCards(false);
 }
@@ -599,7 +601,7 @@ function renderStatusCards(hasProblem) {
         description: "문제를 받은 뒤 리포트를 작성해 제출하세요.",
       },
       {
-        title: "채점 결과",
+        title: "AI 피드백",
         status: "대기",
         description: "제출 후 점수, 피드백, 모범 분석 리포트를 확인할 수 있습니다.",
       }
@@ -612,7 +614,7 @@ function renderStatusCards(hasProblem) {
         description: "리포트를 전송하고 있습니다.",
       },
       {
-        title: "채점 결과",
+        title: "AI 피드백",
         status: "채점 중",
         description: "AI가 리포트를 평가하고 있습니다.",
       }
@@ -625,7 +627,7 @@ function renderStatusCards(hasProblem) {
         description: "리포트가 큐에 등록되었습니다.",
       },
       {
-        title: "채점 결과",
+        title: "AI 피드백",
         status: "대기 중",
         description: "백그라운드 채점이 끝나면 결과를 자동으로 불러옵니다.",
       }
@@ -638,9 +640,9 @@ function renderStatusCards(hasProblem) {
         description: "리포트가 정상적으로 제출되었습니다.",
       },
       {
-        title: "채점 결과",
+        title: "AI 피드백",
         status: state.latestResult.correct ? "합격" : "불합격",
-        description: "아래 결과 패널에서 점수와 피드백을 확인할 수 있습니다.",
+        description: "아래 결과 패널에서 AI 점수와 피드백을 확인할 수 있습니다.",
       }
     );
   } else if (state.submissionPhase === "failed") {
@@ -651,7 +653,7 @@ function renderStatusCards(hasProblem) {
         description: "제출 또는 채점 처리 중 문제가 발생했습니다.",
       },
       {
-        title: "채점 결과",
+        title: "AI 피드백",
         status: "실패",
         description: "잠시 후 다시 제출해 주세요.",
       }
@@ -664,7 +666,7 @@ function renderStatusCards(hasProblem) {
         description: "분석 리포트를 작성하고 제출할 수 있습니다.",
       },
       {
-        title: "채점 결과",
+        title: "AI 피드백",
         status: "대기",
         description: "제출 후 점수, 피드백, 모범 분석 리포트를 표시합니다.",
       }
@@ -951,13 +953,13 @@ async function handleSubmitReport(event) {
     if (payload?.queued && payload?.jobId) {
       state.submissionPhase = "queued";
       renderStatusCards(true);
-      showToast("채점 요청이 접수되었습니다.");
+    showToast("AI 피드백 요청이 접수되었습니다.");
       startSubmitPolling(payload.jobId);
       return;
     }
 
     renderFeedback(payload);
-    showToast("채점이 완료되었습니다.");
+    showToast(isFallbackFeedback(payload) ? "기본 피드백으로 결과를 표시했습니다." : "AI 피드백이 완료되었습니다.");
   } catch (error) {
     console.error(error);
     state.submitPending = false;
@@ -986,7 +988,7 @@ function clearFeedback() {
     elements.resultThreshold.textContent = "합격 기준 70점";
   }
   if (elements.resultSummary) {
-    elements.resultSummary.textContent = "리포트를 제출하면 요약 피드백이 이곳에 표시됩니다.";
+    elements.resultSummary.textContent = "리포트를 제출하면 AI 요약과 피드백이 이곳에 표시됩니다.";
   }
   renderFeedbackList(elements.resultStrengths, [], "강점이 아직 없습니다.");
   renderFeedbackList(elements.resultImprovements, [], "개선 포인트가 아직 없습니다.");
@@ -1028,7 +1030,7 @@ function renderFeedback(payload) {
     elements.resultThreshold.textContent = `합격 기준 ${Number.isFinite(threshold) ? threshold : 70}점`;
   }
   if (elements.resultSummary) {
-    elements.resultSummary.textContent = feedback.summary || "요약 피드백이 없습니다.";
+    elements.resultSummary.textContent = formatFeedbackSummary(payload, feedback.summary, "AI 피드백 요약이 없습니다.");
   }
   renderFeedbackList(elements.resultStrengths, feedback.strengths, "강점이 없습니다.");
   renderFeedbackList(elements.resultImprovements, feedback.improvements, "개선 포인트가 없습니다.");
@@ -1060,6 +1062,22 @@ function renderFeedbackList(target, items, emptyText) {
     li.textContent = item;
     target.appendChild(li);
   });
+}
+
+function getFeedbackSource(payload) {
+  return String(payload?.feedbackSource || "").trim().toLowerCase() || "ai";
+}
+
+function isFallbackFeedback(payload) {
+  return getFeedbackSource(payload) === "fallback";
+}
+
+function formatFeedbackSummary(payload, summary, emptyText) {
+  const normalized = String(summary || "").trim();
+  if (!normalized) {
+    return isFallbackFeedback(payload) ? "기본 피드백 요약이 없습니다." : emptyText;
+  }
+  return isFallbackFeedback(payload) ? `기본 피드백: ${normalized}` : normalized;
 }
 
 function startSubmitPolling(jobId) {
@@ -1094,7 +1112,7 @@ async function pollSubmitJob() {
     if (payload?.finished) {
       stopSubmitPolling();
       renderFeedback(payload.result || {});
-      showToast("채점이 완료되었습니다.");
+      showToast(isFallbackFeedback(payload.result) ? "기본 피드백으로 결과를 표시했습니다." : "AI 피드백이 완료되었습니다.");
       return;
     }
 
@@ -1190,8 +1208,19 @@ function showToast(message) {
   }, DEFAULT_TOAST_DURATION);
 }
 
-function getSavedLanguage() {
-  return window.localStorage.getItem(LANGUAGE_KEY) || DEFAULT_LANGUAGE;
+function getSavedLanguage(languages = null) {
+  const saved = window.localStorage.getItem(LANGUAGE_KEY);
+  if (Array.isArray(languages) && languages.length > 0) {
+    if (saved && languages.some((item) => item?.id === saved)) {
+      return saved;
+    }
+    const fallback = languages[0]?.id || DEFAULT_LANGUAGE;
+    if (fallback) {
+      window.localStorage.setItem(LANGUAGE_KEY, fallback);
+    }
+    return fallback;
+  }
+  return saved || DEFAULT_LANGUAGE;
 }
 
 function getSavedDifficulty() {
