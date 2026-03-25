@@ -19,13 +19,13 @@ const ADVANCED_HISTORY_MODES = new Set(["single-file-analysis", "multi-file-anal
 const MODE_LABELS = {
   diagnostic: "진단",
   practice: "맞춤 문제",
-  "code-block": "빈칸 채우기",
+  "code-block": "코드 블록",
   "code-calc": "코드 계산",
   "code-error": "오류 찾기",
-  "code-arrange": "코드 정렬",
+  "code-arrange": "코드 배치",
   auditor: "감사관 모드",
   "context-inference": "맥락 추론",
-  "refactoring-choice": "최적안 선택",
+  "refactoring-choice": "최적의 선택",
   "code-blame": "범인 찾기",
   "single-file-analysis": "단일 파일 분석",
   "multi-file-analysis": "다중 파일 분석",
@@ -35,8 +35,25 @@ const MODE_LABELS = {
 const LANGUAGE_LABELS = {
   python: "파이썬",
   javascript: "자바스크립트",
+  typescript: "타입스크립트",
   c: "C",
   java: "자바",
+  cpp: "C++",
+  "c++": "C++",
+  csharp: "C#",
+  cs: "C#",
+  "c#": "C#",
+  go: "Go",
+  rust: "Rust",
+  php: "PHP",
+};
+const LANGUAGE_ALIASES = {
+  py: "python",
+  js: "javascript",
+  ts: "typescript",
+  "c++": "cpp",
+  cs: "csharp",
+  "c#": "csharp",
 };
 
 const REPORT_LOADING_STEPS = [
@@ -114,6 +131,12 @@ function escapeList(values, fallback = "-", separator = ", ") {
     : [];
   if (!items.length) return escapeHtml(fallback);
   return items.map((value) => escapeHtml(value)).join(separator);
+}
+
+function normalizeLanguageId(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  if (!normalized) return "";
+  return LANGUAGE_ALIASES[normalized] || normalized;
 }
 
 function cacheDom() {
@@ -592,13 +615,13 @@ async function loadUserInfo() {
 async function loadProfile() {
   try {
     const profile = await apiRequest("/platform/profile");
-    const skillLevel = profile.skillLevel || "beginner";
+    const skillLevel = normalizeSkillLevel(profile.skillLevel || "level1");
     if (elements.profileTier) {
-      elements.profileTier.textContent = `티어: ${formatSkillLabel(skillLevel)}`;
+      elements.profileTier.textContent = formatSkillLabel(skillLevel);
     }
   } catch (err) {
     if (elements.profileTier) {
-      elements.profileTier.textContent = "티어: -";
+      elements.profileTier.textContent = "레벨 -";
     }
   }
 }
@@ -623,30 +646,52 @@ function renderLanguageOptions() {
     elements.languageSetting.innerHTML = '<span class="empty">언어가 없습니다.</span>';
     return;
   }
+  const select = document.createElement("select");
+  select.className = "setting-select-control";
+  select.id = "language-setting-select";
+  select.setAttribute("aria-label", "문제 언어 선택");
+
   state.languages.forEach((lang) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "pill";
-    button.dataset.value = lang.id;
-    button.textContent = lang.title || lang.id;
-    button.classList.toggle("active", lang.id === state.selectedLanguage);
-    button.addEventListener("click", () => {
-      setLanguage(lang.id);
-    });
-    elements.languageSetting.appendChild(button);
+    const option = document.createElement("option");
+    option.value = lang.id;
+    option.textContent = lang.title || formatLanguageLabel(lang.id);
+    option.selected = lang.id === state.selectedLanguage;
+    select.appendChild(option);
   });
+
+  select.addEventListener("change", () => {
+    setLanguage(select.value);
+  });
+
+  const hint = document.createElement("span");
+  hint.className = "setting-select-hint";
+  hint.textContent = "누르면 언어 목록이 열리고, 선택한 값이 모든 학습 모드에 공통 적용됩니다.";
+
+  elements.languageSetting.appendChild(select);
+  elements.languageSetting.appendChild(hint);
+}
+
+function normalizeSkillLevel(level) {
+  const text = String(level || "").trim().toLowerCase();
+  if (!text) return "level1";
+  if (text === "beginner") return "level1";
+  if (text === "intermediate") return "level5";
+  if (text === "advanced") return "level10";
+  if (/^\d+$/.test(text)) {
+    const numeric = Math.min(10, Math.max(1, Number(text)));
+    return `level${numeric}`;
+  }
+  const match = text.match(/^(?:level|레벨)[\s_-]*(\d{1,2})$/i);
+  if (match) {
+    const numeric = Math.min(10, Math.max(1, Number(match[1])));
+    return `level${numeric}`;
+  }
+  return "level1";
 }
 
 function formatSkillLabel(level) {
-  switch (level) {
-    case "advanced":
-      return "고급";
-    case "intermediate":
-      return "중급";
-    case "beginner":
-    default:
-      return "초급";
-  }
+  const match = normalizeSkillLevel(level).match(/\d+/);
+  return `레벨 ${match ? match[0] : "1"}`;
 }
 
 function renderDifficultyOptions() {
@@ -667,8 +712,9 @@ function renderDifficultyOptions() {
 }
 
 function setLanguage(value) {
-  const isValid = state.languages.some((lang) => lang.id === value);
-  state.selectedLanguage = isValid ? value : DEFAULT_LANGUAGE;
+  const normalizedValue = normalizeLanguageId(value);
+  const isValid = state.languages.some((lang) => lang.id === normalizedValue);
+  state.selectedLanguage = isValid ? normalizedValue : DEFAULT_LANGUAGE;
   window.localStorage.setItem(LANGUAGE_KEY, state.selectedLanguage);
   renderLanguageOptions();
   showToast("언어 설정이 저장되었습니다.");
@@ -683,7 +729,7 @@ function setDifficulty(value) {
 }
 
 function getSavedLanguage(languages = []) {
-  const saved = window.localStorage.getItem(LANGUAGE_KEY);
+  const saved = normalizeLanguageId(window.localStorage.getItem(LANGUAGE_KEY));
   if (saved && languages.some((lang) => lang.id === saved)) {
     return saved;
   }
@@ -1047,7 +1093,8 @@ function formatDifficultyLabel(value) {
 }
 
 function formatLanguageLabel(value) {
-  return LANGUAGE_LABELS[value] || value || "-";
+  const normalized = normalizeLanguageId(value);
+  return LANGUAGE_LABELS[normalized] || normalized || "-";
 }
 
 function formatIndexLabel(value) {
@@ -1677,6 +1724,7 @@ function formatDate(value) {
     return new Intl.DateTimeFormat("ko-KR", {
       dateStyle: "medium",
       timeStyle: "short",
+      timeZone: "Asia/Seoul",
     }).format(new Date(value));
   } catch {
     return value;

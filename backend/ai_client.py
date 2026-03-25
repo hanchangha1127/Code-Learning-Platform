@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 from backend.config import get_settings
 from backend.admin_metrics import get_admin_metrics
+from backend.skill_levels import DEFAULT_SKILL_LEVEL, MAX_SKILL_LEVEL, normalize_skill_level
 
 SYSTEM_PROMPT = (
     "당신은 학습자의 코드 설명을 비판적으로 평가하는 감독관입니다. "
@@ -1066,28 +1067,31 @@ class AIClient:
     def evaluate_tier(self, context: str, current_tier: str) -> Dict[str, object]:
         """AI에게 승급/유지/강등 여부를 판단시킨다."""
 
+        normalized_current_tier = normalize_skill_level(current_tier, DEFAULT_SKILL_LEVEL)
         if not self._has_ai():
             return {
-                "tier": current_tier,
-                "reason": "AI API 키가 없어 기존 티어를 유지합니다.",
+                "tier": normalized_current_tier,
+                "reason": "AI API 키가 없어 기존 레벨을 유지합니다.",
             }
 
+        level_choices = "|".join(f"level{level}" for level in range(1, MAX_SKILL_LEVEL + 1))
         system_prompt = (
-            "당신은 코딩 학습자의 티어(초급/중급/고급)를 판단하는 멘토입니다. "
+            "당신은 코딩 학습자의 레벨(레벨 1~레벨 10)을 판단하는 멘토입니다. "
             "반드시 아래 JSON 형식으로만 답변하세요.\n"
-            '{"tier": "beginner|intermediate|advanced", "reason": 문자열}\n'
+            f'{{"tier": "{level_choices}", "reason": 문자열}}\n'
             "- 최근 10문제 기록을 기반으로 판단하세요.\n"
-            "- 쉬운 문제(초급)만 풀었다면 승급하지 말고 유지 또는 강등을 선택하세요.\n"
+            "- 쉬운 문제(beginner)만 풀었다면 승급하지 말고 유지 또는 강등을 선택하세요.\n"
+            "- 레벨 변경은 보수적으로 판단하고, 한 번의 검토에서 급격한 다단계 변경은 피하세요.\n"
             "- 근거는 reason에 간단히 요약하세요."
         )
 
-        contents = f"{system_prompt}\n\n=== 현재 티어 ===\n{current_tier}\n\n=== 최근 기록 ===\n{context}"
+        contents = f"{system_prompt}\n\n=== 현재 레벨 ===\n{normalized_current_tier}\n\n=== 최근 기록 ===\n{context}"
 
         try:
             response = self._analyze_with_thinking(contents)
         except Exception as exc:
             return {
-                "tier": current_tier,
+                "tier": normalized_current_tier,
                 "reason": f"AI 호출 실패: {exc}",
             }
 
@@ -1105,17 +1109,16 @@ class AIClient:
             try:
                 data = json.loads(parsed)
             except json.JSONDecodeError:
-                data = {"tier": current_tier, "reason": text[:200]}
+                data = {"tier": normalized_current_tier, "reason": text[:200]}
         else:
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
-                data = {"tier": current_tier, "reason": text[:200]}
+                data = {"tier": normalized_current_tier, "reason": text[:200]}
 
         tier = data.get("tier") if isinstance(data, dict) else None
         reason = data.get("reason") if isinstance(data, dict) else None
-        if tier not in {"beginner", "intermediate", "advanced"}:
-            tier = current_tier
+        tier = normalize_skill_level(tier, normalized_current_tier)
         if not reason:
             reason = "AI 판단 근거가 없습니다."
         return {"tier": tier, "reason": reason}

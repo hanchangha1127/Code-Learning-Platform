@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session, joinedload
@@ -9,12 +10,16 @@ from backend.ai_client import AIClient
 from app.db.base import utcnow
 from app.db.models import AIAnalysis, Report, ReportType, Submission, SubmissionStatus, UserProblemStat
 from app.services.problem_stat_service import classify_wrong_answer_type
-from app.services.report_pdf_service import build_report_brief, build_report_pdf_download_url
+from app.services.report_pdf_service import build_report_brief, build_report_pdf_download_url, serialize_report_created_at
 
 _learning_report_ai = AIClient()
 
 _REPORT_CONTEXT_LIMIT = 15
 _REPORT_SIGNAL_LIMIT = 5
+_REPORT_CHART_RECENT_WINDOW = 10
+_REPORT_CHART_WRONG_WINDOW = 10
+_REPORT_CHART_LOOKBACK_LIMIT = 40
+_KST = timezone(timedelta(hours=9), name="KST")
 
 
 def _to_int(value: Any) -> int | None:
@@ -191,6 +196,32 @@ def _load_recent_submissions(db: Session, user_id: int, problem_count: int) -> l
     )
 
 
+def _to_utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _today_start_utc_naive_in_kst(reference: datetime | None = None) -> datetime:
+    current = _to_utc_datetime(reference or utcnow()) or datetime.now(timezone.utc)
+    current_kst = current.astimezone(_KST)
+    start_of_today_kst = datetime.combine(current_kst.date(), time.min, tzinfo=_KST)
+    return start_of_today_kst.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _load_today_submissions_kst(db: Session, user_id: int) -> list[Submission]:
+    start_at = _today_start_utc_naive_in_kst()
+    return (
+        db.query(Submission)
+        .options(joinedload(Submission.problem))
+        .filter(Submission.user_id == user_id, Submission.created_at >= start_at)
+        .order_by(Submission.id.desc())
+        .all()
+    )
+
+
 def _load_recent_analyses(db: Session, user_id: int, sub_ids: list[int]) -> list[AIAnalysis]:
     if not sub_ids:
         return []
@@ -198,7 +229,7 @@ def _load_recent_analyses(db: Session, user_id: int, sub_ids: list[int]) -> list
         db.query(AIAnalysis)
         .filter(AIAnalysis.user_id == user_id, AIAnalysis.submission_id.in_(sub_ids))
         .order_by(AIAnalysis.id.desc())
-        .limit(50)
+        .limit(max(len(sub_ids), 50))
         .all()
     )
 
@@ -435,18 +466,20 @@ def _mode_from_problem(
 
 def _mode_label(mode: str) -> str:
     return {
-        "analysis": "코드 설명",
+        "analysis": "코드 분석",
+        "diagnostic": "진단",
+        "practice": "맞춤 문제",
         "code-block": "빈칸 채우기",
         "code-arrange": "코드 정렬",
-        "code-calc": "출력 예측",
+        "code-calc": "코드 계산",
         "code-error": "오류 찾기",
-        "auditor": "감사관",
+        "auditor": "감사관 모드",
         "context-inference": "맥락 추론",
-        "refactoring-choice": "리팩토링 선택",
-        "code-blame": "코드 블레임",
+        "refactoring-choice": "최적안 선택",
+        "code-blame": "범인 찾기",
         "single-file-analysis": "단일 파일 분석",
-        "multi-file-analysis": "멀티 파일 분석",
-        "fullstack-analysis": "풀스택 분석",
+        "multi-file-analysis": "다중 파일 분석",
+        "fullstack-analysis": "풀스택 코드 분석",
     }.get(mode, mode or "unknown")
 
 
@@ -1108,19 +1141,132 @@ def _build_learning_detail_records(
     return detail_records
 
 
+def _project_chart_records(detail_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in detail_records:
+        if not isinstance(record, dict):
+            continue
+        row: dict[str, Any] = {
+            "mode": record.get("mode"),
+            "modeLabel": record.get("modeLabel"),
+            "title": record.get("title"),
+            "result": record.get("result"),
+        }
+        if record.get("score") is not None:
+            row["score"] = record.get("score")
+        if record.get("submittedAt") is not None:
+            row["submittedAt"] = record.get("submittedAt")
+        rows.append(row)
+    return rows
+
+
+def _build_chart_outcome_window(
+    recent_submissions_desc: list[Submission],
+    today_submissions_desc: list[Submission],
+) -> dict[str, Any]:
+    use_today_window = len(today_submissions_desc) >= _REPORT_CHART_RECENT_WINDOW
+    selected = today_submissions_desc if use_today_window else recent_submissions_desc[:_REPORT_CHART_RECENT_WINDOW]
+    if not selected:
+        return {}
+
+    counts = _window_metrics(selected)
+    label = f"오늘 학습 전체 {len(today_submissions_desc)}회" if use_today_window else f"최근 {len(selected)}회"
+    return {
+        "label": label,
+        "counts": {
+            "passed": int(counts.get("passed") or 0),
+            "failed": int(counts.get("failed") or 0),
+            "error": int(counts.get("error") or 0),
+            "processing": int(counts.get("processing") or 0),
+            "pending": int(counts.get("pending") or 0),
+        },
+    }
+
+
+def _build_chart_score_trend_window(
+    recent_submissions_desc: list[Submission],
+    *,
+    analyses_by_submission: dict[int, AIAnalysis],
+    stats_by_problem: dict[int, UserProblemStat],
+) -> dict[str, Any]:
+    selected = recent_submissions_desc[:_REPORT_CHART_RECENT_WINDOW]
+    if not selected:
+        return {}
+
+    detail_records = _build_learning_detail_records(
+        selected,
+        analyses_by_submission=analyses_by_submission,
+        stats_by_problem=stats_by_problem,
+    )
+    if not detail_records:
+        return {}
+    return {
+        "label": f"최근 {len(detail_records)}회",
+        "records": _project_chart_records(detail_records),
+    }
+
+
+def _is_wrong_submission(submission: Submission) -> bool:
+    return _safe_enum_value(submission.status) in {"failed", "error"}
+
+
+def _build_chart_wrong_type_window(
+    recent_submissions_desc: list[Submission],
+    *,
+    analyses_by_submission: dict[int, AIAnalysis],
+    stats_by_problem: dict[int, UserProblemStat],
+) -> dict[str, Any]:
+    wrong_submissions: list[Submission] = []
+    for submission in recent_submissions_desc:
+        if _is_wrong_submission(submission):
+            wrong_submissions.append(submission)
+        if len(wrong_submissions) >= _REPORT_CHART_WRONG_WINDOW:
+            break
+
+    if not wrong_submissions:
+        return {}
+
+    detail_records = _build_learning_detail_records(
+        wrong_submissions,
+        analyses_by_submission=analyses_by_submission,
+        stats_by_problem=stats_by_problem,
+    )
+    if not detail_records:
+        return {}
+
+    wrong_type_counter: Counter[str] = Counter()
+    for record in detail_records:
+        evaluation = record.get("evaluation") if isinstance(record.get("evaluation"), dict) else {}
+        wrong_type = _clip_detail_text(evaluation.get("wrongType"), 80)
+        if wrong_type:
+            wrong_type_counter[wrong_type] += 1
+
+    rows = _normalize_counter_rows(wrong_type_counter, item_limit=80)
+    if not rows:
+        return {}
+    return {
+        "label": f"최근 오답 {len(detail_records)}회",
+        "rows": rows,
+    }
+
+
 def create_milestone_report(db: Session, user_id: int, problem_count: int) -> dict[str, Any]:
-    submissions = _load_recent_submissions(db, user_id, problem_count)
+    recent_submissions = _load_recent_submissions(db, user_id, max(problem_count, _REPORT_CHART_LOOKBACK_LIMIT))
+    submissions = recent_submissions[:problem_count]
+    today_submissions = _load_today_submissions_kst(db, user_id)
 
     overall = _window_metrics(submissions)
     total = overall["total"]
 
-    sub_ids = [s.id for s in submissions]
+    sub_ids = [s.id for s in recent_submissions]
     analyses = _load_recent_analyses(db, user_id, sub_ids)
     analyses_by_submission = _latest_analyses_by_submission(analyses)
 
-    problem_ids = sorted({s.problem_id for s in submissions})
+    problem_ids = sorted({s.problem_id for s in recent_submissions})
     stats_by_problem = _load_problem_stats_map(db, user_id, problem_ids)
-    wrong_type_counter = _collect_wrong_type_counter_from_stats(stats_by_problem)
+    summary_problem_ids = {s.problem_id for s in submissions}
+    summary_stats_by_problem = {problem_id: stat for problem_id, stat in stats_by_problem.items() if problem_id in summary_problem_ids}
+    wrong_type_counter = _collect_wrong_type_counter_from_stats(summary_stats_by_problem)
 
     top_wrong_types = [
         {"type": wrong_type, "count": count}
@@ -1153,6 +1299,17 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> di
         analyses_by_submission=analyses_by_submission,
         stats_by_problem=stats_by_problem,
     )
+    chart_outcome_window = _build_chart_outcome_window(recent_submissions, today_submissions)
+    chart_score_trend = _build_chart_score_trend_window(
+        recent_submissions,
+        analyses_by_submission=analyses_by_submission,
+        stats_by_problem=stats_by_problem,
+    )
+    chart_wrong_types = _build_chart_wrong_type_window(
+        recent_submissions,
+        analyses_by_submission=analyses_by_submission,
+        stats_by_problem=stats_by_problem,
+    )
     learning_evidence = _build_learning_evidence_from_records(detail_records)
     history_context = _build_learning_history_context_from_records(detail_records)
     metric_snapshot: dict[str, Any] = {
@@ -1172,6 +1329,9 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> di
         "weakLanguages": weak_languages,
         "feedbackStrengths": feedback_strengths[:_REPORT_SIGNAL_LIMIT],
         "feedbackImprovements": feedback_improvements[:_REPORT_SIGNAL_LIMIT],
+        "chartOutcomeWindow": chart_outcome_window,
+        "chartScoreTrend": chart_score_trend,
+        "chartWrongTypes": chart_wrong_types,
         **learning_evidence,
     }
     solution_plan = _learning_report_ai.generate_learning_solution_report(
@@ -1229,7 +1389,7 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> di
     db.refresh(report)
     return {
         "reportId": report.id,
-        "createdAt": report.created_at.isoformat() if report.created_at is not None else utcnow().isoformat(),
+        "createdAt": serialize_report_created_at(report.created_at) or serialize_report_created_at(utcnow()),
         **solution_plan,
         "metricSnapshot": metric_snapshot,
         "reportBrief": report_brief,

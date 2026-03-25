@@ -212,6 +212,10 @@ body[data-template-variant="desktop"] .commit-options {
   gap: 12px;
 }
 
+body[data-template-variant="desktop"] #code-blame-section .commit-options {
+  grid-template-columns: 1fr;
+}
+
 body[data-template-variant="desktop"] .choice-options {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;

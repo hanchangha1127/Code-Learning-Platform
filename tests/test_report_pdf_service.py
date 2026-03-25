@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from app.db.models import Report, ReportType
 from app.services.report_pdf_service import (
     _LATEST_REPORT_BATCH_SIZE,
+    _build_feedback_chart_specs,
     build_report_brief,
     build_report_pdf_bytes,
     build_report_pdf_download_url,
@@ -59,6 +60,92 @@ class _FakeDB:
 
 
 class ReportPdfServiceTests(unittest.TestCase):
+    def test_build_feedback_chart_specs_returns_visual_summary_charts(self) -> None:
+        specs = _build_feedback_chart_specs(
+            {
+                "passed": 5,
+                "failed": 4,
+                "error": 1,
+                "pending": 0,
+                "processing": 0,
+                "topWrongTypes": [
+                    {"type": "logic_error", "count": 3},
+                    {"type": "boundary", "count": 2},
+                ],
+            },
+            [
+                {"mode": "code-arrange", "modeLabel": "코드 배치", "title": "Case 4", "score": 83, "result": "correct"},
+                {"mode": "refactoring-choice", "modeLabel": "리팩토링 선택", "title": "Case 3", "score": 71, "result": "correct"},
+                {"mode": "practice", "modeLabel": "연습", "title": "Case 2", "score": 58, "result": "wrong"},
+                {"mode": "analysis", "modeLabel": "코드 설명", "title": "Case 1", "score": 42, "result": "wrong"},
+            ],
+        )
+
+        self.assertEqual([spec["title"] for spec in specs], ["최근 풀이 결과 분포", "최근 점수 추이", "반복 오답 유형"])
+        self.assertEqual(specs[0]["labels"], ["정답", "오답", "에러"])
+        self.assertEqual(specs[1]["labels"], ["1회", "2회", "3회", "4회"])
+        self.assertEqual(specs[1]["values"], [42, 58, 71, 83])
+        self.assertIn("시도 순서: 1회 코드 분석, 2회 맞춤 문제, 3회 최적의 선택, 4회 코드 배치", specs[1]["caption"])
+        self.assertEqual(specs[2]["labels"], ["로직 오류", "경계값 처리"])
+
+    def test_build_feedback_chart_specs_accepts_legacy_repeated_wrong_types(self) -> None:
+        specs = _build_feedback_chart_specs(
+            {
+                "passed": 2,
+                "failed": 1,
+                "repeatedWrongTypes": [
+                    {"label": "logic_error", "count": 4},
+                    {"label": "boundary", "count": 1},
+                ],
+            },
+            [
+                {"mode": "analysis", "modeLabel": "코드 설명", "title": "Case 1", "score": 55, "result": "wrong"},
+                {"mode": "analysis", "modeLabel": "코드 설명", "title": "Case 2", "score": 68, "result": "correct"},
+            ],
+        )
+
+        self.assertEqual(specs[1]["labels"], ["1회", "2회"])
+        self.assertIn("시도 순서: 1회 코드 분석, 2회 코드 분석", specs[1]["caption"])
+        self.assertEqual(specs[2]["labels"], ["로직 오류", "경계값 처리"])
+
+    def test_build_feedback_chart_specs_prefers_chart_window_snapshot(self) -> None:
+        specs = _build_feedback_chart_specs(
+            {
+                "passed": 99,
+                "failed": 1,
+                "chartOutcomeWindow": {
+                    "label": "오늘 학습 전체 12회",
+                    "counts": {"passed": 7, "failed": 3, "error": 2},
+                },
+                "chartScoreTrend": {
+                    "label": "최근 10회",
+                    "records": [
+                        {"mode": "code-arrange", "modeLabel": "코드 배치", "score": 82, "result": "correct"},
+                        {"mode": "analysis", "modeLabel": "코드 분석", "score": 48, "result": "wrong"},
+                    ],
+                },
+                "chartWrongTypes": {
+                    "label": "최근 오답 10회",
+                    "rows": [
+                        {"label": "logic_error", "count": 6},
+                        {"label": "boundary", "count": 4},
+                    ],
+                },
+            },
+            [
+                {"mode": "practice", "modeLabel": "맞춤 문제", "title": "fallback", "score": 15, "result": "wrong"},
+            ],
+        )
+
+        self.assertEqual(specs[0]["labels"], ["정답", "오답", "에러"])
+        self.assertEqual(specs[0]["values"], [7, 3, 2])
+        self.assertIn("오늘 학습 전체 12회 기준", specs[0]["caption"])
+        self.assertEqual(specs[1]["labels"], ["1회", "2회"])
+        self.assertEqual(specs[1]["values"], [48, 82])
+        self.assertIn("최근 10회 기준", specs[1]["caption"])
+        self.assertEqual(specs[2]["labels"], ["로직 오류", "경계값 처리"])
+        self.assertIn("최근 오답 10회 기준", specs[2]["caption"])
+
     def test_build_report_brief_returns_compact_sections(self) -> None:
         brief = build_report_brief(
             solution_plan={
@@ -129,8 +216,58 @@ class ReportPdfServiceTests(unittest.TestCase):
 
         self.assertEqual(payload["available"], True)
         self.assertEqual(payload["reportId"], 41)
+        self.assertEqual(payload["createdAt"], "2026-03-19T19:30:00+09:00")
         self.assertEqual(payload["goal"], "Latest report")
         self.assertEqual(payload["pdfDownloadUrl"], "/platform/reports/41/pdf")
+
+    def test_get_latest_report_detail_skips_candidate_without_metric_snapshot_contract(self) -> None:
+        invalid_latest = Report(
+            id=60,
+            user_id=7,
+            report_type=ReportType.milestone,
+            title="Broken latest",
+            summary="Broken summary",
+            stats={
+                "source": "milestone_report",
+                "solutionPlan": {"goal": "Broken latest"},
+                "metricSnapshot": {"accuracy": 80.0},
+            },
+            created_at=datetime(2026, 3, 20, 10, 30, tzinfo=timezone.utc),
+        )
+        valid_older = Report(
+            id=61,
+            user_id=7,
+            report_type=ReportType.milestone,
+            title="Valid older",
+            summary="Valid summary",
+            stats={
+                "source": "milestone_report",
+                "solutionPlan": {
+                    "goal": "Valid older",
+                    "solutionSummary": "Valid summary",
+                    "priorityActions": ["Review"],
+                    "phasePlan": ["Phase 1"],
+                    "dailyHabits": ["Daily"],
+                    "focusTopics": ["arrays"],
+                    "metricsToTrack": ["accuracy"],
+                    "checkpoints": ["70 percent"],
+                    "riskMitigation": ["short sessions"],
+                },
+                "metricSnapshot": {
+                    "attempts": 12,
+                    "accuracy": 66.7,
+                    "avgScore": 72.5,
+                    "trend": "stable",
+                },
+            },
+            created_at=datetime(2026, 3, 19, 10, 30, tzinfo=timezone.utc),
+        )
+
+        payload = get_latest_report_detail(_FakeDB([invalid_latest, valid_older]), user_id=7)
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["reportId"], 61)
+        self.assertEqual(payload["goal"], "Valid older")
 
     def test_get_latest_report_detail_returns_full_saved_payload(self) -> None:
         report = Report(
@@ -171,6 +308,7 @@ class ReportPdfServiceTests(unittest.TestCase):
 
         self.assertIsNotNone(payload)
         self.assertEqual(payload["reportId"], 51)
+        self.assertEqual(payload["createdAt"], "2026-03-19T19:30:00+09:00")
         self.assertEqual(payload["goal"], "Stored goal")
         self.assertEqual(payload["reportBrief"]["title"], "Stored goal")
         self.assertEqual(payload["pdfDownloadUrl"], "/platform/reports/51/pdf")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -92,6 +92,38 @@ class LearningContinuityServiceTests(unittest.TestCase):
             },
         )
 
+    def test_parse_history_datetime_normalizes_timezone_aware_value_to_naive_utc(self) -> None:
+        parsed = svc._parse_history_datetime({"created_at": "2026-03-06T18:00:00+09:00"})
+
+        self.assertEqual(parsed, datetime(2026, 3, 6, 9, 0, 0))
+        self.assertIsNone(parsed.tzinfo)
+
+    def test_build_weekly_report_card_accepts_timezone_aware_created_at(self) -> None:
+        db = Mock()
+        detail = {
+            "reportId": 17,
+            "createdAt": "2026-03-06T09:00:00+09:00",
+            "goal": "Focus on logic errors",
+            "solutionSummary": "Review branching logic daily.",
+        }
+
+        with patch("app.services.learning_continuity_service.get_latest_report_detail", return_value=detail):
+            with patch(
+                "app.services.learning_continuity_service.utcnow",
+                return_value=datetime(2026, 3, 10, 0, 0, 0),
+            ):
+                payload = svc._build_weekly_report_card(db, 9)
+
+        self.assertTrue(payload["available"])
+        self.assertFalse(payload["stale"])
+        self.assertEqual(payload["reportId"], 17)
+
+    def test_is_report_stale_normalizes_timezone_aware_datetime(self) -> None:
+        created_at = datetime(2026, 3, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+        with patch("app.services.learning_continuity_service.utcnow", return_value=datetime(2026, 3, 9, 0, 0, 0)):
+            self.assertTrue(svc._is_report_stale(svc._to_naive_utc(created_at)))
+
     def test_get_or_create_learning_goal_returns_existing_row_after_duplicate_insert_race(self) -> None:
         existing_goal = SimpleNamespace(user_id=56)
         db = Mock()
@@ -148,6 +180,28 @@ class LearningContinuityServiceTests(unittest.TestCase):
         mode = svc._mode_from_problem(problem)
 
         self.assertEqual(mode, "single-file-analysis")
+
+    def test_weekly_report_card_handles_timezone_aware_created_at(self) -> None:
+        with (
+            patch(
+                "app.services.learning_continuity_service.get_latest_report_detail",
+                return_value={
+                    "reportId": 17,
+                    "createdAt": "2026-03-01T09:00:00+09:00",
+                    "goal": "Keep improving",
+                    "solutionSummary": "Review queue first",
+                },
+            ),
+            patch(
+                "app.services.learning_continuity_service.utcnow",
+                return_value=datetime(2026, 3, 6, 0, 0, 0),
+            ),
+        ):
+            payload = svc._build_weekly_report_card(Mock(), user_id=7)
+
+        self.assertTrue(payload["available"])
+        self.assertFalse(payload["stale"])
+        self.assertEqual(payload["reportId"], 17)
 
 
 if __name__ == "__main__":

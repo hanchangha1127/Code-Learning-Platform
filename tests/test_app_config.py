@@ -50,7 +50,7 @@ class AppConfigTests(unittest.TestCase):
             JWT_SECRET="x" * 32,
         )
 
-        self.assertEqual(settings.ALLOW_SIDLESS_COOKIE_COMPAT, True)
+        self.assertEqual(settings.ALLOW_SIDLESS_COOKIE_COMPAT, False)
         self.assertEqual(settings.SIDLESS_COOKIE_SUNSET_AT, "2026-04-03T23:59:59+09:00")
 
 

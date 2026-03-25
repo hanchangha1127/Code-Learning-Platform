@@ -1,160 +1,213 @@
-# 운영 런북
+# 운영 가이드
 
-## 1. 기본 개발 스택 기동
+## 1. 개발 스택 실행
+
+기본 개발 스택:
 
 ```bash
 python run_server.py
 ```
 
-기본 동작:
+이 명령은 보통 아래를 수행합니다.
 
-- `docker compose up -d --build` 형태로 백그라운드 실행
-- `docker-compose.yml` + `docker-compose.dev.yml` + `docker-compose.docker-socket.yml` 사용
-- `mysql`, `redis`, `api`, `worker` readiness 대기
+- 개발용 Compose 스택 기동
+- 대상 서비스 readiness 확인: `mysql`, `redis`, `api`, `worker`, `worker-follow-up`
 - `/admin.html` 자동 오픈
-- Docker socket 기본 활성화
 
-유용한 옵션:
-
-- 포그라운드 실행
+자주 쓰는 옵션:
 
 ```bash
 python run_server.py --foreground
-```
-
-- 관리자 페이지 자동 오픈 끄기
-
-```bash
 python run_server.py --no-open-admin
-```
-
-- Docker socket 비활성화
-
-```bash
 python run_server.py --without-docker-socket
 ```
 
-```env
-ENABLE_HTTPS=true
-TLS_CERTS_DIR=certs
-HTTPS_BIND_PORT=8443
-HTTPS_PUBLIC_PORT=443
-HTTP_REDIRECT_PORT=8000
-```
-
-HTTPS Compose를 켜면 `80 -> 8000`은 redirect, `443 -> 8443`은 TLS 앱 서버로 노출됩니다.
-
-## 2. 운영형 스택 기동
+## 2. 운영형 Compose 실행
 
 ```bash
 python run_server.py --compose-mode ops --with-docker-socket
 ```
 
-운영형 특징:
+특징:
 
-- `docker-compose.yml` + `docker-compose.ops.yml` 사용
-- `api`, `worker`는 read-only root filesystem + `tmpfs`
-- 개발용 소스 바인드 마운트 제거
+- `docker-compose.ops.yml` 사용
+- `api`, `worker`, `worker-follow-up` 은 read-only root filesystem + `tmpfs`
+- 개발용 바인드 마운트가 빠짐
 
-운영형에서 관리자 종료 기능을 끄려면:
+보안상 Docker socket 이 꼭 필요하지 않으면 아래 형태를 우선 고려합니다.
 
 ```bash
 python run_server.py --compose-mode ops --without-docker-socket
 ```
 
-## 3. 로컬 모드
+## 3. 로컬 서버 실행
 
 ```bash
 alembic upgrade head
 python run_server.py --local --host 127.0.0.1 --port 8000 --workers 1
 ```
 
+HTTPS 직접 실행:
+
 ```bash
-ENABLE_HTTPS=true TLS_CERTS_DIR=certs python run_server.py --local --host 127.0.0.1 --workers 1
+set ENABLE_HTTPS=true
+python run_server.py --local --host 127.0.0.1 --workers 1
 ```
 
-로컬 모드 특징:
+로컬 모드 전제:
 
-- 컨테이너를 띄우지 않고 uvicorn만 실행
-- MySQL/Redis는 별도 준비 필요
-- 컨테이너와 달리 Alembic을 수동 적용해야 함
-- `.env.example` 기준 기본 큐 모드는 `inline`
+- MySQL / Redis 별도 준비
+- `.env` 필수값 준비
+- Alembic 수동 적용
+- 런처의 로컬 기본 worker 값은 `16`
+- 문서 예시는 개발 재현을 위해 `--workers 1`
 
-## 4. 컨테이너 기동 시 자동 처리
+## 4. 관리자 기능
 
-컨테이너의 `entrypoint.sh`는 다음 순서로 동작합니다.
+관리자 페이지:
 
-1. MySQL 연결 대기
-2. `alembic upgrade head`
-3. `python -m server_runtime.runtime_server`
+- `/admin.html`
 
-즉 Compose 모드에서는 마이그레이션이 자동 적용됩니다.
+관리자 API:
+
+- `GET /api/admin/metrics`
+- `POST /api/admin/shutdown`
+
+인증 헤더:
+
+- `X-Admin-Key`
+- `X-Admin-Key-B64`
+
+종료 기능이 실제로 유효하려면 다음이 맞아야 합니다.
+
+- `CODE_PLATFORM_ENABLE_ADMIN_SHUTDOWN=true`
+- 유효한 `ADMIN_PANEL_KEY`
+- Docker 기반 스택 종료를 원하면 Docker socket mount 활성화
+
+프록시 뒤 운영 시에는 `CODE_PLATFORM_TRUSTED_PROXY_CIDRS` 를 맞춰야 관리자 throttling 식별자가 올바르게 동작합니다.
 
 ## 5. 큐 운영 기준
 
-### Compose 모드
+기본 개발 `.env.example`:
 
-- `api` 컨테이너는 작업을 enqueue
-- `worker` 컨테이너가 Redis `rq` 큐를 소비
-- `ANALYSIS_QUEUE_MODE=rq`가 강제됨
-- `auditor`, `refactoring-choice`, `code-blame`, `single-file-analysis`, `multi-file-analysis`, `fullstack-analysis` 제출은 queued 응답을 반환할 수 있음
-- 상태 조회는 `GET /platform/mode-jobs/{job_id}` 사용
+- `ANALYSIS_QUEUE_MODE=inline`
+- `PROBLEM_FOLLOW_UP_QUEUE_MODE=inline`
 
-### Local 모드
+Compose 일반 패턴:
 
-- 기본값은 `inline`
-- 환경변수로 `rq`를 켤 수 있지만, 이 경우 Redis와 worker 구성이 별도로 필요
-- 문제 생성은 대부분 SSE 상태 이벤트 이후 최종 `payload` 1회 전달 구조이며, `arrange`는 클라이언트 가짜 스트리밍이 정상 동작임
+- `ANALYSIS_QUEUE_MODE=rq`
+- `PROBLEM_FOLLOW_UP_QUEUE_MODE=rq`
+- `redis` 실행
+- `worker` 실행
+- `worker-follow-up` 실행
 
-## 6. 관리자 패널
+큐 역할:
 
-- 주소: `/admin.html`
-- 인증: `X-Admin-Key` 또는 `X-Admin-Key-B64`
-- 메트릭: `GET /api/admin/metrics`
-- 종료 요청: `POST /api/admin/shutdown`
+- `analysis`
+  - queued 제출 분석, 고급 모드 제출 처리
+- `problem-follow-up`
+  - 문제 생성 후속 저장, 이력/리포트/운영 이벤트 반영
 
-관리자 종료 기능이 활성화되려면 다음 조건이 모두 필요합니다.
+queued 제출이 가능한 모드:
 
-- API가 Docker 안에서 실행 중일 것
-- `/var/run/docker.sock`가 mount 되어 있을 것
-- Compose 스택 대상 컨테이너를 정상적으로 식별할 수 있을 것
+- `auditor`
+- `refactoring-choice`
+- `code-blame`
+- `single-file-analysis`
+- `multi-file-analysis`
+- `fullstack-analysis`
 
-잘못된 관리자 키는 반복 실패 시 일시적으로 차단됩니다.
+job 상태 조회:
 
-## 7. 종료 명령
+```text
+GET /platform/mode-jobs/{job_id}
+```
 
-### 개발용, Docker socket 미사용
+워커를 수동으로 커스터마이즈할 때는 `RQ_WORKER_QUEUES` 로 감시 큐를 명시할 수 있습니다.
+
+## 6. 스트리밍 운영 메모
+
+문제 생성 SSE는 보통 아래 phase를 거칩니다.
+
+- `queued`
+- `generating`
+- `rendering`
+- `persisting`
+- `done`
+
+운영 관점 주의:
+
+- 현재는 본문 토큰 스트리밍이 아니라 최종 `payload` 1회 전달 구조입니다.
+- 성공 여부는 `payload` 수신 자체가 아니라 마지막 `done.persisted=true` 로 판단해야 합니다.
+- `arrange` 는 예외적으로 가짜 스트리밍 UI입니다.
+
+## 7. 프로필 / 리포트 운영 메모
+
+- `/platform/profile` 과 `/platform/home` 의 통계는 런타임 이력과 DB 제출 이력을 병합해 계산합니다.
+- 프로필 화면은 최신 리포트 카드와 `GET /platform/reports/latest` 기반 PDF 다운로드를 제공합니다.
+- 고급 분석 오답 기록은 읽기 전용 workbench 로 다시 열 수 있습니다.
+- 구버전 리포트의 `repeatedWrongTypes` 형식도 최신 PDF 생성기에서 계속 지원합니다.
+
+## 8. HTTPS 운영 메모
+
+관련 값:
+
+- `ENABLE_HTTPS`
+- `TLS_CERTS_DIR`
+- `SSL_CERTFILE`
+- `SSL_KEYFILE`
+- `HTTPS_BIND_PORT`
+- `HTTPS_PUBLIC_PORT`
+- `HTTP_REDIRECT_PORT`
+
+주의:
+
+- 직접 HTTPS 모드에서는 앱 서버 외에 HTTP redirect 서버도 같이 뜹니다.
+- cert/key 를 직접 지정하지 않으면 `certs/fullchain.pem`, `certs/privkey.pem` 을 찾습니다.
+
+## 9. 종료 명령
+
+개발 스택 종료:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml down --remove-orphans
 ```
 
-### 개발용, Docker socket 사용
+개발 스택 + Docker socket override 종료:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.docker-socket.yml down --remove-orphans
 ```
 
-### 운영형, Docker socket 미사용
+운영형 스택 종료:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.ops.yml down --remove-orphans
 ```
 
-### 운영형, Docker socket 사용
+운영형 스택 + Docker socket override 종료:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.ops.yml -f docker-compose.docker-socket.yml down --remove-orphans
 ```
 
-## 8. 운영 체크리스트
+## 10. 배포 전 권장 확인
 
-- 강한 `JWT_SECRET` 사용
-- 강한 `ADMIN_PANEL_KEY` 사용
-- 필요한 경우에만 Docker socket 활성화
-- Google OAuth 사용 시 허용 redirect URI와 프록시 헤더 검토
-- 배포 전 최소한 다음 테스트 확인
+Python 테스트:
 
 ```bash
-python -m unittest tests.test_mode_api_platform_parity tests.test_auth_unification tests.test_pages_template_variant tests.test_launcher_defaults -v
+python -m unittest discover -s tests -v
 ```
+
+Playwright smoke:
+
+```bash
+set CI=1
+set ENABLE_HTTPS=0
+npx playwright test tests/e2e/smoke.spec.mjs
+```
+
+2026-03-21 최신 확인 결과:
+
+- Python `269/269`
+- Playwright smoke `54/54`

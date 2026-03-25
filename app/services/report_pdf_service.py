@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from html import escape
 from io import BytesIO
+import math
 import re
 from typing import Any
 
@@ -13,6 +14,91 @@ from app.db.models import Report, ReportType
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _LATEST_REPORT_BATCH_SIZE = 25
+_SEOUL_TZ = timezone(timedelta(hours=9), name="KST")
+
+_MODE_LABELS: dict[str, str] = {
+    "analysis": "코드 분석",
+    "diagnostic": "진단",
+    "practice": "맞춤 문제",
+    "code-block": "코드 블록",
+    "code-calc": "코드 계산",
+    "code-error": "오류 찾기",
+    "code-arrange": "코드 배치",
+    "auditor": "감사관 모드",
+    "context-inference": "맥락 추론",
+    "refactoring-choice": "최적의 선택",
+    "code-blame": "범인 찾기",
+    "single-file-analysis": "단일 파일 분석",
+    "multi-file-analysis": "다중 파일 분석",
+    "fullstack-analysis": "풀스택 코드 분석",
+}
+
+_MODE_LABEL_ALIASES: dict[str, str] = {
+    **_MODE_LABELS,
+    "코드 설명": "코드 분석",
+    "빈칸 채우기": "코드 블록",
+    "출력 예측": "코드 계산",
+    "코드 정렬": "코드 배치",
+    "감사관": "감사관 모드",
+    "리팩토링 선택": "최적의 선택",
+    "최적안 선택": "최적의 선택",
+    "코드 블레임": "범인 찾기",
+    "멀티 파일 분석": "다중 파일 분석",
+    "풀스택 분석": "풀스택 코드 분석",
+    "진단 문제": "진단",
+    "연습": "맞춤 문제",
+}
+
+_OUTCOME_LABELS: dict[str, str] = {
+    "passed": "정답",
+    "correct": "정답",
+    "success": "정답",
+    "failed": "오답",
+    "incorrect": "오답",
+    "wrong": "오답",
+    "error": "에러",
+    "pending": "대기",
+    "processing": "처리 중",
+}
+
+_DIFFICULTY_LABELS: dict[str, str] = {
+    "beginner": "초급",
+    "easy": "초급",
+    "intermediate": "중급",
+    "medium": "중급",
+    "advanced": "고급",
+    "hard": "고급",
+}
+
+_LANGUAGE_LABELS: dict[str, str] = {
+    "python": "파이썬",
+    "javascript": "자바스크립트",
+    "typescript": "타입스크립트",
+    "java": "자바",
+    "c": "C",
+    "c++": "C++",
+    "cpp": "C++",
+    "csharp": "C#",
+    "cs": "C#",
+    "go": "Go",
+    "rust": "Rust",
+    "php": "PHP",
+}
+
+_WRONG_TYPE_LABELS: dict[str, str] = {
+    "syntax_error": "문법 오류",
+    "logic_error": "로직 오류",
+    "runtime_error": "실행 오류",
+    "timeout_error": "시간 초과",
+    "analysis_error": "분석 오류",
+    "unknown_error": "기본기 보강",
+    "input_validation": "입력 검증",
+    "authorization_bypass": "권한 검증 누락",
+    "injection_risk": "주입 위험",
+    "state_consistency": "상태 일관성",
+    "boundary": "경계값 처리",
+    "boundary_error": "경계값 오류",
+}
 
 
 def _normalize_text(value: Any, *, limit: int = 220) -> str:
@@ -57,6 +143,41 @@ def _normalize_evidence_items(value: Any, *, limit: int = 3, item_limit: int = 1
     return [text] if text else []
 
 
+def _display_mode_label(value: Any) -> str:
+    text = _normalize_text(value, limit=80)
+    if not text:
+        return ""
+    return _MODE_LABEL_ALIASES.get(text) or _MODE_LABEL_ALIASES.get(text.lower()) or text
+
+
+def _display_outcome_label(value: Any) -> str:
+    text = _normalize_text(value, limit=40)
+    if not text:
+        return ""
+    return _OUTCOME_LABELS.get(text.lower(), text)
+
+
+def _display_difficulty_label(value: Any) -> str:
+    text = _normalize_text(value, limit=40)
+    if not text:
+        return ""
+    return _DIFFICULTY_LABELS.get(text.lower(), text)
+
+
+def _display_language_label(value: Any) -> str:
+    text = _normalize_text(value, limit=40)
+    if not text:
+        return ""
+    return _LANGUAGE_LABELS.get(text.lower(), text)
+
+
+def _display_wrong_type_label(value: Any) -> str:
+    text = _normalize_text(value, limit=60)
+    if not text:
+        return ""
+    return _WRONG_TYPE_LABELS.get(text.lower(), text)
+
+
 def _extract_solution_plan(report: Report) -> dict[str, Any]:
     stats = report.stats if isinstance(report.stats, dict) else {}
     solution_plan = stats.get("solutionPlan")
@@ -90,6 +211,21 @@ def _format_metric_number(value: Any, *, suffix: str = "") -> str:
     if value is None or value == "":
         return "-"
     return f"{value}{suffix}"
+
+
+def _to_seoul_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(_SEOUL_TZ)
+
+
+def serialize_report_created_at(value: datetime | None) -> str | None:
+    localized = _to_seoul_datetime(value)
+    if localized is None:
+        return None
+    return localized.isoformat(timespec="seconds")
 
 
 def _short_trend(value: Any) -> str:
@@ -195,8 +331,8 @@ def _build_study_guide_text(
 def _build_detail_record_header(record: Mapping[str, Any], index: int) -> str:
     title = (
         _normalize_text(record.get("title"), limit=60)
-        or _normalize_text(record.get("modeLabel"), limit=60)
-        or _normalize_text(record.get("mode"), limit=60)
+        or _display_mode_label(record.get("mode"))
+        or _display_mode_label(record.get("modeLabel"))
         or "문제 풀이 기록"
     )
     return f"사례 {index}: {title}"
@@ -207,12 +343,12 @@ def _build_detail_record_lines(record: Mapping[str, Any]) -> list[str]:
     evaluation = record.get("evaluation") if isinstance(record.get("evaluation"), Mapping) else {}
 
     summary_bits = [
-        _normalize_text(record.get("result"), limit=24),
+        _display_outcome_label(record.get("result")),
         f"점수 {_format_metric_number(record.get('score'))}",
         f"시간 {_format_metric_number(record.get('durationSeconds'), suffix='초')}",
-        _normalize_text(record.get("difficulty"), limit=20),
-        _normalize_text(record.get("language"), limit=20),
-        _normalize_text(evaluation.get("wrongType") or record.get("wrongType"), limit=24),
+        _display_difficulty_label(record.get("difficulty")),
+        _display_language_label(record.get("language")),
+        _display_wrong_type_label(evaluation.get("wrongType") or record.get("wrongType")),
     ]
     lines = [
         _normalize_text(" · ".join(bit for bit in summary_bits if bit), limit=220),
@@ -363,7 +499,72 @@ def build_report_brief_from_report(report: Report) -> dict[str, Any]:
     return generated
 
 
-def _is_latest_milestone_candidate(report: Report | None) -> bool:
+def _coerce_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return number
+
+
+def _build_wrong_type_rows(metric_snapshot: Mapping[str, Any]) -> list[tuple[str, float]]:
+    raw_items = metric_snapshot.get("topWrongTypes")
+    if not isinstance(raw_items, list):
+        raw_items = metric_snapshot.get("repeatedWrongTypes")
+
+    rows: list[tuple[str, float]] = []
+    for item in raw_items or []:
+        if not isinstance(item, Mapping):
+            continue
+        label = _normalize_text(item.get("type") or item.get("label"), limit=24)
+        count = _coerce_float(item.get("count"))
+        if not label or count is None or count <= 0:
+            continue
+        rows.append((label, count))
+        if len(rows) >= 4:
+            break
+    return rows
+
+
+def _extract_chart_window(metric_snapshot: Mapping[str, Any], key: str) -> dict[str, Any]:
+    value = metric_snapshot.get(key)
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _build_chart_rows(raw_items: Any) -> list[tuple[str, float]]:
+    if not isinstance(raw_items, list):
+        return []
+
+    rows: list[tuple[str, float]] = []
+    for item in raw_items:
+        if not isinstance(item, Mapping):
+            continue
+        label = _normalize_text(item.get("type") or item.get("label"), limit=24)
+        count = _coerce_float(item.get("count"))
+        if not label or count is None or count <= 0:
+            continue
+        rows.append((label, count))
+        if len(rows) >= 4:
+            break
+    return rows
+
+
+def _has_milestone_report_contract(report: Report) -> bool:
+    metric_snapshot = _extract_metric_snapshot(report)
+    if not isinstance(metric_snapshot, Mapping):
+        return False
+    attempts = metric_snapshot.get("attempts")
+    trend = metric_snapshot.get("trend")
+    if not isinstance(attempts, int):
+        return False
+    if not isinstance(trend, str) or not trend.strip():
+        return False
+    return True
+
+
+def _is_metadata_milestone_candidate(report: Report | None) -> bool:
     if report is None:
         return False
     stats = report.stats if isinstance(report.stats, dict) else {}
@@ -371,14 +572,24 @@ def _is_latest_milestone_candidate(report: Report | None) -> bool:
     return source != "platform"
 
 
-def _select_latest_milestone_report(reports: list[Report]) -> Report | None:
+def _is_latest_milestone_candidate(report: Report | None) -> bool:
+    return _is_metadata_milestone_candidate(report) and report is not None and _has_milestone_report_contract(report)
+
+
+def _select_latest_milestone_report(reports: list[Report], *, require_detail_contract: bool = False) -> Report | None:
+    predicate = _is_latest_milestone_candidate if require_detail_contract else _is_metadata_milestone_candidate
     for report in reports:
-        if _is_latest_milestone_candidate(report):
+        if predicate(report):
             return report
     return None
 
 
-def _load_latest_milestone_report(db: Session, user_id: int) -> Report | None:
+def _load_latest_milestone_report(
+    db: Session,
+    user_id: int,
+    *,
+    require_detail_contract: bool = False,
+) -> Report | None:
     query = (
         db.query(Report)
         .filter(Report.user_id == user_id, Report.report_type == ReportType.milestone)
@@ -389,7 +600,7 @@ def _load_latest_milestone_report(db: Session, user_id: int) -> Report | None:
         reports = query.limit(_LATEST_REPORT_BATCH_SIZE).offset(offset).all()
         if not reports:
             return None
-        candidate = _select_latest_milestone_report(reports)
+        candidate = _select_latest_milestone_report(reports, require_detail_contract=require_detail_contract)
         if candidate is not None:
             return candidate
         if len(reports) < _LATEST_REPORT_BATCH_SIZE:
@@ -398,7 +609,7 @@ def _load_latest_milestone_report(db: Session, user_id: int) -> Report | None:
 
 
 def get_latest_report_detail(db: Session, user_id: int) -> dict[str, Any] | None:
-    report = _load_latest_milestone_report(db, user_id)
+    report = _load_latest_milestone_report(db, user_id, require_detail_contract=True)
     if report is None:
         return None
 
@@ -421,7 +632,7 @@ def get_latest_report_detail(db: Session, user_id: int) -> dict[str, Any] | None
 
     return {
         "reportId": int(report.id),
-        "createdAt": report.created_at.isoformat() if report.created_at is not None else None,
+        "createdAt": serialize_report_created_at(report.created_at),
         "goal": goal,
         "solutionSummary": summary,
         "priorityActions": priority_actions,
@@ -444,9 +655,164 @@ def build_report_pdf_download_url(report_id: int | None) -> str | None:
 
 
 def _format_created_at(value: datetime | None) -> str:
-    if value is None:
+    localized = _to_seoul_datetime(value)
+    if localized is None:
         return "-"
-    return value.astimezone().strftime("%Y-%m-%d %H:%M")
+    return localized.strftime("%Y-%m-%d %H:%M KST")
+
+
+def _coerce_chart_number(value: Any, *, min_value: float | None = None, max_value: float | None = None) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if min_value is not None:
+        number = max(number, min_value)
+    if max_value is not None:
+        number = min(number, max_value)
+    return number
+
+
+def _round_chart_max(value: float, *, minimum: float = 5.0) -> float:
+    target = max(float(value or 0), minimum)
+    if target <= 10:
+        return math.ceil(target)
+    if target <= 25:
+        return math.ceil(target / 5.0) * 5.0
+    if target <= 100:
+        return math.ceil(target / 10.0) * 10.0
+    return math.ceil(target / 25.0) * 25.0
+
+
+def _build_feedback_chart_specs(
+    metric_snapshot: Mapping[str, Any] | None,
+    detail_records: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    metrics = metric_snapshot if isinstance(metric_snapshot, Mapping) else {}
+    records = detail_records if isinstance(detail_records, list) else []
+    specs: list[dict[str, Any]] = []
+
+    outcome_window = _extract_chart_window(metrics, "chartOutcomeWindow")
+    outcome_counts = outcome_window.get("counts") if isinstance(outcome_window.get("counts"), Mapping) else metrics
+    outcome_scope = _normalize_text(outcome_window.get("label"), limit=60)
+    outcome_items: list[tuple[str, float]] = []
+    for label, key in (
+        ("정답", "passed"),
+        ("오답", "failed"),
+        ("에러", "error"),
+        ("대기", "pending"),
+        ("처리 중", "processing"),
+    ):
+        value = _coerce_chart_number(outcome_counts.get(key), min_value=0)
+        if value is None or value <= 0:
+            continue
+        outcome_items.append((label, value))
+    if outcome_items:
+        dominant_label, dominant_value = max(outcome_items, key=lambda item: item[1])
+        total_outcomes = sum(value for _, value in outcome_items)
+        scope_prefix = f"{outcome_scope} 기준. " if outcome_scope else ""
+        specs.append(
+            {
+                "kind": "bar",
+                "title": "최근 풀이 결과 분포",
+                "caption": _normalize_text(
+                    f"{scope_prefix}최근 결과 중 {dominant_label} 비중이 가장 큽니다. "
+                    f"({int(round(dominant_value))} / {int(round(total_outcomes))})",
+                    limit=180,
+                ),
+                "labels": [label for label, _ in outcome_items],
+                "values": [value for _, value in outcome_items],
+                "valueMax": _round_chart_max(max(value for _, value in outcome_items)),
+                "color": "#2563eb",
+            }
+        )
+
+    score_trend_window = _extract_chart_window(metrics, "chartScoreTrend")
+    score_records = score_trend_window.get("records") if isinstance(score_trend_window.get("records"), list) else records
+    score_scope = _normalize_text(score_trend_window.get("label"), limit=60)
+    score_points: list[tuple[str, float]] = []
+    attempt_context: list[str] = []
+    recent_records = list(score_records[:10])
+    recent_records.reverse()
+    for record in recent_records:
+        if not isinstance(record, Mapping):
+            continue
+        score = _coerce_chart_number(record.get("score"), min_value=0, max_value=100)
+        if score is None:
+            result = _normalize_text(record.get("result"), limit=32).lower()
+            if result in {"correct", "passed", "success"}:
+                score = 100.0
+            elif result in {"wrong", "failed", "error"}:
+                score = 0.0
+        if score is None:
+            continue
+        attempt_label = f"{len(score_points) + 1}회"
+        mode_label = (
+            _display_mode_label(record.get("mode"))
+            or _display_mode_label(record.get("modeLabel"))
+            or _normalize_text(record.get("title"), limit=16)
+            or attempt_label
+        )
+        score_points.append((attempt_label, score))
+        attempt_context.append(_normalize_text(f"{attempt_label} {mode_label}", limit=40))
+    if len(score_points) >= 2:
+        first_score = score_points[0][1]
+        last_score = score_points[-1][1]
+        if last_score >= first_score + 5:
+            trend_note = "최근 시도 점수가 올라가는 흐름입니다."
+        elif last_score <= first_score - 5:
+            trend_note = "최근 시도 점수가 내려가서 복기 강도를 높일 필요가 있습니다."
+        else:
+            trend_note = "점수 흐름이 비슷해서 같은 실수를 줄이는 것이 다음 상승 포인트입니다."
+        specs.append(
+            {
+                "kind": "line",
+                "title": "최근 점수 추이",
+                "caption": _normalize_text(
+                    f"{f'{score_scope} 기준. ' if score_scope else ''}{trend_note} 시도 순서: {', '.join(attempt_context)}",
+                    limit=180,
+                ),
+                "labels": [label for label, _ in score_points],
+                "values": [value for _, value in score_points],
+                "valueMin": max(math.floor(min(value for _, value in score_points) / 10.0) * 10.0 - 10.0, 0.0),
+                "valueMax": min(
+                    max(math.ceil(max(value for _, value in score_points) / 10.0) * 10.0 + 10.0, 40.0),
+                    100.0,
+                ),
+                "color": "#0f766e",
+            }
+        )
+
+    wrong_type_window = _extract_chart_window(metrics, "chartWrongTypes")
+    wrong_type_scope = _normalize_text(wrong_type_window.get("label"), limit=60)
+    wrong_type_rows = [
+        (_normalize_text(_display_wrong_type_label(label), limit=16), count)
+        for label, count in (_build_chart_rows(wrong_type_window.get("rows")) or _build_wrong_type_rows(metrics))
+        if _display_wrong_type_label(label) and count > 0
+    ]
+    if wrong_type_rows:
+        top_wrong_label, top_wrong_count = max(wrong_type_rows, key=lambda item: item[1])
+        specs.append(
+            {
+                "kind": "bar",
+                "title": "반복 오답 유형",
+                "caption": _normalize_text(
+                    f"{f'{wrong_type_scope} 기준. ' if wrong_type_scope else ''}가장 자주 반복된 오답 유형은 {top_wrong_label}이며 "
+                    f"총 {int(round(top_wrong_count))}회 나타났습니다.",
+                    limit=180,
+                ),
+                "labels": [label for label, _ in wrong_type_rows],
+                "values": [value for _, value in wrong_type_rows],
+                "valueMax": _round_chart_max(max(value for _, value in wrong_type_rows)),
+                "color": "#dc2626",
+            }
+        )
+
+    return specs
 
 
 def _load_reportlab_components() -> dict[str, Any]:
@@ -455,6 +821,10 @@ def _load_reportlab_components() -> dict[str, Any]:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units import mm
+        from reportlab.graphics.charts.barcharts import VerticalBarChart
+        from reportlab.graphics.charts.linecharts import HorizontalLineChart
+        from reportlab.graphics.shapes import Drawing, Rect, String
+        from reportlab.graphics.widgets.markers import makeMarker
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.cidfonts import UnicodeCIDFont
         from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
@@ -467,6 +837,12 @@ def _load_reportlab_components() -> dict[str, Any]:
         "ParagraphStyle": ParagraphStyle,
         "getSampleStyleSheet": getSampleStyleSheet,
         "mm": mm,
+        "Drawing": Drawing,
+        "Rect": Rect,
+        "String": String,
+        "VerticalBarChart": VerticalBarChart,
+        "HorizontalLineChart": HorizontalLineChart,
+        "makeMarker": makeMarker,
         "pdfmetrics": pdfmetrics,
         "UnicodeCIDFont": UnicodeCIDFont,
         "Paragraph": Paragraph,
@@ -495,6 +871,138 @@ def _ensure_pdf_font(components: Mapping[str, Any]) -> str:
     return "Helvetica"
 
 
+def _append_feedback_charts(
+    *,
+    story: list[Any],
+    components: Mapping[str, Any],
+    font_name: str,
+    base_style: Any,
+    section_style: Any,
+    metric_snapshot: Mapping[str, Any] | None,
+    detail_records: list[dict[str, Any]] | None,
+) -> None:
+    chart_specs = _build_feedback_chart_specs(metric_snapshot, detail_records)
+    if not chart_specs:
+        return
+
+    colors = components["colors"]
+    mm = components["mm"]
+    drawing_cls = components["Drawing"]
+    rect_cls = components["Rect"]
+    string_cls = components["String"]
+    vertical_bar_chart = components["VerticalBarChart"]
+    horizontal_line_chart = components["HorizontalLineChart"]
+    make_marker = components["makeMarker"]
+    paragraph = components["Paragraph"]
+    spacer = components["Spacer"]
+
+    story.extend(
+        [
+            paragraph("시각 피드백", section_style),
+            paragraph(
+                "아래 차트는 서술형 피드백에 사용된 근거를 한눈에 보이도록 정리한 것입니다.",
+                base_style,
+            ),
+        ]
+    )
+
+    chart_width = 168 * mm
+    chart_height = 62 * mm
+    inner_x = 12 * mm
+    inner_y = 12 * mm
+    inner_width = 142 * mm
+    inner_height = 34 * mm
+
+    for spec in chart_specs:
+        drawing = drawing_cls(chart_width, chart_height)
+        drawing.add(
+            rect_cls(
+                0,
+                0,
+                chart_width,
+                chart_height,
+                strokeColor=colors.HexColor("#dbe4ee"),
+                fillColor=colors.HexColor("#f8fafc"),
+            )
+        )
+        drawing.add(
+            string_cls(
+                8 * mm,
+                chart_height - (8 * mm),
+                _normalize_text(spec.get("title"), limit=40),
+                fontName=font_name,
+                fontSize=10.5,
+                fillColor=colors.HexColor("#0f172a"),
+            )
+        )
+
+        labels = [_normalize_text(label, limit=14) or "-" for label in spec.get("labels") or []]
+        values = [float(value) for value in spec.get("values") or []]
+        if not labels or not values:
+            continue
+
+        if spec.get("kind") == "line":
+            chart = horizontal_line_chart()
+            chart.x = inner_x
+            chart.y = inner_y
+            chart.width = inner_width
+            chart.height = inner_height
+            chart.data = [tuple(values)]
+            chart.joinedLines = 1
+            chart.lines[0].strokeColor = colors.HexColor(spec.get("color") or "#0f766e")
+            chart.lines[0].strokeWidth = 2
+            chart.lines[0].symbol = make_marker("FilledCircle")
+            chart.lines[0].symbol.fillColor = colors.HexColor(spec.get("color") or "#0f766e")
+            chart.categoryAxis.categoryNames = labels
+            chart.categoryAxis.labels.fontName = font_name
+            chart.categoryAxis.labels.fontSize = 7
+            chart.categoryAxis.labels.fillColor = colors.HexColor("#475569")
+            chart.valueAxis.labels.fontName = font_name
+            chart.valueAxis.labels.fontSize = 7
+            chart.valueAxis.labels.fillColor = colors.HexColor("#475569")
+            chart.valueAxis.visibleGrid = 1
+            chart.valueAxis.gridStrokeColor = colors.HexColor("#e2e8f0")
+            chart.valueAxis.valueMin = float(spec.get("valueMin") or 0.0)
+            chart.valueAxis.valueMax = float(spec.get("valueMax") or 100.0)
+            span = max(chart.valueAxis.valueMax - chart.valueAxis.valueMin, 10.0)
+            chart.valueAxis.valueStep = max(math.ceil(span / 4.0 / 5.0) * 5.0, 5.0)
+        else:
+            chart = vertical_bar_chart()
+            chart.x = inner_x
+            chart.y = inner_y
+            chart.width = inner_width
+            chart.height = inner_height
+            chart.data = [tuple(values)]
+            chart.categoryAxis.categoryNames = labels
+            chart.categoryAxis.labels.fontName = font_name
+            chart.categoryAxis.labels.fontSize = 7
+            chart.categoryAxis.labels.fillColor = colors.HexColor("#475569")
+            chart.categoryAxis.labels.angle = 15
+            chart.categoryAxis.labels.boxAnchor = "n"
+            chart.valueAxis.labels.fontName = font_name
+            chart.valueAxis.labels.fontSize = 7
+            chart.valueAxis.labels.fillColor = colors.HexColor("#475569")
+            chart.valueAxis.visibleGrid = 1
+            chart.valueAxis.gridStrokeColor = colors.HexColor("#e2e8f0")
+            chart.valueAxis.valueMin = 0
+            chart.valueAxis.valueMax = float(spec.get("valueMax") or _round_chart_max(max(values)))
+            chart.valueAxis.valueStep = max(math.ceil(chart.valueAxis.valueMax / 4.0), 1.0)
+            chart.barLabelFormat = "%0.0f"
+            chart.barLabels.nudge = 8
+            chart.barLabels.fontName = font_name
+            chart.barLabels.fontSize = 7
+            chart.barLabels.fillColor = colors.HexColor("#334155")
+            chart.bars[0].fillColor = colors.HexColor(spec.get("color") or "#2563eb")
+            chart.bars[0].strokeColor = colors.HexColor(spec.get("color") or "#2563eb")
+
+        drawing.add(chart)
+        story.append(drawing)
+        caption = _normalize_text(spec.get("caption"), limit=200)
+        if caption:
+            story.append(paragraph(escape(caption), base_style))
+        story.append(spacer(1, 3 * mm))
+
+
 def build_report_pdf_bytes(report: Report) -> bytes:
     components = _load_reportlab_components()
     colors = components["colors"]
@@ -511,6 +1019,7 @@ def build_report_pdf_bytes(report: Report) -> bytes:
     font_name = _ensure_pdf_font(components)
     brief = build_report_brief_from_report(report)
     solution_plan = _extract_solution_plan(report)
+    metric_snapshot = _extract_metric_snapshot(report)
     detail_records = _extract_detail_records(report)
     created_at = _format_created_at(report.created_at)
     styles = get_sample_style_sheet()
@@ -558,6 +1067,26 @@ def build_report_pdf_bytes(report: Report) -> bytes:
         bulletIndent=0,
         spaceAfter=4,
     )
+    table_header_style = paragraph_style(
+        "ReportTableHeader",
+        parent=base_style,
+        fontName=font_name,
+        fontSize=9.5,
+        leading=12,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=0,
+    )
+    table_cell_style = paragraph_style(
+        "ReportTableCell",
+        parent=base_style,
+        fontName=font_name,
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#1f2937"),
+        wordWrap="CJK",
+        splitLongWords=1,
+        spaceAfter=0,
+    )
 
     story: list[Any] = [
         paragraph(escape(brief.get("title") or "학습 리포트"), title_style),
@@ -576,6 +1105,16 @@ def build_report_pdf_bytes(report: Report) -> bytes:
             paragraph(escape(_normalize_text(brief.get("studyGuide"), limit=340) or "다음 학습 가이드를 준비 중입니다."), base_style),
             spacer(1, 3 * mm),
         ]
+    )
+
+    _append_feedback_charts(
+        story=story,
+        components=components,
+        font_name=font_name,
+        base_style=base_style,
+        section_style=section_style,
+        metric_snapshot=metric_snapshot,
+        detail_records=detail_records,
     )
 
     metric_rows = [["지표", "값"]]
@@ -662,26 +1201,34 @@ def build_report_pdf_bytes(report: Report) -> bytes:
 
     story.append(paragraph("최근 풀이 사례", section_style))
     if detail_records:
-        detail_summary_rows = [["사례", "핵심 요약"]]
+        detail_summary_rows = [
+            [
+                paragraph("사례", table_header_style),
+                paragraph("핵심 요약", table_header_style),
+            ]
+        ]
         for index, record in enumerate(detail_records[:4], start=1):
             header = _build_detail_record_header(record, index)
             summary_line = _normalize_text(
                 " · ".join(line for line in _build_detail_record_lines(record)[:2] if line),
-                limit=180,
+                limit=240,
             )
-            detail_summary_rows.append([header, summary_line or "-"])
+            detail_summary_rows.append(
+                [
+                    paragraph(escape(header), table_cell_style),
+                    paragraph(escape(summary_line or "-"), table_cell_style),
+                ]
+            )
 
-        detail_summary_table = table(detail_summary_rows, colWidths=[38 * mm, 124 * mm])
+        detail_summary_table = table(detail_summary_rows, colWidths=[34 * mm, 128 * mm], repeatRows=1)
         detail_summary_table.setStyle(
             table_style(
                 [
-                    ("FONTNAME", (0, 0), (-1, -1), font_name),
-                    ("FONTSIZE", (0, 0), (-1, -1), 9.5),
-                    ("LEADING", (0, 0), (-1, -1), 13),
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e0f2fe")),
                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
                     ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cbd5e1")),
                     ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 8),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 8),
                     ("TOPPADDING", (0, 0), (-1, -1), 6),
@@ -759,7 +1306,7 @@ def get_latest_report_download_metadata(db: Session, user_id: int) -> dict[str, 
     return {
         "available": True,
         "reportId": int(report.id),
-        "createdAt": report.created_at.isoformat() if report.created_at is not None else None,
+        "createdAt": serialize_report_created_at(report.created_at),
         "goal": _normalize_text(brief.get("title"), limit=120) or _normalize_text(report.title, limit=120),
         "summary": _normalize_text(brief.get("summary"), limit=220) or _normalize_text(report.summary, limit=220),
         "pdfDownloadUrl": build_report_pdf_download_url(report.id),

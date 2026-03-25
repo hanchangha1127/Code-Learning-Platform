@@ -171,12 +171,45 @@ function getProblemStreamClient() {
   return window.CodeProblemStream || null;
 }
 
+function getProblemStreamPreviewContainer() {
+  return elements.errorLog?.closest(".problem-card") || elements.problemPrompt?.closest(".problem-card") || null;
+}
+
 function shouldFallbackToJson(streamError) {
   const streamClient = getProblemStreamClient();
   if (!streamClient || typeof streamClient.shouldFallbackToJson !== "function") {
     return false;
   }
   return Boolean(streamClient.shouldFallbackToJson(streamError));
+}
+
+function applyStreamingCodeBlamePreview(draft) {
+  if (!draft || typeof draft !== "object") {
+    return;
+  }
+  if (typeof draft.title === "string" && draft.title.trim() && elements.problemTitle) {
+    elements.problemTitle.textContent = draft.title.trim();
+  }
+  if (elements.problemLanguage) {
+    const languageLabel = state.languageMap[state.selectedLanguage]?.title || state.selectedLanguage || "-";
+    elements.problemLanguage.textContent = `언어 ${languageLabel}`;
+  }
+  if (elements.problemDifficulty) {
+    const difficultyLabel = DIFFICULTY_LABELS[state.selectedDifficulty] || state.selectedDifficulty || "-";
+    elements.problemDifficulty.textContent = `난이도 ${difficultyLabel}`;
+  }
+  if (Array.isArray(draft.commits) && elements.problemCount) {
+    elements.problemCount.textContent = `커밋 수 ${draft.commits.length || "-"}`;
+  }
+  if (Array.isArray(draft.commits) && draft.commits.length) {
+    renderCommitList(draft.commits);
+  }
+  if (typeof draft.errorLog === "string" && draft.errorLog.length > 0 && elements.errorLog) {
+    elements.errorLog.textContent = draft.errorLog;
+  }
+  if (typeof draft.prompt === "string" && draft.prompt.trim() && elements.problemPrompt) {
+    elements.problemPrompt.textContent = draft.prompt.trim();
+  }
 }
 
 
@@ -205,6 +238,10 @@ async function loadCodeBlameProblemViaStream() {
         if (statusPayload?.phase === "rendering") {
           setLoadingState(elements.loadBtn, true, "문제 표시 중...");
         }
+      },
+      showPartialPreview: false,
+      onPreview: (draft) => {
+        applyStreamingCodeBlamePreview(draft);
       },
       signal: state.problemStreamController.signal,
     });
@@ -293,62 +330,57 @@ async function handleLoadProblem() {
   renderLanguageDifficulty();
 
   setLoadingState(elements.loadBtn, true, "문제 생성 중...");
+  clearProblem();
+  clearFeedback();
   if (elements.loadStatus) {
     elements.loadStatus.textContent = "AI가 범인 찾기 문제를 생성하고 있습니다.";
   }
+  let loadSucceeded = false;
 
   try {
-    let payload = null;
-    let streamed = false;
-    let usedJsonFallback = false;
-    let allowJsonFallback = false;
-
-    try {
-      payload = await loadCodeBlameProblemViaStream();
-      streamed = Boolean(payload);
-    } catch (streamError) {
-      allowJsonFallback = shouldFallbackToJson(streamError);
-      if (!allowJsonFallback) {
-        throw streamError;
-      }
-    }
-
-    if (!payload && !allowJsonFallback) {
-      const streamClient = getProblemStreamClient();
-      allowJsonFallback = !streamClient || typeof streamClient.streamProblem !== "function";
-    }
-
-    if (!payload && allowJsonFallback) {
-      if (elements.loadStatus) {
-        elements.loadStatus.textContent = "스트리밍 연결이 끊겨 일반 모드로 재시도 중...";
-      }
-      setLoadingState(elements.loadBtn, true, "일반 모드 재시도 중...");
-      payload = await apiRequest("/platform/code-blame/problem", {
-        method: "POST",
-        body: {
-          language: state.selectedLanguage,
-          difficulty: state.selectedDifficulty,
-        },
-      });
-      usedJsonFallback = true;
-    }
+    const streamClient = getProblemStreamClient();
+    const { payload, streamed, usedJsonFallback } = await streamClient.loadProblemTransport({
+      streamClient,
+      streamRequest: loadCodeBlameProblemViaStream,
+      jsonRequest: async () => {
+        if (elements.loadStatus) {
+          elements.loadStatus.textContent = "스트리밍 연결이 끊겨 일반 모드로 재시도 중...";
+        }
+        setLoadingState(elements.loadBtn, true, "일반 모드 재시도 중...");
+        return apiRequest("/platform/code-blame/problem", {
+          method: "POST",
+          body: {
+            language: state.selectedLanguage,
+            difficulty: state.selectedDifficulty,
+          },
+        });
+      },
+      shouldFallback: shouldFallbackToJson,
+    });
     if (!payload) {
       throw new Error("문제를 불러오지 못했습니다.");
     }
 
-    if (streamed || usedJsonFallback) {
+    if (streamed) {
+      renderProblem(payload);
+    } else if (usedJsonFallback) {
       await animateCodeBlameProblem(payload);
     } else {
       renderProblem(payload);
     }
 
     clearFeedback();
+    loadSucceeded = true;
     showToast("범인 찾기 문제를 불러왔습니다.");
   } catch (error) {
+    clearProblem();
+    clearFeedback();
     showToast(error.message || "문제 생성에 실패했습니다. 다시 시도해 주세요.");
   } finally {
     if (elements.loadStatus) {
-    elements.loadStatus.textContent = "다른 문제가 필요하면 다시 문제 받기를 눌러주세요.";
+      elements.loadStatus.textContent = loadSucceeded
+        ? "다른 문제가 필요하면 다시 문제 받기를 눌러주세요."
+        : "문제 생성에 실패했습니다. 다시 시도해 주세요.";
     }
     setLoadingState(elements.loadBtn, false);
   }
@@ -658,6 +690,7 @@ function clearProblem() {
   if (elements.commitList) {
     elements.commitList.innerHTML = "";
   }
+  elements.reportForm?.reset();
 }
 
 function clearFeedback() {

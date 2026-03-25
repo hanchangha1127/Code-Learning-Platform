@@ -1,57 +1,61 @@
 # 코드 학습 플랫폼
 
-FastAPI 기반 코드 학습 플랫폼입니다. 현재 구현은 하나의 프로세스 안에서 다음 세 축을 함께 제공합니다.
+FastAPI 기반의 코드 학습 플랫폼입니다. 현재 구조는 정적 HTML 프런트엔드, `/platform` 중심의 새 API, `backend` 레거시 학습 엔진 브리지, MySQL/Redis 기반 저장소가 함께 동작하는 하이브리드 형태입니다.
 
-- `run_server.py`
-  - 전체 서버 진입점입니다.
-- `server_runtime`
-  - 루트 FastAPI 셸입니다.
-  - `/health`, `/admin.html`, `/api/admin/*`, 페이지 렌더링, 레거시 `/api` 안내 경로를 담당합니다.
-- `app`
-  - `/platform`에 mount 되는 메인 백엔드입니다.
-  - 인증, 학습 모드, 문제/제출, 리포트, 복습 큐, 사용자 설정을 담당합니다.
+## 현재 구조
 
-핵심 요청 흐름은 `run_server.py -> server_runtime.webapp -> /platform(app.main)` 입니다.
+- 진입점: `run_server.py`
+- 루트 앱: `server_runtime.webapp`
+- 새 API: `app.main` 이 `/platform` 으로 mount
+- 레거시 호환: `/api/*` 일부는 `410 Gone` 으로 `/platform/*` 경로를 안내
+- 프런트엔드: `frontend/desktop/*.html`, `frontend/mobile/*.html`, `frontend/shared/js/*`
+- 관리자 페이지: `/admin.html`
 
-## 아키텍처 요약
+실제 요청 흐름은 아래와 같습니다.
 
-- `/platform`
-  - 현재의 주 공개 API입니다.
-  - MySQL 기반 사용자/문제/제출/리포트 데이터를 관리합니다.
-  - Redis 기반 큐와 작업 상태를 사용합니다.
-- `/api`
-  - 페이지/헬스/관리 셸과 레거시 호환 계층입니다.
-  - 학습 관련 다수 경로는 `410 Gone`으로 새 `/platform` 경로를 안내합니다.
-- `backend`
-  - 기존 JSONL 기반 학습 엔진과 문제 생성 로직이 남아 있습니다.
-  - `app.services.platform_public_bridge`가 이 계층을 호출하고 결과를 플랫폼 DB에 이중 저장합니다.
+`run_server.py -> server_runtime.webapp -> /platform(app.main)`
 
-## 프런트 구조
+## 현재 학습 모드
 
-- 사용자 페이지
-  - `frontend/desktop/*.html`
-  - `frontend/mobile/*.html`
-  - `server_runtime/routes/pages.py`가 User-Agent를 보고 desktop/mobile variant를 선택합니다.
-- 관리자 페이지
-  - `frontend/app/admin.html`
-  - responsive 단일 템플릿으로 렌더링됩니다.
-- 공용 자산
-  - `frontend/shared/css/*`
-  - `frontend/shared/js/*`
+현재 활성 모드는 10개입니다.
 
-정적 자산은 응답 직전에 `?v=` 버전 쿼리가 자동 주입됩니다. 사용자 페이지 응답에는 `Vary: User-Agent`가 설정됩니다.
+- `analysis`
+- `codeblock`
+- `arrange`
+- `codecalc`
+- `auditor`
+- `refactoring-choice`
+- `code-blame`
+- `single-file-analysis`
+- `multi-file-analysis`
+- `fullstack-analysis`
 
-## 데이터 저장소
+`context-inference` 관련 백엔드 코드는 남아 있지만, 현재 사용자 노출 모드에는 포함되지 않습니다.
 
-- MySQL
-  - 플랫폼 사용자, 설정, 문제, 제출, AI 분석, 리포트, 복습 큐, 운영 이벤트를 저장합니다.
-- Redis
-  - `rq` 큐 모드에서 분석 작업과 고급 학습 모드 제출 작업을 처리합니다.
-- JSONL
-  - 레거시 사용자 프로필, 학습 이력, 일부 런타임 상태를 저장합니다.
-  - 현재는 브리지/호환 계층으로 유지됩니다.
+## 지원 언어
 
-## 빠른 시작
+현재 공용 언어 카탈로그의 canonical ID는 아래 10개입니다.
+
+- `python`
+- `javascript`
+- `typescript`
+- `c`
+- `java`
+- `cpp`
+- `csharp`
+- `go`
+- `rust`
+- `php`
+
+허용 alias는 아래처럼 canonical ID로 정규화됩니다.
+
+- `py` -> `python`
+- `js` -> `javascript`
+- `ts` -> `typescript`
+- `c++` -> `cpp`
+- `cs`, `c#` -> `csharp`
+
+## 실행 방법
 
 ### 1. 환경 준비
 
@@ -60,12 +64,12 @@ pip install -r requirements.txt
 copy .env.example .env
 ```
 
-필수 시작 조건:
+최소 필수값:
 
 - `DB_PASSWORD`
 - `JWT_SECRET`
 
-`JWT_SECRET`는 최소 32자여야 합니다.
+`JWT_SECRET` 는 32자 이상이어야 합니다.
 
 ### 2. 기본 개발 실행
 
@@ -75,39 +79,18 @@ python run_server.py
 
 기본 동작:
 
-- `docker compose`를 백그라운드로 실행합니다.
-- `docker-compose.yml` + `docker-compose.dev.yml` + `docker-compose.docker-socket.yml` 조합을 사용합니다.
-- `mysql`, `redis`, `api`, `worker` 4개 서비스를 기동합니다.
-- readiness를 기다린 뒤 `/admin.html`을 브라우저로 엽니다.
-- Docker socket mount가 기본 활성화되어 관리자 종료 기능을 사용할 수 있습니다.
+- `docker compose` 개발 스택을 백그라운드로 실행합니다.
+- 기본 대상 서비스는 `mysql`, `redis`, `api`, `worker`, `worker-follow-up` 입니다.
+- 준비가 끝나면 `/admin.html` 을 엽니다.
+- Docker socket mount 는 기본 활성화입니다.
 
-개발용에서 Docker socket을 끄려면:
+자주 쓰는 옵션:
 
 ```bash
+python run_server.py --foreground
+python run_server.py --no-open-admin
 python run_server.py --without-docker-socket
 ```
-
-주의:
-
-- `ANALYSIS_QUEUE_MODE=rq`를 사용할 때는 `api`뿐 아니라 `worker`에도 AI 관련 환경변수(`GOOGLE_API_KEY`, `GOOGLE_API_KEY_FILE`, `GOOGLE_MODEL` 등)가 같이 전달되어야 합니다.
-- 그렇지 않으면 고급 분석/고급 제출 채점이 큐에서 기본 fallback 로직으로 처리되어 실제 AI 피드백이 나오지 않습니다.
-- 게스트/대시보드 초기화에서 `user_learning_goals` 기본 행은 여러 API가 동시에 요청돼도 중복 INSERT로 깨지지 않도록 `get_or_create + IntegrityError rollback` 패턴으로 유지해야 합니다.
-
-브라우저 자동 오픈을 끄려면:
-
-```bash
-python run_server.py --no-open-admin
-```
-
-```env
-ENABLE_HTTPS=true
-TLS_CERTS_DIR=certs
-HTTPS_BIND_PORT=8443
-HTTPS_PUBLIC_PORT=443
-HTTP_REDIRECT_PORT=8000
-```
-
-HTTPS Compose를 켜면 `80 -> 8000`은 HTTP to HTTPS redirect, `443 -> 8443`은 TLS 앱 서버로 동작합니다. 기본 인증서 경로는 `certs/fullchain.pem`, `certs/privkey.pem` 입니다.
 
 ### 3. 운영형 Compose 실행
 
@@ -115,17 +98,7 @@ HTTPS Compose를 켜면 `80 -> 8000`은 HTTP to HTTPS redirect, `443 -> 8443`은
 python run_server.py --compose-mode ops --with-docker-socket
 ```
 
-운영형 특징:
-
-- `docker-compose.yml` + `docker-compose.ops.yml` 조합을 사용합니다.
-- `api`와 `worker`는 read-only root filesystem + `tmpfs`로 실행됩니다.
-- 개발용 소스 바인드 마운트가 제거됩니다.
-
-운영형에서 관리자 종료 기능을 끄려면:
-
-```bash
-python run_server.py --compose-mode ops --without-docker-socket
-```
+운영형 스택은 `docker-compose.ops.yml` 을 사용하고, `api`, `worker`, `worker-follow-up` 을 read-only root filesystem + `tmpfs` 형태로 실행합니다.
 
 ### 4. 로컬 uvicorn 실행
 
@@ -134,122 +107,70 @@ alembic upgrade head
 python run_server.py --local --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-```bash
-ENABLE_HTTPS=true TLS_CERTS_DIR=certs python run_server.py --local --host 127.0.0.1 --workers 1
-```
+로컬 모드에서는 MySQL/Redis 를 별도로 준비해야 합니다.
 
-로컬 모드 주의사항:
+참고:
 
-- MySQL/Redis는 별도로 준비해야 합니다.
-- 컨테이너와 달리 Alembic 마이그레이션을 수동 적용해야 합니다.
-- `.env.example` 기준 기본 큐 모드는 `inline`입니다.
+- `server_runtime/launcher.py` 의 로컬 기본 worker 값은 `16` 입니다.
+- 문서 예시는 개발 재현성과 로그 확인 편의를 위해 `--workers 1` 기준으로 적었습니다.
 
-### 5. 컨테이너 실행 시 마이그레이션
+## 인증
 
-컨테이너 모드에서는 `entrypoint.sh`가 다음 순서로 자동 처리합니다.
+기본 활성 인증:
 
-1. MySQL 대기
-2. `alembic upgrade head`
-3. `python -m server_runtime.runtime_server`
+- Google OAuth: `GET /platform/auth/google/start`, `GET /platform/auth/google/callback`
+- 게스트 로그인: `POST /platform/auth/guest`
+- 로그아웃: `POST /platform/auth/logout`
 
-## 인증과 세션
-
-### 기본 제공 인증
-
-- Google OAuth
-  - 시작: `GET /platform/auth/google/start`
-  - 콜백: `GET /platform/auth/google/callback`
-- 게스트 로그인
-  - `POST /platform/auth/guest`
-  - IP 기준 분당 12회 rate limit
-- 로그아웃
-  - `POST /platform/auth/logout`
-
-### 선택적 비밀번호 인증
-
-다음 경로는 기본 비활성입니다.
-
-- `POST /platform/auth/signup`
-- `POST /platform/auth/login`
-- `POST /platform/auth/refresh`
-
-활성화하려면 `.env`에 다음 값을 설정합니다.
+비밀번호 인증은 기본 비활성입니다. 아래 값을 켜야 사용 가능합니다.
 
 ```env
 ALLOW_PLATFORM_PASSWORD_AUTH=true
 ```
 
-### 세션 쿠키
+관련 경로:
 
-- 쿠키명: `code_learning_access`
-- 속성: `HttpOnly`, `SameSite=Lax`, `Path=/`
-- `APP_ENV`가 개발 계열이 아니면 `Secure=true`
+- `POST /platform/auth/signup`
+- `POST /platform/auth/login`
+- `POST /platform/auth/refresh`
 
-### Google OAuth 환경변수
+레거시 JWT/쿠키 호환은 점진적으로 축소 중입니다. 코드 기본값 기준으로 sid 없는 쿠키 호환은 꺼져 있으며, 필요 시 명시적으로만 활성화해야 합니다.
 
-- `GOOGLE_OAUTH_CLIENT_ID`
-- `GOOGLE_OAUTH_CLIENT_SECRET`
-- `GOOGLE_OAUTH_ALLOWED_REDIRECT_URIS`
-- `ENABLE_HTTPS=true` local direct TLS를 쓰면 `https://localhost:8443/platform/auth/google/callback` 도 허용 목록에 추가해야 합니다.
+## 큐와 스트리밍
 
-프록시 뒤에서 운영할 때는 다음 헤더가 올바르게 전달되어야 합니다.
+### 큐
 
-- `X-Forwarded-Proto`
-- `X-Forwarded-Host`
-- 필요 시 `X-Forwarded-Port`
+- 기본 `.env.example` 값은 `ANALYSIS_QUEUE_MODE=inline`
+- 제출 분석 큐는 `ANALYSIS_QUEUE_MODE` / `ANALYSIS_QUEUE_NAME`
+- 문제 생성 후속 저장 큐는 `PROBLEM_FOLLOW_UP_QUEUE_MODE` / `PROBLEM_FOLLOW_UP_QUEUE_NAME`
+- Compose 스택에서는 보통 Redis + `worker` + `worker-follow-up` 조합을 사용합니다.
 
-## 학습 모드
+아래 모드의 제출은 `rq` 모드에서 queued 응답을 반환할 수 있습니다.
 
-현재 제공 모드:
+- `auditor`
+- `refactoring-choice`
+- `code-blame`
+- `single-file-analysis`
+- `multi-file-analysis`
+- `fullstack-analysis`
 
-- 코드 분석 (`analysis`)
-- 코드 블록 (`codeblock`)
-- 코드 배치 (`arrange`)
-- 코드 계산 (`codecalc`)
-- 감사관 모드 (`auditor`)
-- 최적의 선택 (`refactoring-choice`)
-- 범인 찾기 (`code-blame`)
-- 단일 파일 분석 (`single-file-analysis`)
-- 멀티 파일 분석 (`multi-file-analysis`)
-- 풀스택 분석 (`fullstack-analysis`)
+상태 조회:
 
-`/platform`은 모든 모드의 문제 생성과 제출 경로를 제공합니다.
+```text
+GET /platform/mode-jobs/{job_id}
+```
 
-- `POST /platform/analysis/problem`
-- `POST /platform/analysis/submit`
-- `POST /platform/codeblock/problem`
-- `POST /platform/codeblock/submit`
-- `POST /platform/arrange/problem`
-- `POST /platform/arrange/submit`
-- `POST /platform/codecalc/problem`
-- `POST /platform/codecalc/submit`
-- `POST /platform/auditor/problem`
-- `POST /platform/auditor/submit`
-- `POST /platform/refactoring-choice/problem`
-- `POST /platform/refactoring-choice/submit`
-- `POST /platform/code-blame/problem`
-- `POST /platform/code-blame/submit`
-- `POST /platform/single-file-analysis/problem`
-- `POST /platform/single-file-analysis/submit`
-- `POST /platform/multi-file-analysis/problem`
-- `POST /platform/multi-file-analysis/submit`
-- `POST /platform/fullstack-analysis/problem`
-- `POST /platform/fullstack-analysis/submit`
+### 문제 생성 스트리밍
 
-고급 모드 제출(`auditor`, `refactoring-choice`, `code-blame`, `single-file-analysis`, `multi-file-analysis`, `fullstack-analysis`)은 `ANALYSIS_QUEUE_MODE=rq`일 때 queued 응답을 반환할 수 있습니다. 이 경우 상태 조회는 다음 경로를 사용합니다.
+- 대부분의 문제 생성은 SSE 상태 이벤트를 먼저 보내고, 최종 문제 본문은 마지막 `payload` 한 번으로 전달합니다.
+- 서버 상태 phase는 보통 `queued -> generating -> rendering -> persisting -> done` 순서입니다.
+- 현재 구조는 “토큰 단위 본문 스트리밍”이 아니라 “상태 스트리밍 + 최종 payload 전달”에 가깝습니다.
+- 스트림 성공 판정은 `payload` 자체가 아니라 마지막 `done` 이벤트의 `persisted=true` 까지 포함합니다.
+- `arrange` 는 의도적으로 가짜 스트리밍 UI를 사용합니다.
 
-- `GET /platform/mode-jobs/{job_id}`
-- 프런트엔드에서 queued 응답을 최종 채점 결과로 바로 렌더링하면 AI 피드백이 비어 보일 수 있으므로, `jobId`로 완료 상태를 polling한 뒤 `result.feedback`를 표시해야 합니다.
+## 자주 쓰는 공개 경로
 
-문제 생성 스트리밍 참고:
-
-- 대부분의 모드는 SSE를 우선 사용하고, 실패 시 JSON 요청으로 fallback합니다.
-- SSE에서는 `queued`/`generating` 같은 상태 이벤트가 먼저 도착하고, 실제 문제 본문은 생성 완료 뒤 최종 `payload` 1회로 전달됩니다.
-- `arrange` 모드는 의도적으로 서버 본문 스트리밍 대신 클라이언트 애니메이션 기반 가짜 스트리밍을 사용합니다.
-
-## 주요 공개 경로
-
-### 공통 / 사용자
+### 공통
 
 - `GET /health`
 - `GET /platform/health`
@@ -261,14 +182,32 @@ ALLOW_PLATFORM_PASSWORD_AUTH=true
 - `GET /platform/me/goal`
 - `PUT /platform/me/goal`
 - `GET /platform/home`
+
+추가 참고:
+
+- `/platform/profile` 은 런타임 이력과 DB 제출 이력을 합산한 누적 통계를 반환합니다.
+- `/platform/home` 은 streak, daily goal, review queue, 추천 모드, 최신 리포트 카드 데이터를 함께 제공합니다.
+- `/platform/learning/history` 는 `history`, `total`, `hasMore`, `limit` 을 포함한 페이지형 응답입니다.
+
+### 리포트
+
 - `GET /platform/report`
 - `POST /platform/reports/milestone`
+- `GET /platform/reports/latest`
+- `GET /platform/reports/{report_id}/pdf`
+
+프로필 페이지는 `GET /platform/reports/latest` 를 이용해 최신 리포트 카드와 PDF 다운로드 버튼을 구성합니다.
+
+### 학습 이력 / 복습
+
 - `GET /platform/learning/history`
 - `GET /platform/learning/memory`
 - `GET /platform/learning/review-queue`
 - `GET /platform/review-queue/{item_id}/resume`
 
-### 문제 / 제출 / 분석
+고급 분석 3종 이력은 프로필의 오답 노트에서 읽기 전용 workbench 형태로 다시 열 수 있습니다.
+
+### 제출 / 분석
 
 - `GET /platform/problems`
 - `GET /platform/problems/{problem_id}`
@@ -277,67 +216,50 @@ ALLOW_PLATFORM_PASSWORD_AUTH=true
 - `GET /platform/submissions/{submission_id}/status`
 - `GET /platform/submissions/{submission_id}/analyses`
 
-### 관리자
-
-- `GET /api/admin/metrics`
-- `POST /api/admin/shutdown`
-
 ## 레거시 `/api` 경로
 
-`/api`는 현재도 다음 역할을 가집니다.
+레거시 학습 경로 대부분은 더 이상 주 경로가 아닙니다. 대표 경로들은 `410 Gone` 과 함께 새 `/platform` 경로를 응답합니다.
 
-- `/admin.html`과 관리자 API
-- `/health`
-- 페이지 렌더링 셸
-- 일부 레거시 인증 호환 경로
+인증 레거시 경로 매핑 예시:
 
-하지만 학습 관련 기존 공개 계약은 더 이상 주 사용 경로가 아닙니다. 예를 들어 다음 경로들은 `410 Gone`으로 `/platform` 새 경로를 안내합니다.
+- `/api/auth/register` -> `/platform/auth/signup`
+- `/api/auth/login` -> `/platform/auth/login`
+- `/api/auth/guest/start` -> `/platform/auth/guest`
 
-- `/api/profile`
-- `/api/languages`
-- `/api/report`
-- `/api/diagnostics/start`
-- `/api/problem/submit`
-- `/api/code-block/problem`
-- `/api/code-arrange/problem`
-- `/api/code-calc/problem`
-- `/api/auditor/problem`
-- `/api/refactoring-choice/problem`
-- `/api/code-blame/problem`
+기타 예시:
 
-`/api/auth/*` 경로는 런타임 셸 호환 때문에 일부 남아 있지만, 문서상 주 인증 경로는 `/platform/auth/*`를 기준으로 봐야 합니다.
+- `/api/learning/memory` -> `/platform/learning/memory`
+
+예외적으로 아직 남아 있는 레거시 조회 경로도 있습니다.
+
+- `GET /api/tracks`
 
 ## 테스트
 
-### 전체 Python 테스트
+전체 Python 테스트:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-### 문서/계약 관련 핵심 테스트
-
-```bash
-python -m unittest tests.test_mode_api_platform_parity tests.test_auth_unification tests.test_pages_template_variant tests.test_launcher_defaults -v
-```
-
-### JS 문법 확인
-
-```bash
-Get-ChildItem frontend/shared/js/*.js | ForEach-Object { node --check $_.FullName }
-```
-
-### 브라우저 스모크 테스트
+Playwright 스모크:
 
 ```bash
 npm install
 npx playwright install chromium
-npx playwright test
+set CI=1
+set ENABLE_HTTPS=0
+npx playwright test tests/e2e/smoke.spec.mjs
 ```
+
+2026-03-21 기준 최신 검증 스냅샷:
+
+- Python `unittest`: `269/269` 통과
+- Playwright smoke: `54/54` 통과
 
 ## 문서
 
 - [아키텍처](./docs/architecture.md)
-- [환경변수](./docs/environment.md)
-- [운영 런북](./docs/runbook.md)
-- [트러블슈팅](./docs/troubleshooting.md)
+- [환경 변수](./docs/environment.md)
+- [운영 가이드](./docs/runbook.md)
+- [문제 해결](./docs/troubleshooting.md)

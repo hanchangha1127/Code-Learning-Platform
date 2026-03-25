@@ -43,7 +43,7 @@ class LearningContinuityApiTests(unittest.TestCase):
             "displayName": "Tester",
             "todayDate": "2026-03-06",
             "streakDays": 3,
-            "skillLevel": "beginner",
+            "skillLevel": "level1",
             "dailyGoal": {
                 "date": "2026-03-06",
                 "targetSessions": 12,
@@ -105,7 +105,7 @@ class LearningContinuityApiTests(unittest.TestCase):
         }
         with (
             patch("app.api.routes.public_learning.platform_public_bridge.get_public_history", return_value=[]) as mock_history,
-            patch("app.api.routes.public_learning.platform_public_bridge.get_public_profile", return_value={"skillLevel": "beginner"}) as mock_profile,
+            patch("app.api.routes.public_learning.platform_public_bridge.get_public_profile", return_value={"skillLevel": "level1"}) as mock_profile,
             patch("app.api.routes.public_learning.platform_public_bridge.get_public_me", return_value={"displayName": "Tester"}),
             patch("app.api.routes.public_learning.build_learning_home", return_value=expected),
         ):
@@ -114,7 +114,7 @@ class LearningContinuityApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), expected)
         mock_history.assert_called_once_with("continuity-user", limit=200)
-        mock_profile.assert_called_once_with("continuity-user", history=[])
+        mock_profile.assert_called_once_with("continuity-user")
 
     def test_platform_learning_history_returns_metadata_payload(self) -> None:
         expected = {

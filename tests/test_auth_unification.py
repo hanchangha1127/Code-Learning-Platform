@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
-from fastapi import Response
+from fastapi import HTTPException, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
 
@@ -20,6 +20,7 @@ from app.api.security_deps import get_current_user
 from app.core.config import Settings
 from app.core.security import create_access_token
 from app.db.models import UserSession, UserStatus
+import server_runtime.deps as runtime_deps
 import server_runtime.routes.auth as runtime_auth_routes
 from server_runtime.context import decode_state, encode_state, oauth_success_page
 from server_runtime.webapp import _credentialed_cors_origins, _resolve_moved_api_path, app
@@ -305,6 +306,106 @@ class UnifiedAuthTests(unittest.TestCase):
         )
 
         self.assertEqual(runtime_auth_routes._guest_client_id(request), "198.51.100.77")
+
+    def test_guest_client_id_ignores_private_proxy_source_by_default(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="10.0.0.5"),
+            headers={"x-forwarded-for": "198.51.100.77, 10.0.0.5"},
+        )
+
+        self.assertEqual(runtime_auth_routes._guest_client_id(request), "10.0.0.5")
+
+    def test_guest_client_id_uses_forwarded_for_when_private_proxy_cidr_is_configured(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="10.0.0.5"),
+            headers={"x-forwarded-for": "198.51.100.77, 10.0.0.5"},
+        )
+
+        with patch.dict(os.environ, {"CODE_PLATFORM_TRUSTED_PROXY_CIDRS": "10.0.0.0/8"}):
+            self.assertEqual(runtime_auth_routes._guest_client_id(request), "198.51.100.77")
+
+    def test_runtime_deps_reject_invalid_bearer_even_when_cookie_is_present(self):
+        request = SimpleNamespace(
+            cookies={"code_learning_access": "cookie-token"},
+            client=SimpleNamespace(host="127.0.0.1"),
+            headers={"user-agent": "pytest-agent"},
+        )
+        response = Response()
+
+        with patch.object(runtime_deps, "_resolve_username_from_jwt", return_value="cookie-user"):
+            with self.assertRaises(HTTPException) as exc_info:
+                runtime_deps.get_current_username(
+                    request=request,
+                    response=response,
+                    authorization="Basic not-bearer",
+                )
+
+        self.assertEqual(exc_info.exception.status_code, 401)
+
+    def test_runtime_deps_prefers_valid_bearer_over_cookie(self):
+        request = SimpleNamespace(
+            cookies={"code_learning_access": "cookie-token"},
+            client=SimpleNamespace(host="127.0.0.1"),
+            headers={"user-agent": "pytest-agent"},
+        )
+        response = Response()
+
+        def resolve_username(token: str) -> str | None:
+            return {
+                "bearer-token": "bearer-user",
+                "cookie-token": "cookie-user",
+            }.get(token)
+
+        with (
+            patch.object(runtime_deps, "_resolve_username_from_jwt", side_effect=resolve_username),
+            patch.object(runtime_deps, "_legacy_auth_allowed_now", return_value=False),
+            patch.object(runtime_deps.admin_metrics, "record_user_activity") as mock_activity,
+        ):
+            username = runtime_deps.get_current_username(
+                request=request,
+                response=response,
+                authorization="Bearer bearer-token",
+            )
+
+        self.assertEqual(username, "bearer-user")
+        mock_activity.assert_called_once_with(
+            username="bearer-user",
+            client_id="127.0.0.1|pytest-agent",
+        )
+
+    def test_runtime_deps_rejects_invalid_bearer_even_when_cookie_is_valid(self):
+        request = SimpleNamespace(
+            cookies={"code_learning_access": "cookie-token"},
+            client=SimpleNamespace(host="127.0.0.1"),
+            headers={"user-agent": "pytest-agent"},
+        )
+        response = Response()
+
+        def resolve_username(token: str) -> str | None:
+            return {
+                "cookie-token": "cookie-user",
+            }.get(token)
+
+        with (
+            patch.object(runtime_deps, "_resolve_username_from_jwt", side_effect=resolve_username),
+            patch.object(runtime_deps, "_legacy_auth_allowed_now", return_value=False),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                runtime_deps.get_current_username(
+                    request=request,
+                    response=response,
+                    authorization="Bearer invalid-token",
+                )
+
+        self.assertEqual(exc_info.exception.status_code, 401)
+
+    def test_guest_client_id_ignores_forwarded_for_from_private_non_loopback_source_by_default(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="10.0.0.9"),
+            headers={"x-forwarded-for": "198.51.100.77, 10.0.0.9"},
+        )
+
+        self.assertEqual(runtime_auth_routes._guest_client_id(request), "10.0.0.9")
 
     def test_platform_password_auth_routes_are_disabled_by_default(self):
         response = self.client.post(

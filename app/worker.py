@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import os
 import time
 
 from redis import Redis
@@ -33,9 +34,30 @@ def _wait_for_redis(timeout_seconds: int = 120) -> Redis:
             time.sleep(2)
 
 
+def _worker_queue_names() -> list[str]:
+    configured = os.getenv("RQ_WORKER_QUEUES")
+    if configured:
+        candidates = [item.strip() for item in configured.split(",") if item.strip()]
+    else:
+        candidates: list[str] = []
+        if (settings.PROBLEM_FOLLOW_UP_QUEUE_MODE or "inline").lower() == "rq":
+            candidates.append(str(settings.PROBLEM_FOLLOW_UP_QUEUE_NAME or "").strip())
+        if (settings.ANALYSIS_QUEUE_MODE or "inline").lower() == "rq":
+            candidates.append(str(settings.ANALYSIS_QUEUE_NAME or "").strip())
+
+    queue_names: list[str] = []
+    seen: set[str] = set()
+    for name in candidates:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        queue_names.append(name)
+    return queue_names or [settings.ANALYSIS_QUEUE_NAME]
+
+
 def main() -> None:
     conn = _wait_for_redis()
-    worker = Worker([settings.ANALYSIS_QUEUE_NAME], connection=conn)
+    worker = Worker(_worker_queue_names(), connection=conn)
     worker.work(with_scheduler=False)
 
 

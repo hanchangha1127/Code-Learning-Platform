@@ -352,37 +352,41 @@ async function loadProblem() {
   state.submissionPhase = "idle";
   state.latestResult = null;
   state.submitPending = false;
+  state.currentProblem = null;
+  state.activeFileId = null;
+  renderEmptyState();
+  renderStatusCards(false);
   clearFeedback();
   updateSubmitButtonState();
 
   try {
-    let payload = null;
-    let streamed = false;
-    let allowJsonFallback = false;
+    const transport = await streamClient.loadProblemTransport({
+      streamClient,
+      streamRequest: () => loadProblemViaStream(config.apiPath),
+      jsonRequest: async () => {
+        setLoadingState(elements.loadButton, true, "臾몄젣 遺덈윭?ㅻ뒗 以?..");
+        return apiRequest(config.apiPath, {
+          method: "POST",
+          body: {
+            language: state.selectedLanguage,
+            difficulty: state.selectedDifficulty,
+          },
+        });
+      },
+      shouldFallback: shouldFallbackToJson,
+    });
+    const { payload, streamed, usedJsonFallback } = transport;
 
-    try {
-      payload = await loadProblemViaStream(config.apiPath);
-      streamed = Boolean(payload);
-    } catch (streamError) {
-      allowJsonFallback = shouldFallbackToJson(streamError);
-      if (!allowJsonFallback) {
-        throw streamError;
-      }
-    }
-
-    if (!payload && !allowJsonFallback) {
-      allowJsonFallback = !streamClient || typeof streamClient.streamProblem !== "function";
-    }
-
-    if (!payload && allowJsonFallback) {
+    if (payload === undefined && usedJsonFallback === null) {
       setLoadingState(elements.loadButton, true, "문제 불러오는 중...");
-      payload = await apiRequest(config.apiPath, {
+      const ignoredPayload = await apiRequest(config.apiPath, {
         method: "POST",
         body: {
           language: state.selectedLanguage,
           difficulty: state.selectedDifficulty,
         },
       });
+      void ignoredPayload;
     }
 
     const problem = normalizeProblemPayload(payload);
@@ -397,6 +401,8 @@ async function loadProblem() {
     clearFeedback();
 
     if (streamed) {
+      renderProblem(problem);
+    } else if (usedJsonFallback) {
       await animateProblemRender(problem);
     } else {
       renderProblem(problem);
@@ -414,18 +420,17 @@ async function loadProblem() {
   } catch (error) {
     console.error(error);
     state.submitPending = false;
+    state.currentProblem = null;
+    state.activeFileId = null;
     if (elements.modeState) {
       elements.modeState.textContent = "문제 생성 실패";
     }
     if (elements.loadStatus) {
       elements.loadStatus.textContent = error.message || "문제를 불러오지 못했습니다.";
     }
-    if (!state.currentProblem) {
-      renderEmptyState();
-    } else {
-      renderStatusCards(true);
-      updateSubmitButtonState();
-    }
+    renderEmptyState();
+    renderStatusCards(false);
+    updateSubmitButtonState();
     showToast(error.message || "문제를 불러오지 못했습니다.");
   } finally {
     setLoadingState(elements.loadButton, false);
@@ -462,6 +467,10 @@ async function loadProblemViaStream(path) {
           setLoadingState(elements.loadButton, true, "문제 표시 중...");
         }
       },
+      showPartialPreview: false,
+      onPreview: (draft) => {
+        applyStreamingProblemPreview(draft);
+      },
       signal: state.problemStreamController.signal,
     });
   } finally {
@@ -474,6 +483,35 @@ function shouldFallbackToJson(error) {
     return false;
   }
   return Boolean(streamClient.shouldFallbackToJson(error));
+}
+
+function getProblemStreamPreviewContainer() {
+  return elements.taskPrompt?.closest(".advanced-task-panel") || elements.problemTitle?.closest(".advanced-task-panel") || null;
+}
+
+function applyStreamingProblemPreview(draft) {
+  if (!draft || typeof draft !== "object") {
+    return;
+  }
+  if (typeof draft.title === "string" && draft.title.trim() && elements.problemTitle) {
+    elements.problemTitle.textContent = draft.title.trim();
+  }
+  if (typeof draft.prompt === "string" && draft.prompt.trim() && elements.taskPrompt) {
+    elements.taskPrompt.textContent = draft.prompt.trim();
+  }
+  if (Array.isArray(draft.checklist)) {
+    renderChecklist(draft.checklist);
+  }
+  if (Array.isArray(draft.files) && draft.files.length) {
+    const previewFiles = draft.files.map((file, index) => normalizeFile(file, index)).filter(Boolean);
+    if (previewFiles.length) {
+      renderFileCollections(previewFiles);
+      const activeFile = getActiveFile(previewFiles);
+      renderActiveFileMeta(activeFile, previewFiles.length);
+      void renderCodeView(activeFile?.content || "", { animate: false });
+      setActiveButtons(activeFile?.id || "");
+    }
+  }
 }
 
 function normalizeProblemPayload(payload) {

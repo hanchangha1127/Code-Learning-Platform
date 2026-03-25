@@ -70,7 +70,16 @@ class _FakeDB:
         db = self
 
         class _FakeQuery:
+            def options(self, *args, **kwargs):
+                return self
+
             def filter(self, *args, **kwargs):
+                return self
+
+            def order_by(self, *args, **kwargs):
+                return self
+
+            def limit(self, *args, **kwargs):
                 return self
 
             def all(self):
@@ -211,16 +220,15 @@ class LearningSolutionReportDetailTests(unittest.TestCase):
             return _solution_plan()
 
         with patch.object(report_service, "_load_recent_submissions", return_value=[submission]), patch.object(
-            report_service, "_load_recent_analyses", return_value=[analysis]
-        ), patch.object(report_service, "_load_problem_stats_map", return_value=stats_by_problem), patch.object(
-            report_service._learning_report_ai,
-            "generate_learning_solution_report",
-            side_effect=_capture_generate,
-        ):
+            report_service, "_load_today_submissions_kst", return_value=[submission]
+        ), patch.object(report_service, "_load_recent_analyses", return_value=[analysis]), patch.object(
+            report_service, "_load_problem_stats_map", return_value=stats_by_problem
+        ), patch.object(report_service._learning_report_ai, "generate_learning_solution_report", side_effect=_capture_generate):
             result = report_service.create_milestone_report(fake_db, user_id=1, problem_count=10)
 
         self.assertEqual(result["reportId"], 901)
         self.assertIn("reportBrief", result)
+        self.assertTrue(str(result["createdAt"]).endswith("+09:00"))
         self.assertEqual(result["pdfDownloadUrl"], "/platform/reports/901/pdf")
         detail_records = captured.get("detail_records")
         self.assertIsInstance(detail_records, list)
@@ -231,11 +239,96 @@ class LearningSolutionReportDetailTests(unittest.TestCase):
         self.assertEqual(metric_snapshot["detailRecordCount"], 1)
         self.assertEqual(metric_snapshot["topWrongTypes"][0]["type"], "logic_error")
         self.assertEqual(metric_snapshot["repeatedWrongTypes"][0]["label"], "logic_error")
+        self.assertEqual(metric_snapshot["chartOutcomeWindow"]["label"], "최근 1회")
+        self.assertEqual(metric_snapshot["chartScoreTrend"]["records"][0]["modeLabel"], "코드 분석")
+        self.assertEqual(metric_snapshot["chartWrongTypes"]["label"], "최근 오답 1회")
         stored_report = fake_db.added[-1]
         self.assertTrue(stored_report.strengths)
-        self.assertTrue(stored_report.weaknesses)
         self.assertIn("learningEvidence", stored_report.stats)
         self.assertEqual([item.id for item in fake_db.deleted], [700])
+
+    def test_milestone_report_builds_chart_windows_for_recent_10_and_today_scope(self) -> None:
+        now = datetime(2026, 3, 16, 10, 0, tzinfo=timezone.utc)
+        today_submissions: list[Submission] = []
+        analyses: list[AIAnalysis] = []
+        stats_by_problem: dict[int, UserProblemStat] = {}
+        wrong_types = ["logic_error"] * 6 + ["boundary"] * 4 + ["syntax_error"] * 2
+
+        for index in range(12):
+            problem_id = 200 + index
+            problem = Problem(
+                id=problem_id,
+                external_id=f"prob-{problem_id}",
+                kind=ProblemKind.coding,
+                title=f"Problem {index + 1}",
+                description="Solve the task.",
+                difficulty=ProblemDifficulty.medium,
+                language="python",
+                starter_code="def solve(x):\n    pass",
+                problem_payload={"prompt": f"Prompt {index + 1}"},
+                answer_payload={},
+            )
+            status = SubmissionStatus.failed if index < 10 else SubmissionStatus.passed
+            submission = Submission(
+                id=1000 - index,
+                user_id=1,
+                problem_id=problem_id,
+                language="python",
+                code="def solve(x):\n    return x",
+                submission_payload={"durationSeconds": 30 + index},
+                status=status,
+                score=45 + index,
+                created_at=now,
+            )
+            submission.problem = problem
+            today_submissions.append(submission)
+            analyses.append(
+                AIAnalysis(
+                    id=5000 - index,
+                    user_id=1,
+                    submission_id=int(submission.id),
+                    analysis_type=AnalysisType.review,
+                    result_summary=wrong_types[index] if index < len(wrong_types) else "passed",
+                    result_detail="detail",
+                    result_payload={},
+                    created_at=now,
+                )
+            )
+            stats_by_problem[problem_id] = UserProblemStat(
+                user_id=1,
+                problem_id=problem_id,
+                attempts=1,
+                wrong_answer_types={
+                    "total_wrong": 1 if status == SubmissionStatus.failed else 0,
+                    "types": {wrong_types[index]: 1} if status == SubmissionStatus.failed else {},
+                    "last_wrong_type": wrong_types[index] if status == SubmissionStatus.failed else None,
+                    "last_wrong_at": now.isoformat(),
+                },
+                last_submitted_at=now,
+            )
+
+        fake_db = _FakeDB()
+        captured: dict[str, object] = {}
+
+        def _capture_generate(**kwargs):
+            captured.update(kwargs)
+            return _solution_plan()
+
+        with patch.object(report_service, "_load_recent_submissions", return_value=today_submissions), patch.object(
+            report_service, "_load_today_submissions_kst", return_value=today_submissions
+        ), patch.object(report_service, "_load_recent_analyses", return_value=analyses), patch.object(
+            report_service, "_load_problem_stats_map", return_value=stats_by_problem
+        ), patch.object(report_service._learning_report_ai, "generate_learning_solution_report", side_effect=_capture_generate):
+            report_service.create_milestone_report(fake_db, user_id=1, problem_count=10)
+
+        metric_snapshot = captured.get("metric_snapshot")
+        self.assertEqual(metric_snapshot["chartOutcomeWindow"]["label"], "오늘 학습 전체 12회")
+        self.assertEqual(metric_snapshot["chartOutcomeWindow"]["counts"]["failed"], 10)
+        self.assertEqual(metric_snapshot["chartOutcomeWindow"]["counts"]["passed"], 2)
+        self.assertEqual(len(metric_snapshot["chartScoreTrend"]["records"]), 10)
+        self.assertEqual(metric_snapshot["chartWrongTypes"]["label"], "최근 오답 10회")
+        self.assertEqual(metric_snapshot["chartWrongTypes"]["rows"][0]["label"], "logic_error")
+        self.assertEqual(metric_snapshot["chartWrongTypes"]["rows"][0]["count"], 6)
 
     def test_milestone_report_detail_records_keep_advanced_analysis_mode(self) -> None:
         now = datetime(2026, 3, 16, 10, 0, tzinfo=timezone.utc)

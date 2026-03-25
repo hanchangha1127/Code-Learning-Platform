@@ -408,6 +408,14 @@ class AdminShutdownTests(unittest.TestCase):
 
         self.assertEqual(admin_api._admin_client_id(request), "203.0.113.10")
 
+    def test_admin_client_id_ignores_private_proxy_source_by_default(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="10.0.0.5"),
+            headers={"x-forwarded-for": "198.51.100.10, 10.0.0.5"},
+        )
+
+        self.assertEqual(admin_api._admin_client_id(request), "10.0.0.5")
+
     def test_admin_client_id_uses_only_client_ip_for_rate_limit_bucket(self):
         request = SimpleNamespace(
             client=SimpleNamespace(host="203.0.113.10"),
@@ -418,6 +426,14 @@ class AdminShutdownTests(unittest.TestCase):
             admin_api._admin_client_id(request),
             "203.0.113.10",
         )
+
+    def test_admin_client_id_ignores_forwarded_for_from_private_non_loopback_source_by_default(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="10.0.0.9"),
+            headers={"x-forwarded-for": "198.51.100.10, 10.0.0.9"},
+        )
+
+        self.assertEqual(admin_api._admin_client_id(request), "10.0.0.9")
 
 
 if __name__ == "__main__":

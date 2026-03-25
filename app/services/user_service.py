@@ -1,16 +1,16 @@
 from sqlalchemy.orm import Session
 
 from app.db.models import UserSettings, PreferredDifficulty
-from backend.content import LANGUAGES
+from backend.content import LANGUAGES, LANGUAGE_ALIASES, normalize_language_id
 
 DEFAULT_PREFERRED_LANGUAGE = "python"
-SUPPORTED_PREFERRED_LANGUAGES = frozenset(LANGUAGES)
+SUPPORTED_PREFERRED_LANGUAGES = frozenset({*LANGUAGES.keys(), *LANGUAGE_ALIASES.keys()})
 
 
 def get_valid_preferred_language(preferred_language: str | None) -> str | None:
-    value = str(preferred_language or "").strip().lower()
-    if value in SUPPORTED_PREFERRED_LANGUAGES:
-        return value
+    normalized = normalize_language_id(preferred_language)
+    if normalized in LANGUAGES:
+        return normalized
     return None
 
 

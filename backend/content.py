@@ -1,4 +1,4 @@
-﻿"""초기 로드 단계에서 사용하는 기본 학습 분류 정보."""
+"""초기 로드 단계에서 사용하는 기본 학습 분류 정보."""
 
 from __future__ import annotations
 
@@ -38,4 +38,46 @@ LANGUAGES: Dict[str, Dict[str, str]] = {
         "title": "자바",
         "description": "대규모 서비스와 기업 애플리케이션에서 널리 사용되는 객체지향 언어입니다.",
     },
+    "typescript": {
+        "title": "타입스크립트",
+        "description": "정적 타입을 통해 대규모 프런트엔드와 서버 코드를 더 안정적으로 다룰 수 있습니다.",
+    },
+    "cpp": {
+        "title": "C++",
+        "description": "성능과 추상화 균형이 중요한 시스템, 게임, 인프라 개발에 널리 쓰입니다.",
+    },
+    "csharp": {
+        "title": "C#",
+        "description": ".NET 생태계에서 서비스, 데스크톱, 게임 개발까지 폭넓게 활용됩니다.",
+    },
+    "go": {
+        "title": "Go",
+        "description": "간결한 문법과 강한 동시성 모델 덕분에 서버와 인프라 개발에 적합합니다.",
+    },
+    "rust": {
+        "title": "Rust",
+        "description": "메모리 안전성과 성능을 함께 요구하는 시스템 프로그래밍에 강합니다.",
+    },
+    "php": {
+        "title": "PHP",
+        "description": "웹 백엔드와 CMS 생태계에서 여전히 널리 쓰이는 서버 스크립트 언어입니다.",
+    },
 }
+
+LANGUAGE_ALIASES: Dict[str, str] = {
+    "py": "python",
+    "js": "javascript",
+    "ts": "typescript",
+    "c++": "cpp",
+    "cs": "csharp",
+    "c#": "csharp",
+}
+
+
+def normalize_language_id(language_id: str | None) -> str | None:
+    value = str(language_id or "").strip().lower()
+    if not value:
+        return None
+    if value in LANGUAGES:
+        return value
+    return LANGUAGE_ALIASES.get(value)

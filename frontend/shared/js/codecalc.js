@@ -167,12 +167,40 @@ function getProblemStreamClient() {
   return window.CodeProblemStream || null;
 }
 
+function getProblemStreamPreviewContainer() {
+  return elements.code?.parentElement || elements.title?.closest(".calc-board") || null;
+}
+
 function shouldFallbackToJson(streamError) {
   const streamClient = getProblemStreamClient();
   if (!streamClient || typeof streamClient.shouldFallbackToJson !== "function") {
     return false;
   }
   return Boolean(streamClient.shouldFallbackToJson(streamError));
+}
+
+function renderCodeCalcProblem(problem) {
+  state.problemId = problem.problemId || null;
+  state.code = problem.code || "";
+  state.title = problem.title || "코드 계산 문제";
+  if (elements.code) {
+    elements.code.textContent = state.code || "// 코드 없음";
+  }
+  if (elements.title) {
+    elements.title.textContent = state.title;
+  }
+}
+
+function applyStreamingCodeCalcPreview(draft) {
+  if (!draft || typeof draft !== "object") {
+    return;
+  }
+  if (typeof draft.title === "string" && draft.title.trim() && elements.title) {
+    elements.title.textContent = draft.title.trim();
+  }
+  if (typeof draft.code === "string" && draft.code.length > 0 && elements.code) {
+    elements.code.textContent = draft.code;
+  }
 }
 
 
@@ -202,6 +230,10 @@ async function loadCodeCalcProblemViaStream() {
             elements.loadBtn.textContent = "문제 표시 중...";
           }
         }
+      },
+      showPartialPreview: false,
+      onPreview: (draft) => {
+        applyStreamingCodeCalcPreview(draft);
       },
       signal: state.problemStreamController.signal,
     });
@@ -249,63 +281,47 @@ async function handleLoadProblem() {
   setStatus("문제를 불러오는 중...");
   const originalText = elements.loadBtn?.textContent;
   state.isLoadingProblem = true;
+  resetBoard();
   updateControls();
   if (elements.loadBtn) {
     elements.loadBtn.classList.add("loading");
     elements.loadBtn.textContent = "불러오는 중...";
   }
 
-  resetBoard();
-  updateControls();
-
   try {
-    let data = null;
-    let streamed = false;
-    let usedJsonFallback = false;
-    let allowJsonFallback = false;
-
-    try {
-      data = await loadCodeCalcProblemViaStream();
-      streamed = Boolean(data);
-    } catch (streamError) {
-      allowJsonFallback = shouldFallbackToJson(streamError);
-      if (!allowJsonFallback) {
-        throw streamError;
-      }
-    }
-
-    if (!data && !allowJsonFallback) {
-      const streamClient = getProblemStreamClient();
-      allowJsonFallback = !streamClient || typeof streamClient.streamProblem !== "function";
-    }
-
-    if (!data && allowJsonFallback) {
-      setStatus("스트리밍 연결이 끊겨 일반 모드로 재시도 중...");
-      if (elements.loadBtn) {
-        elements.loadBtn.textContent = "일반 모드 재시도 중...";
-      }
-      data = await apiRequest("/platform/codecalc/problem", {
-        method: "POST",
-        body: {
-          language: state.selectedLanguage,
-          difficulty: getSavedDifficulty(),
-        },
-      });
-      usedJsonFallback = true;
-    }
+    const streamClient = getProblemStreamClient();
+    const { payload: data, streamed, usedJsonFallback } = await streamClient.loadProblemTransport({
+      streamClient,
+      streamRequest: loadCodeCalcProblemViaStream,
+      jsonRequest: async () => {
+        setStatus("스트리밍 연결이 끊겨 일반 모드로 재시도 중...");
+        if (elements.loadBtn) {
+          elements.loadBtn.textContent = "일반 모드 재시도 중...";
+        }
+        return apiRequest("/platform/codecalc/problem", {
+          method: "POST",
+          body: {
+            language: state.selectedLanguage,
+            difficulty: getSavedDifficulty(),
+          },
+        });
+      },
+      shouldFallback: shouldFallbackToJson,
+    });
     if (!data) {
       throw new Error("문제를 불러오지 못했습니다.");
     }
 
-    state.problemId = data.problemId;
+    state.problemId = data.problemId || null;
     state.code = data.code || "";
     state.title = data.title || "코드 계산 문제";
 
-    if (streamed || usedJsonFallback) {
+    if (streamed) {
+      renderCodeCalcProblem(data);
+    } else if (usedJsonFallback) {
       await animateCodeCalcProblem(data);
     } else {
-      if (elements.code) elements.code.textContent = state.code || "// 코드 없음";
-      if (elements.title) elements.title.textContent = state.title;
+      renderCodeCalcProblem(data);
     }
 
     if (elements.output) {
@@ -316,6 +332,7 @@ async function handleLoadProblem() {
     setStatus("출력값을 계산해 입력한 뒤 정답 확인을 눌러보세요.");
   } catch (err) {
     console.error(err);
+    resetBoard();
     setStatus(err.message || "문제를 불러오지 못했습니다.");
   } finally {
     state.isLoadingProblem = false;

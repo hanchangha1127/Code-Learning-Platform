@@ -4,17 +4,17 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.api.problem_streaming import (
+    _execute_stream_problem,
+    _stream_problem_response,
+    _wants_problem_stream,
+)
 from app.api.routes.platform_mode_queue import execute_platform_mode_submit
 from app.api.security_deps import get_current_user
 from app.db.models import User
 from app.schemas.auditor import AuditorProblemRequest, AuditorSubmitRequest
 from app.services import platform_public_bridge
 from app.services.platform_mode_observability import observe_platform_mode_operation
-from server_runtime.routes.learning import (
-    _execute_stream_problem,
-    _stream_problem_response,
-    _wants_problem_stream,
-)
 
 router = APIRouter()
 
@@ -48,7 +48,7 @@ def post_auditor_problem(
             if _wants_problem_stream(request):
                 return _stream_problem_response(
                     request=request,
-                    work=lambda emit_payload: _execute_stream_problem(
+                    work=lambda emit_payload, emit_partial: _execute_stream_problem(
                         "auditor_problem",
                         lambda: platform_public_bridge.request_mode_problem(
                             mode="auditor",
@@ -59,6 +59,7 @@ def post_auditor_problem(
                             db=None,
                             defer_persistence=True,
                             on_payload_ready=emit_payload,
+                            on_partial_ready=emit_partial,
                         ),
                     ),
                 )

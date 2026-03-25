@@ -8,25 +8,17 @@ import string
 import threading
 import time
 from datetime import timedelta
-from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import Response
 
+from app.core.proxy import extract_forwarded_client_ip
 from server_runtime.template_renderer import render_template_response
 
 DOCKER_SOCKET_PATH = Path("/var/run/docker.sock")
 logger = logging.getLogger(__name__)
-_TRUSTED_PROXY_NETWORKS = (
-    ip_network("127.0.0.0/8"),
-    ip_network("10.0.0.0/8"),
-    ip_network("172.16.0.0/12"),
-    ip_network("192.168.0.0/16"),
-    ip_network("::1/128"),
-    ip_network("fc00::/7"),
-)
 
 
 def _is_in_docker() -> bool:
@@ -150,28 +142,14 @@ def _local_shutdown_disabled_detail() -> str:
     )
 
 
-def _is_trusted_forwarded_for_source(host: str) -> bool:
-    normalized = str(host or "").strip()
-    if not normalized:
-        return False
-    if normalized.lower() == "localhost":
-        return True
-    try:
-        address = ip_address(normalized)
-    except ValueError:
-        return False
-    return any(address in network for network in _TRUSTED_PROXY_NETWORKS)
-
-
 def _admin_client_id(request: Request) -> str:
     client_host = request.client.host if request.client and request.client.host else ""
-    resolved_host = client_host or "unknown"
-    if _is_trusted_forwarded_for_source(client_host):
-        forwarded_for = (request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
-        real_ip = forwarded_for or (request.headers.get("x-real-ip") or "").strip()
-        if real_ip:
-            resolved_host = real_ip
-    return resolved_host
+    forwarded_host = extract_forwarded_client_ip(
+        client_host=client_host,
+        x_forwarded_for=request.headers.get("x-forwarded-for"),
+        x_real_ip=request.headers.get("x-real-ip"),
+    )
+    return forwarded_host or client_host or "unknown"
 
 
 def _get_admin_redis_connection():

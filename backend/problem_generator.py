@@ -7,11 +7,13 @@ import json
 import random
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from types import SimpleNamespace
+from typing import Any, Callable, Dict, Optional
 
 from google import genai
 from google.genai import types
 
+from backend.content import normalize_language_id
 from backend.config import get_settings
 from backend.admin_metrics import get_admin_metrics
 
@@ -46,25 +48,51 @@ def _extract_json_blob(text: str) -> str:
     return cleaned
 
 
+def _response_text(response: Any) -> str:
+    text = (getattr(response, "text", "") or "").strip()
+    if text:
+        return text
+    if not getattr(response, "candidates", None):
+        return ""
+
+    parts: list[str] = []
+    for candidate in response.candidates:  # type: ignore[attr-defined]
+        content = getattr(candidate, "content", None)
+        if isinstance(content, dict):
+            candidate_parts = content.get("parts", [])
+        else:
+            candidate_parts = getattr(content, "parts", []) or []
+        for part in candidate_parts:
+            if isinstance(part, dict):
+                parts.append(part.get("text", ""))
+            else:
+                parts.append(getattr(part, "text", ""))
+    return "\n".join(filter(None, parts)).strip()
+
+
 def _strip_comments(code: str, language_id: str) -> str:
     """Strip common comments from generated code.
 
     Supported languages:
     - python: '#' line comments
-    - javascript/java/c: '//' line comments and '/* ... */' block comments
+    - javascript/typescript/java/c/cpp/csharp/go/rust: '//' and '/* ... */'
+    - php: '//', '#', and '/* ... */'
     """
 
     if not code:
         return ""
 
-    language_id = (language_id or "").lower()
+    language_id = normalize_language_id(language_id) or (language_id or "").lower()
     line_comment_markers: tuple[str, ...] = ()
     block_comment: tuple[str, str] | None = None
 
     if language_id == "python":
         line_comment_markers = ("#",)
-    elif language_id in {"javascript", "java", "c"}:
+    elif language_id in {"javascript", "typescript", "java", "c", "cpp", "csharp", "go", "rust"}:
         line_comment_markers = ("//",)
+        block_comment = ("/*", "*/")
+    elif language_id == "php":
+        line_comment_markers = ("//", "#")
         block_comment = ("/*", "*/")
 
     i = 0
@@ -152,6 +180,47 @@ def _strip_comments(code: str, language_id: str) -> str:
     # Clean trailing whitespace per line and drop empty comment-only lines.
     cleaned_lines = [line.rstrip() for line in "".join(out).splitlines()]
     return "\n".join(cleaned_lines).strip()
+
+
+def _language_file_extension(language_id: str) -> str:
+    normalized = normalize_language_id(language_id) or str(language_id or "").strip().lower()
+    return {
+        "python": "py",
+        "javascript": "js",
+        "typescript": "ts",
+        "java": "java",
+        "c": "c",
+        "cpp": "cpp",
+        "csharp": "cs",
+        "go": "go",
+        "rust": "rs",
+        "php": "php",
+    }.get(normalized, "txt")
+
+
+def _fallback_code_for_language(language_id: str) -> str:
+    normalized = normalize_language_id(language_id) or str(language_id or "").strip().lower()
+    if normalized == "python":
+        return "def analyze_me(value):\n    return value\n"
+    if normalized == "javascript":
+        return "export function analyzeMe(value) {\n  return value;\n}\n"
+    if normalized == "typescript":
+        return "export function analyzeMe(value: number): number {\n  return value;\n}\n"
+    if normalized == "java":
+        return "class Analyzer {\n    static int analyze(int value) {\n        return value;\n    }\n}\n"
+    if normalized == "c":
+        return "int analyze_me(int value) {\n    return value;\n}\n"
+    if normalized == "cpp":
+        return "int analyzeMe(int value) {\n    return value;\n}\n"
+    if normalized == "csharp":
+        return "public static class Analyzer {\n    public static int Analyze(int value) => value;\n}\n"
+    if normalized == "go":
+        return "func analyzeMe(value int) int {\n\treturn value\n}\n"
+    if normalized == "rust":
+        return "fn analyze_me(value: i32) -> i32 {\n    value\n}\n"
+    if normalized == "php":
+        return "<?php\nfunction analyzeMe($value) {\n    return $value;\n}\n"
+    return "function analyzeMe(value) {\n  return value;\n}\n"
 
 
 _ANALYSIS_OUTPUT_ONLY_PATTERNS: tuple[str, ...] = (
@@ -494,7 +563,7 @@ def _normalize_advanced_analysis_files(
             if not name and path:
                 name = path.split("/")[-1]
             if not path:
-                extension = "py" if default_language == "python" else "ts"
+                extension = _language_file_extension(default_language)
                 path = f"src/file_{index}.{extension}"
             if not name:
                 name = path.split("/")[-1]
@@ -502,7 +571,7 @@ def _normalize_advanced_analysis_files(
             language = str(entry.get("language") or default_language).strip().lower() or default_language
             role = str(entry.get("role") or default_role).strip() or default_role
             content = str(entry.get("content") or entry.get("code") or "").rstrip()
-            if language in {"python", "javascript", "java", "c"}:
+            if language in {"python", "javascript", "typescript", "java", "c", "cpp", "csharp", "go", "rust", "php"}:
                 content = _strip_comments(content, language).rstrip()
             if not content:
                 continue
@@ -523,7 +592,7 @@ def _normalize_advanced_analysis_files(
 
     fallback_count = max(1, int(min_count or 1))
     fallback_files: list[dict[str, str]] = []
-    extension = "py" if default_language == "python" else "ts"
+    extension = _language_file_extension(default_language)
     for index in range(fallback_count):
         path = f"src/fallback_{index + 1}.{extension}"
         fallback_files.append(
@@ -532,9 +601,7 @@ def _normalize_advanced_analysis_files(
                 "name": path.split("/")[-1],
                 "language": default_language,
                 "role": default_role,
-                "content": "def analyze_me(value):\n    return value\n"
-                if default_language == "python"
-                else "export function analyzeMe(value) {\n  return value;\n}\n",
+                "content": _fallback_code_for_language(default_language),
             }
         )
     return fallback_files
@@ -583,6 +650,7 @@ class ProblemGenerator:
         mode: str,
         history_context: Optional[str] = None,
         retry_context: Optional[Dict[str, str]] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> GeneratedProblem:
         if not self.client:
             raise ValueError(
@@ -631,7 +699,7 @@ class ProblemGenerator:
         )
 
         try:
-            response = self._generate_with_thinking(contents)
+            response = self._run_generation_request(contents, on_text_delta=on_text_delta)
         except Exception as exc:  # pragma: no cover
             raise ValueError(f"AI API 호출 실패: {exc}") from exc
 
@@ -672,6 +740,7 @@ class ProblemGenerator:
         difficulty: str,
         mode: str,
         history_context: Optional[str] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         if not self.client:
             raise ValueError("AI API 설정이 없어 실행할 수 없습니다.")
@@ -704,7 +773,7 @@ class ProblemGenerator:
         )
 
         try:
-            response = self._generate_with_thinking(contents)
+            response = self._run_generation_request(contents, on_text_delta=on_text_delta)
         except Exception as exc:
             raise ValueError(f"AI API 호출 실패: {exc}") from exc
 
@@ -810,6 +879,7 @@ class ProblemGenerator:
         difficulty: str,
         mode: str,
         history_context: Optional[str] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         """Generate a mental tracing problem that includes the expected output."""
 
@@ -840,7 +910,7 @@ class ProblemGenerator:
         )
 
         try:
-            response = self._generate_with_thinking(contents)
+            response = self._run_generation_request(contents, on_text_delta=on_text_delta)
         except Exception as exc:  # pragma: no cover
             raise ValueError(f"AI API 호출 실패: {exc}") from exc
 
@@ -978,6 +1048,7 @@ class ProblemGenerator:
         mode: str,
         trap_count: int,
         history_context: Optional[str] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         if not self.client:
             raise ValueError("AI API 설정이 없어 실행할 수 없습니다.")
@@ -1013,7 +1084,7 @@ class ProblemGenerator:
         )
 
         try:
-            response = self._generate_with_thinking(contents)
+            response = self._run_generation_request(contents, on_text_delta=on_text_delta)
         except Exception as exc:  # pragma: no cover
             raise ValueError(f"AI API 호출 실패: {exc}") from exc
 
@@ -1176,6 +1247,7 @@ class ProblemGenerator:
         complexity_profile: str,
         constraint_count: int,
         history_context: Optional[str] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         if not self.client:
             raise ValueError("AI API 설정이 없어 실행할 수 없습니다.")
@@ -1216,7 +1288,7 @@ class ProblemGenerator:
         )
 
         try:
-            response = self._generate_with_thinking(contents)
+            response = self._run_generation_request(contents, on_text_delta=on_text_delta)
         except Exception as exc:  # pragma: no cover
             raise ValueError(f"AI API 호출 실패: {exc}") from exc
 
@@ -1296,6 +1368,7 @@ class ProblemGenerator:
         culprit_count: int,
         decision_facets: list[str],
         history_context: Optional[str] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         if not self.client:
             raise ValueError("AI API 설정이 없어 실행할 수 없습니다.")
@@ -1343,7 +1416,7 @@ class ProblemGenerator:
         )
 
         try:
-            response = self._generate_with_thinking(contents)
+            response = self._run_generation_request(contents, on_text_delta=on_text_delta)
         except Exception as exc:  # pragma: no cover
             raise ValueError(f"AI API 호출 실패: {exc}") from exc
 
@@ -1413,6 +1486,7 @@ class ProblemGenerator:
         difficulty: str,
         mode: str,
         history_context: Optional[str] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         if not self.client:
             raise ValueError("AI API 설정이 없어 실행할 수 없습니다.")
@@ -1448,7 +1522,7 @@ class ProblemGenerator:
         )
 
         try:
-            response = self._generate_with_thinking(contents)
+            response = self._run_generation_request(contents, on_text_delta=on_text_delta)
         except Exception as exc:  # pragma: no cover
             raise ValueError(f"AI API 호출 실패: {exc}") from exc
 
@@ -1516,6 +1590,7 @@ class ProblemGenerator:
         difficulty: str,
         mode: str,
         history_context: Optional[str] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         if not self.client:
             raise ValueError("AI API 설정이 없어 실행할 수 없습니다.")
@@ -1551,7 +1626,7 @@ class ProblemGenerator:
         )
 
         try:
-            response = self._generate_with_thinking(contents)
+            response = self._run_generation_request(contents, on_text_delta=on_text_delta)
         except Exception as exc:  # pragma: no cover
             raise ValueError(f"AI API 호출 실패: {exc}") from exc
 
@@ -1619,6 +1694,7 @@ class ProblemGenerator:
         difficulty: str,
         mode: str,
         history_context: Optional[str] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         if not self.client:
             raise ValueError("AI API 설정이 없어 실행할 수 없습니다.")
@@ -1654,7 +1730,7 @@ class ProblemGenerator:
         )
 
         try:
-            response = self._generate_with_thinking(contents)
+            response = self._run_generation_request(contents, on_text_delta=on_text_delta)
         except Exception as exc:  # pragma: no cover
             raise ValueError(f"AI API 호출 실패: {exc}") from exc
 
@@ -1942,7 +2018,24 @@ class ProblemGenerator:
             history_context,
         )
 
-    def _generate_with_thinking(self, contents: str):
+    def _run_generation_request(
+        self,
+        contents: str,
+        *,
+        on_text_delta: Optional[Callable[[str], None]] = None,
+    ):
+        try:
+            return self._generate_with_thinking(contents, on_text_delta=on_text_delta)
+        except TypeError as exc:
+            if "on_text_delta" not in str(exc):
+                raise
+            return self._generate_with_thinking(contents)
+
+    def _generate_with_thinking(
+        self,
+        contents: str,
+        on_text_delta: Optional[Callable[[str], None]] = None,
+    ):
         if not self.client:  # pragma: no cover
             raise RuntimeError("AI 클라이언트가 초기화되지 않았습니다")
 
@@ -1952,20 +2045,47 @@ class ProblemGenerator:
             thinking_config=types.ThinkingConfig(thinking_level="minimal"),
         )
         try:
-            try:
-                response = self.client.models.generate_content(
+            def _stream_content(config: types.GenerateContentConfig):
+                assembled_text = ""
+                for chunk in self.client.models.generate_content_stream(
                     model=self.model,
                     contents=contents,
-                    config=config_with_thinking,
-                )
+                    config=config,
+                ):
+                    chunk_text = _response_text(chunk)
+                    if not chunk_text:
+                        continue
+                    if chunk_text.startswith(assembled_text):
+                        delta = chunk_text[len(assembled_text) :]
+                        assembled_text = chunk_text
+                    else:
+                        delta = chunk_text
+                        assembled_text += delta
+                    if delta and callable(on_text_delta):
+                        on_text_delta(delta)
+                return SimpleNamespace(text=assembled_text)
+
+            try:
+                if callable(on_text_delta):
+                    response = _stream_content(config_with_thinking)
+                else:
+                    response = self.client.models.generate_content(
+                        model=self.model,
+                        contents=contents,
+                        config=config_with_thinking,
+                    )
             except Exception as exc:
                 if "thinking" not in str(exc).lower():
                     raise
-                response = self.client.models.generate_content(
-                    model=self.model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(temperature=1.0),
-                )
+                fallback_config = types.GenerateContentConfig(temperature=1.0)
+                if callable(on_text_delta):
+                    response = _stream_content(fallback_config)
+                else:
+                    response = self.client.models.generate_content(
+                        model=self.model,
+                        contents=contents,
+                        config=fallback_config,
+                    )
 
             self.metrics.end_ai_call(token, success=True)
             return response

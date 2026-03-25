@@ -1,83 +1,70 @@
-# 트러블슈팅
+# 문제 해결
 
-## 1. 페이지 변경이 바로 반영되지 않음
+## 1. 페이지 수정이 바로 안 보임
 
-- HTML은 `server_runtime.template_renderer`가 `/static/...` 자산에 `?v=`를 자동 주입합니다.
-- 사용자 페이지는 `frontend/desktop/*.html`, `frontend/mobile/*.html` variant를 사용합니다.
-- 관리자 페이지는 `frontend/app/admin.html` responsive 템플릿을 사용합니다.
-- 브라우저 강력 새로고침 후에도 같다면 응답 HTML의 `X-Template-Variant`와 `?v=` 주입 여부를 확인합니다.
+확인 포인트:
 
-확인 지점:
+- 사용자 페이지는 desktop/mobile variant 로 나뉩니다.
+- 정적 자산에는 `?v=` 버전 쿼리가 자동 주입됩니다.
+- 사용자 페이지 응답에는 `Vary: User-Agent` 가 붙습니다.
 
+확인 대상:
+
+- `frontend/desktop/*.html`
+- `frontend/mobile/*.html`
+- `frontend/shared/js/*`
 - `server_runtime/routes/pages.py`
 - `server_runtime/template_renderer.py`
-- `python -m unittest tests.test_pages_template_variant -v`
 
-## 2. 관리자 패널에서 종료 버튼이 비활성화됨
-
-다음 중 하나일 가능성이 큽니다.
-
-- API 컨테이너에 Docker socket이 mount 되어 있지 않음
-- API가 Docker 밖에서 실행 중임
-- Compose 스택 대상 컨테이너를 완전히 식별하지 못함
-
-재기동 예시:
+권장 확인:
 
 ```bash
-python run_server.py --compose-mode dev --with-docker-socket
+python -m unittest tests.test_pages_template_variant -v
 ```
 
-또는:
+## 2. 관리자 페이지에서 종료 버튼이 비활성화됨
+
+주요 원인:
+
+- `CODE_PLATFORM_ENABLE_ADMIN_SHUTDOWN=false`
+- `ADMIN_PANEL_KEY` 미설정 또는 오설정
+- Docker socket 미마운트 상태에서 전체 스택 종료를 기대함
+
+확인:
+
+- `/api/admin/metrics` 응답의 shutdown capability 관련 필드
+- 실행 옵션 `--with-docker-socket` / `--without-docker-socket`
+
+## 3. 로컬 실행이 기동 직후 실패함
+
+주요 원인:
+
+- `DB_PASSWORD` 누락
+- `JWT_SECRET` 누락 또는 32자 미만
+- Alembic 미적용
+- MySQL / Redis 미기동
+
+권장 순서:
 
 ```bash
-python run_server.py --compose-mode ops --with-docker-socket
+alembic upgrade head
+python run_server.py --local --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-## 3. `run_server.py` 실행 후 일부 서비스만 올라옴
+참고:
 
-런처는 `mysql`, `redis`, `api`, `worker` readiness를 기다립니다. 일부 서비스가 준비되지 않으면 실패 로그를 출력합니다.
+- 런처의 로컬 기본 worker 값은 `16`
+- 디버깅과 재현에는 `--workers 1` 이 더 낫습니다.
 
-직접 확인:
+## 4. queued 응답만 오고 피드백이 안 돌아옴
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml ps
-docker compose -f docker-compose.yml -f docker-compose.dev.yml logs api worker mysql redis
-```
+먼저 아래를 확인합니다.
 
-Docker socket override를 함께 썼다면 동일하게 `docker-compose.docker-socket.yml`도 포함합니다.
+- `ANALYSIS_QUEUE_MODE=rq`
+- `redis` 실행 여부
+- `worker` 실행 여부
 
-## 4. 로컬 모드에서 API는 뜨는데 분석/큐 동작이 다름
-
-로컬 `--local` 모드와 Compose 모드는 큐 동작이 다를 수 있습니다.
-
-- Compose
-  - `ANALYSIS_QUEUE_MODE=rq`
-  - `worker` 컨테이너가 별도 실행됨
-- Local
-  - `.env.example` 기준 기본값은 `inline`
-
-`rq` 모드 상태 조회 경로:
-
-- `GET /platform/mode-jobs/{job_id}`
-
-이 경로는 queue mode가 `rq`일 때만 의미가 있습니다.
-
-## 5. 고급 모드 제출이 queued 응답만 오고 완료가 안 됨
-
-다음 조건을 확인합니다.
-
-- Redis가 정상 실행 중인지
-- `worker`가 떠 있는지
-- `ANALYSIS_QUEUE_MODE=rq`인지
-
-확인 예시:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml ps
-docker compose -f docker-compose.yml -f docker-compose.dev.yml logs worker redis
-```
-
-대상 모드:
+queued 제출이 가능한 대표 모드:
 
 - `auditor`
 - `refactoring-choice`
@@ -86,55 +73,125 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml logs worker redis
 - `multi-file-analysis`
 - `fullstack-analysis`
 
-참고:
+클라이언트는 `jobId` 로 아래 경로를 polling 해야 합니다.
 
-- queued 응답은 최종 피드백이 아니므로 `jobId` 완료 polling 뒤 `result.feedback`를 렌더링해야 합니다.
-- 대부분의 문제 생성 모드는 SSE 상태 이벤트를 먼저 보내고, 본문은 생성 완료 뒤 최종 `payload` 1회로 도착합니다.
-- `arrange`는 의도적인 가짜 스트리밍(UI 애니메이션)이라 서버 본문 스트리밍이 없어도 정상입니다.
+```text
+GET /platform/mode-jobs/{job_id}
+```
 
-## 6. Google OAuth 시작 시 redirect URI 오류가 남
+## 5. 문제는 보였는데 이력, 리포트, 오답 노트에 반영되지 않음
 
-주로 계산된 callback URI가 허용 목록과 다를 때 발생합니다.
+문제 생성 후속 저장이 별도 큐/워커로 분리된 상태인지 확인합니다.
 
-확인 항목:
+확인 포인트:
 
+- `PROBLEM_FOLLOW_UP_QUEUE_MODE=rq`
+- `worker-follow-up` 실행 여부
+- `problem-follow-up` 큐 backlog 유무
+
+관련 증상:
+
+- 새로 생성한 문제가 `/platform/learning/history` 에 늦게 보임
+- 프로필 누적 통계가 바로 증가하지 않음
+- 복습 큐/리포트 반영이 지연됨
+
+## 6. 문제 생성이 느리게 느껴짐
+
+현재 구조는 “본문 토큰 스트리밍” 이 아닙니다.
+
+실제 동작:
+
+- SSE 상태 이벤트 먼저 전송
+- 최종 문제 본문은 `payload` 한 번으로 전달
+- 그 뒤 `persisting` 단계를 거쳐 `done.persisted=true` 로 마감
+
+예외:
+
+- `arrange` 는 의도적인 가짜 스트리밍 UI입니다.
+
+즉 “상태는 빨리 오는데 본문 시작이 늦다” 는 느낌은 현재 구조상 정상일 수 있습니다.
+
+## 7. Google OAuth 시작 또는 callback 이 실패함
+
+확인 포인트:
+
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
 - `GOOGLE_OAUTH_ALLOWED_REDIRECT_URIS`
 - 필요 시 `GOOGLE_OAUTH_REDIRECT_URI`
-- 프록시 헤더
-  - `X-Forwarded-Proto`
-  - `X-Forwarded-Host`
-  - `X-Forwarded-Port`
 
-Google Cloud Console의 승인된 redirect URI와 서버 설정 값이 정확히 일치해야 합니다.
+프록시 뒤 운영이면 아래 헤더 전달도 맞아야 합니다.
 
-## 7. 로컬 모드에서 인증/플랫폼 API가 시작되지 않음
+- `X-Forwarded-Proto`
+- `X-Forwarded-Host`
+- `X-Forwarded-Port`
 
-`app/core/config.py`는 시작 시 다음 값을 강하게 검증합니다.
+또한 프록시 IP 신뢰 범위를 아래 값으로 명시해야 합니다.
 
-- `DB_PASSWORD`
-- `JWT_SECRET`
+- `CODE_PLATFORM_TRUSTED_PROXY_CIDRS`
 
-또한 로컬 모드에서는 마이그레이션을 수동으로 적용해야 합니다.
+외부/운영 callback URI 는 HTTPS 만 허용하는 것이 안전합니다.
+
+## 8. 기존 `/api/...` 호출이 갑자기 실패함
+
+학습 관련 레거시 `/api` 경로 대부분은 현재 기준 경로가 아닙니다.
+
+대표 동작:
+
+- `410 Gone`
+- 응답 본문에 새 `/platform/...` 경로 포함
+
+예시:
+
+- `/api/report` -> `/platform/report`
+- `/api/auth/register` -> `/platform/auth/signup`
+- `/api/auth/guest/start` -> `/platform/auth/guest`
+- `/api/learning/memory` -> `/platform/learning/memory`
+
+예외적으로 `GET /api/tracks` 는 아직 레거시 조회 경로로 남아 있습니다.
+
+## 9. 저장한 언어가 거부되거나 다시 기본값으로 돌아감
+
+지원 언어는 canonical ID 기준으로만 저장됩니다.
+
+canonical ID:
+
+- `python`
+- `javascript`
+- `typescript`
+- `c`
+- `java`
+- `cpp`
+- `csharp`
+- `go`
+- `rust`
+- `php`
+
+허용 alias:
+
+- `py`
+- `js`
+- `ts`
+- `c++`
+- `cs`
+- `c#`
+
+지원하지 않는 값은 `400` 으로 거부되거나, 기존에 저장된 잘못된 값이라면 조회 시 `python` 같은 유효값으로 복구될 수 있습니다.
+
+## 10. 최신 리포트 카드가 비어 있음
+
+프로필의 최신 리포트 카드는 milestone 리포트가 저장돼 있어야 채워집니다.
+
+확인 순서:
+
+- `POST /platform/reports/milestone` 호출 성공 여부
+- `GET /platform/reports/latest` 응답의 `available` 값
+- PDF 생성 시 `GET /platform/reports/{report_id}/pdf` 응답 여부
+
+Playwright smoke 재실행:
 
 ```bash
-alembic upgrade head
-python run_server.py --local --host 127.0.0.1 --port 8000 --workers 1
+set CI=1
+set ENABLE_HTTPS=0
+npx playwright test tests/e2e/smoke.spec.mjs
 ```
-
-## 8. 학습 페이지는 열리는데 데이터가 비어 보임
-
-페이지 템플릿 문제와 API 문제를 분리해서 봐야 합니다.
-
-템플릿 확인:
-
-- `frontend/desktop/*.html`
-- `frontend/mobile/*.html`
-- `frontend/shared/js/*.js`
-
-API 계약 확인:
-
-```bash
-python -m unittest tests.test_mode_api_platform_parity tests.test_auth_unification tests.test_pages_template_variant -v
-```
-
-레거시 `/api` 학습 경로는 현재 다수 경로에서 `410 Gone`으로 `/platform` 새 경로를 안내합니다. 프런트가 아직 `/api/...`를 직접 호출하는지 같이 확인합니다.

@@ -6,7 +6,7 @@ import os
 import threading
 import time
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Callable
@@ -31,13 +31,32 @@ from app.services.learning_continuity_service import sync_review_queue_for_submi
 from app.services.platform_ops_service import record_ops_event
 from app.services.report_pdf_service import get_latest_report_detail
 from app.db.session import SessionLocal
-from app.services.analysis_queue import enqueue_problem_follow_up_job, get_redis_connection, is_rq_enabled
+from app.services.analysis_queue import (
+    enqueue_problem_follow_up_job,
+    get_redis_connection,
+    is_problem_follow_up_rq_enabled,
+)
 from app.services.problem_stat_service import classify_wrong_answer_type, update_user_problem_stat
+from app.services.runtime_bridge import learning_service, storage_manager, user_service
+from backend.content import normalize_language_id
+from backend.skill_levels import DEFAULT_SKILL_LEVEL, normalize_skill_level
 from backend.learning_reporting import trend_summary
-from server_runtime.context import learning_service, storage_manager, user_service
 
 logger = logging.getLogger(__name__)
 _HISTORY_TOTAL_CACHE_PREFIX = "platform:history:total:"
+
+
+def _normalize_skill_level_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    source = normalized.get("skillLevel")
+    if source in (None, ""):
+        source = normalized.get("skill_level")
+    if source not in (None, ""):
+        normalized_level = normalize_skill_level(source, DEFAULT_SKILL_LEVEL)
+        normalized["skillLevel"] = normalized_level
+        if "skill_level" in normalized:
+            normalized["skill_level"] = normalized_level
+    return normalized
 
 
 class ProblemFollowUpUnavailableError(RuntimeError):
@@ -325,6 +344,50 @@ def _count_public_history(username: str) -> int:
     )
 
 
+def _submission_row_is_correct(submission: Submission) -> bool:
+    if submission.status == SubmissionStatus.passed:
+        return True
+    payload = submission.result_payload if isinstance(submission.result_payload, dict) else {}
+    return payload.get("correct") is True
+
+
+def _summarize_db_history(*, username: str, seen_bridge_ids: set[str]) -> tuple[int, int]:
+    with SessionLocal() as session:
+        user = session.query(User).filter(User.username == username).first()
+        if user is None:
+            return 0, 0
+
+        rows = (
+            session.query(Submission)
+            .join(Problem, Problem.id == Submission.problem_id)
+            .filter(Submission.user_id == user.id)
+            .all()
+        )
+        total = 0
+        correct = 0
+        for submission in rows:
+            payload = submission.submission_payload if isinstance(submission.submission_payload, dict) else {}
+            bridge_id = str(payload.get("bridgeId") or "").strip()
+            if bridge_id and bridge_id in seen_bridge_ids:
+                continue
+            total += 1
+            if _submission_row_is_correct(submission):
+                correct += 1
+        return total, correct
+
+
+def _count_public_history_stats(username: str) -> tuple[int, int]:
+    runtime_events = _load_runtime_attempt_events(username)
+    seen_bridge_ids = _history_bridge_ids(runtime_events)
+    runtime_total = len(runtime_events)
+    runtime_correct = sum(1 for event in runtime_events if event.get("correct") is True)
+    db_total, db_correct = _summarize_db_history(
+        username=username,
+        seen_bridge_ids=seen_bridge_ids,
+    )
+    return runtime_total + db_total, runtime_correct + db_correct
+
+
 def _count_db_history(*, username: str, seen_bridge_ids: set[str]) -> int:
     with SessionLocal() as session:
         user = session.query(User).filter(User.username == username).first()
@@ -352,10 +415,12 @@ def get_public_memory(username: str) -> list[dict[str, Any]]:
 
 
 def get_public_profile(username: str, history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    profile = learning_service.get_profile(username)
-    history = history if history is not None else get_public_history(username)
-    attempts = len(history)
-    correct = sum(1 for item in history if item.get("correct") is True)
+    profile = _normalize_skill_level_payload(learning_service.get_profile(username))
+    if history is not None:
+        attempts = len(history)
+        correct = sum(1 for item in history if item.get("correct") is True)
+    else:
+        attempts, correct = _count_public_history_stats(username)
     accuracy = round((correct / attempts) * 100, 1) if attempts else 0.0
     profile["totalAttempts"] = attempts
     profile["correctAnswers"] = correct
@@ -383,9 +448,12 @@ def request_mode_problem(
     db: Session | None = None,
     defer_persistence: bool = False,
     on_payload_ready: Callable[[dict[str, Any]], None] | None = None,
+    on_partial_ready: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     normalized_mode = _normalize_mode(mode)
-    normalized_language = str(language or "python").strip().lower()
+    normalized_language = normalize_language_id(language)
+    if normalized_language is None:
+        raise ValueError("지원하지 않는 언어입니다.")
     normalized_difficulty = str(difficulty or "beginner").strip().lower()
     started_at = time.perf_counter()
     try:
@@ -394,6 +462,11 @@ def request_mode_problem(
             username=username,
             language=normalized_language,
             difficulty=normalized_difficulty,
+            on_text_delta=(
+                (lambda delta: on_partial_ready({"delta": delta, "mode": normalized_mode}))
+                if on_partial_ready is not None
+                else None
+            ),
         )
         canonical_payload = _canonical_problem_payload(
             normalized_mode,
@@ -404,7 +477,7 @@ def request_mode_problem(
         response_payload = _response_problem_payload(normalized_mode, canonical_payload)
         if defer_persistence:
             elapsed_ms = int(max((time.perf_counter() - started_at) * 1000.0, 0.0))
-            _defer_problem_follow_up(
+            follow_up_future = _defer_problem_follow_up(
                 mode=normalized_mode,
                 username=username,
                 user_id=user_id,
@@ -414,9 +487,12 @@ def request_mode_problem(
                 latency_ms=elapsed_ms,
                 language=normalized_language,
                 difficulty=normalized_difficulty,
+                allow_rq=False,
             )
             if on_payload_ready is not None:
                 on_payload_ready(response_payload)
+            if follow_up_future is not None:
+                follow_up_future.result()
             return response_payload
         with _db_session(db) as session:
             if session is not None:
@@ -479,7 +555,9 @@ def submit_mode_answer(
     submission_payload = dict(body)
     started_at = time.perf_counter()
     try:
-        result = _submit_runtime_answer(normalized_mode, username=username, body=submission_payload)
+        result = _normalize_skill_level_payload(
+            _submit_runtime_answer(normalized_mode, username=username, body=submission_payload)
+        )
         with _db_session(db) as session:
             if session is not None:
                 try:
@@ -527,27 +605,54 @@ def _normalize_mode(mode: str) -> str:
     return normalized
 
 
-def _request_runtime_problem(mode: str, *, username: str, language: str, difficulty: str) -> dict[str, Any]:
+def _request_runtime_problem(
+    mode: str,
+    *,
+    username: str,
+    language: str,
+    difficulty: str,
+    on_text_delta: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
     if mode == "analysis":
-        return learning_service.request_problem(username, language, difficulty)
+        return learning_service.request_problem(username, language, difficulty, on_text_delta=on_text_delta)
     if mode == "code-block":
-        return learning_service.request_code_block_problem(username, language, difficulty)
+        return learning_service.request_code_block_problem(username, language, difficulty, on_text_delta=on_text_delta)
     if mode == "code-arrange":
         return learning_service.request_code_arrange_problem(username, language, difficulty)
     if mode == "code-calc":
-        return learning_service.request_code_calc_problem(username, language, difficulty)
+        return learning_service.request_code_calc_problem(username, language, difficulty, on_text_delta=on_text_delta)
     if mode == "auditor":
-        return learning_service.request_auditor_problem(username, language, difficulty)
+        return learning_service.request_auditor_problem(username, language, difficulty, on_text_delta=on_text_delta)
     if mode == "refactoring-choice":
-        return learning_service.request_refactoring_choice_problem(username, language, difficulty)
+        return learning_service.request_refactoring_choice_problem(
+            username,
+            language,
+            difficulty,
+            on_text_delta=on_text_delta,
+        )
     if mode == "code-blame":
-        return learning_service.request_code_blame_problem(username, language, difficulty)
+        return learning_service.request_code_blame_problem(username, language, difficulty, on_text_delta=on_text_delta)
     if mode == "single-file-analysis":
-        return learning_service.request_single_file_analysis_problem(username, language, difficulty)
+        return learning_service.request_single_file_analysis_problem(
+            username,
+            language,
+            difficulty,
+            on_text_delta=on_text_delta,
+        )
     if mode == "multi-file-analysis":
-        return learning_service.request_multi_file_analysis_problem(username, language, difficulty)
+        return learning_service.request_multi_file_analysis_problem(
+            username,
+            language,
+            difficulty,
+            on_text_delta=on_text_delta,
+        )
     if mode == "fullstack-analysis":
-        return learning_service.request_fullstack_analysis_problem(username, language, difficulty)
+        return learning_service.request_fullstack_analysis_problem(
+            username,
+            language,
+            difficulty,
+            on_text_delta=on_text_delta,
+        )
     raise ValueError(f"unsupported mode: {mode}")
 
 
@@ -690,13 +795,20 @@ def _perform_problem_follow_up(
     language: str,
     difficulty: str,
 ) -> None:
-    _persist_problem(
-        mode=mode,
-        username=username,
-        user_id=user_id,
-        problem_payload=problem_payload,
-        runtime_payload=runtime_payload,
-    )
+    with SessionLocal() as session:
+        try:
+            _persist_problem(
+                mode=mode,
+                username=username,
+                user_id=user_id,
+                problem_payload=problem_payload,
+                runtime_payload=runtime_payload,
+                db=session,
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
     _record_ops_event_best_effort(
         user_id=user_id,
         event_type=event_type,
@@ -755,7 +867,8 @@ def _defer_problem_follow_up(
     latency_ms: int,
     language: str,
     difficulty: str,
-) -> None:
+    allow_rq: bool = True,
+) -> Future[None] | None:
     follow_up_kwargs = {
         "mode": mode,
         "username": username,
@@ -768,7 +881,7 @@ def _defer_problem_follow_up(
         "difficulty": difficulty,
     }
 
-    if is_rq_enabled():
+    if allow_rq and is_problem_follow_up_rq_enabled():
         try:
             enqueue_problem_follow_up_job(
                 mode=mode,
@@ -790,7 +903,7 @@ def _defer_problem_follow_up(
                 exc_info=True,
             )
             raise ProblemFollowUpUnavailableError("stream_capacity_exceeded")
-        return
+        return None
 
     if not _PROBLEM_FOLLOW_UP_SLOTS.acquire(blocking=False):
         logger.warning(
@@ -803,12 +916,12 @@ def _defer_problem_follow_up(
 
     def _run_and_release() -> None:
         try:
-            _run_problem_follow_up_best_effort(**follow_up_kwargs)
+            _perform_problem_follow_up(**follow_up_kwargs)
         finally:
             _PROBLEM_FOLLOW_UP_SLOTS.release()
 
     try:
-        _PROBLEM_FOLLOW_UP_EXECUTOR.submit(_run_and_release)
+        return _PROBLEM_FOLLOW_UP_EXECUTOR.submit(_run_and_release)
     except RuntimeError:
         logger.warning(
             "platform_bridge_problem_follow_up_executor_unavailable mode=%s user_id=%s problem_id=%s",
@@ -816,7 +929,14 @@ def _defer_problem_follow_up(
             user_id,
             problem_payload.get("problemId"),
         )
-        _run_and_release()
+        completed: Future[None] = Future()
+        try:
+            _run_and_release()
+        except Exception as exc:
+            completed.set_exception(exc)
+            raise
+        completed.set_result(None)
+        return completed
 
 
 def _defer_failure_ops_event(
@@ -883,7 +1003,7 @@ def _canonical_problem_payload(
         canonical_payload["language"] = language
     if not str(canonical_payload.get("difficulty") or "").strip():
         canonical_payload["difficulty"] = difficulty
-    return canonical_payload
+    return _normalize_skill_level_payload(canonical_payload)
 
 
 def _response_problem_payload(mode: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1162,7 +1282,7 @@ def _problem_prompt_version(payload: dict[str, Any], mode: str) -> str:
 
 
 def _problem_language(payload: dict[str, Any]) -> str:
-    return str(payload.get("language") or payload.get("languageId") or "python").strip().lower()
+    return normalize_language_id(payload.get("language") or payload.get("languageId")) or "python"
 
 
 def _problem_difficulty(payload: dict[str, Any]) -> ProblemDifficulty:
@@ -1247,7 +1367,7 @@ def _history_problem_files(payload: dict[str, Any], *, fallback_language: str = 
         return []
 
     normalized: list[dict[str, str]] = []
-    resolved_language = str(fallback_language or "python").strip().lower() or "python"
+    resolved_language = normalize_language_id(fallback_language) or "python"
     for index, item in enumerate(files, start=1):
         if not isinstance(item, dict):
             continue

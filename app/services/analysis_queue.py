@@ -19,6 +19,10 @@ def is_rq_enabled() -> bool:
     return (settings.ANALYSIS_QUEUE_MODE or "inline").lower() == "rq"
 
 
+def is_problem_follow_up_rq_enabled() -> bool:
+    return (settings.PROBLEM_FOLLOW_UP_QUEUE_MODE or "inline").lower() == "rq"
+
+
 def get_redis_connection() -> Redis:
     return Redis(
         host=settings.REDIS_HOST,
@@ -34,6 +38,19 @@ def get_redis_connection() -> Redis:
 def get_analysis_queue() -> Queue:
     redis_conn = get_redis_connection()
     return Queue(name=settings.ANALYSIS_QUEUE_NAME, connection=redis_conn)
+
+
+def get_problem_follow_up_queue() -> Queue:
+    redis_conn = get_redis_connection()
+    return Queue(name=settings.PROBLEM_FOLLOW_UP_QUEUE_NAME, connection=redis_conn)
+
+
+def get_worker_queue_names() -> list[str]:
+    names = [settings.ANALYSIS_QUEUE_NAME]
+    follow_up_name = str(settings.PROBLEM_FOLLOW_UP_QUEUE_NAME or "").strip()
+    if is_problem_follow_up_rq_enabled() and follow_up_name and follow_up_name not in names:
+        names.append(follow_up_name)
+    return names
 
 
 def enqueue_analysis_job(submission_id: int, user_id: int) -> QueueEnqueueResult:
@@ -86,7 +103,7 @@ def enqueue_problem_follow_up_job(
     language: str,
     difficulty: str,
 ) -> QueueEnqueueResult:
-    queue = get_analysis_queue()
+    queue = get_problem_follow_up_queue()
     job = queue.enqueue(
         "app.services.platform_public_bridge.run_problem_follow_up_background",
         mode=mode,

@@ -103,6 +103,50 @@ class PlatformMeSettingsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400, response.text)
         self.assertEqual(fake_db.commits, 0)
 
+    def test_put_settings_accepts_new_supported_language(self) -> None:
+        fake_db = FakeSettingsDb()
+        platform_backend_app.dependency_overrides[get_db] = lambda: fake_db
+
+        response = self.client.put(
+            "/platform/me/settings",
+            json={
+                "preferred_language": "typescript",
+                "preferred_difficulty": "medium",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json(),
+            {
+                "preferred_language": "typescript",
+                "preferred_difficulty": "medium",
+            },
+        )
+        self.assertEqual(fake_db.commits, 1)
+
+    def test_put_settings_normalizes_language_alias_to_canonical_id(self) -> None:
+        fake_db = FakeSettingsDb()
+        platform_backend_app.dependency_overrides[get_db] = lambda: fake_db
+
+        response = self.client.put(
+            "/platform/me/settings",
+            json={
+                "preferred_language": "cs",
+                "preferred_difficulty": "medium",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json(),
+            {
+                "preferred_language": "csharp",
+                "preferred_difficulty": "medium",
+            },
+        )
+        self.assertEqual(fake_db.commits, 1)
+
     def test_get_settings_self_heals_invalid_language_to_default(self) -> None:
         fake_db = FakeSettingsDb(
             SimpleNamespace(

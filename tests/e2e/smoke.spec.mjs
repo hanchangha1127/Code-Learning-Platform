@@ -14,7 +14,7 @@ const profilePayload = {
   username: "tester",
   displayName: "Tester",
   display_name: "Tester",
-  skillLevel: "beginner",
+  skillLevel: "level1",
   totalAttempts: 3,
   accuracy: 67,
   diagnosticRemaining: 0,
@@ -70,7 +70,7 @@ const homePayload = {
   displayName: "Tester",
   todayDate: "2026-03-06",
   streakDays: 4,
-  skillLevel: "beginner",
+  skillLevel: "level1",
   dailyGoal: {
     date: "2026-03-06",
     targetSessions: 10,
@@ -186,7 +186,7 @@ print(total)`,
     language: "python",
   },
   mode: "analysis",
-  skillLevel: "beginner",
+  skillLevel: "level1",
   selectedDifficulty: "초급",
 };
 
@@ -199,7 +199,7 @@ const analysisSubmitPayload = {
     correct: true,
   },
   model_answer: "The loop adds 1, 2, and 3, so the final output is 6.",
-  skillLevel: "beginner",
+  skillLevel: "level1",
 };
 
 const codeArrangeProblemPayload = {

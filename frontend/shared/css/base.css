@@ -2163,6 +2163,25 @@ a.feature-card.disabled {
   margin: 0;
 }
 
+.setting-select {
+  width: 100%;
+}
+
+.setting-select-control {
+  width: 100%;
+  min-height: 54px;
+  padding: 0.9rem 1rem;
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
+.setting-select-hint {
+  display: block;
+  margin-top: 0.55rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
 .profile-logout {
   width: 100%;
   border: 1px solid rgba(248, 113, 113, 0.45);

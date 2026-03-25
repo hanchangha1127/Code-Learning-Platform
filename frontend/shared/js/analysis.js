@@ -245,12 +245,44 @@ function getProblemStreamClient() {
   return window.CodeProblemStream || null;
 }
 
+function getProblemStreamPreviewContainer() {
+  return elements.problemCode?.closest(".problem-card") || elements.problemPrompt?.closest(".problem-card") || null;
+}
+
 function shouldFallbackToJson(streamError) {
   const streamClient = getProblemStreamClient();
   if (!streamClient || typeof streamClient.shouldFallbackToJson !== "function") {
     return false;
   }
   return Boolean(streamClient.shouldFallbackToJson(streamError));
+}
+
+function applyStreamingProblemPreview(draft) {
+  if (!draft || typeof draft !== "object") {
+    return;
+  }
+  if (elements.problemMode) {
+    elements.problemMode.textContent = "문제 생성 중";
+  }
+  if (typeof draft.title === "string" && draft.title.trim()) {
+    elements.problemTitle.textContent = draft.title.trim();
+  }
+  if (elements.problemDifficulty) {
+    elements.problemDifficulty.textContent = `난이도 ${state.selectedDifficulty ?? "-"}`;
+  }
+  if (elements.problemTrack) {
+    elements.problemTrack.textContent = "분야 -";
+  }
+  if (elements.problemLanguage) {
+    const languageTitle = state.languageMap[state.selectedLanguage]?.title || state.selectedLanguage || "-";
+    elements.problemLanguage.textContent = `언어 ${languageTitle}`;
+  }
+  if (typeof draft.code === "string" && draft.code.length > 0 && elements.problemCode) {
+    elements.problemCode.textContent = draft.code;
+  }
+  if (typeof draft.prompt === "string" && draft.prompt.trim() && elements.problemPrompt) {
+    elements.problemPrompt.textContent = draft.prompt.trim();
+  }
 }
 
 
@@ -277,6 +309,10 @@ async function loadProblemViaStream() {
         if (statusPayload?.phase === "rendering") {
           setLoadingState(elements.loadProblemBtn, true, "문제 표시 중...");
         }
+      },
+      showPartialPreview: false,
+      onPreview: (draft) => {
+        applyStreamingProblemPreview(draft);
       },
       signal: state.problemStreamController.signal,
     });
@@ -354,41 +390,28 @@ async function handleLoadProblem() {
   }
 
   setLoadingState(elements.loadProblemBtn, true, "문제 생성 중...");
+  state.currentProblem = null;
+  resetProblemView();
+  clearFeedback();
   try {
     state.selectedDifficulty = getSavedDifficulty();
     renderDifficulty();
-
-    let payload = null;
-    let streamed = false;
-    let usedJsonFallback = false;
-    let allowJsonFallback = false;
-
-    try {
-      payload = await loadProblemViaStream();
-      streamed = Boolean(payload);
-    } catch (streamError) {
-      allowJsonFallback = shouldFallbackToJson(streamError);
-      if (!allowJsonFallback) {
-        throw streamError;
-      }
-    }
-
-    if (!payload && !allowJsonFallback) {
-      const streamClient = getProblemStreamClient();
-      allowJsonFallback = !streamClient || typeof streamClient.streamProblem !== "function";
-    }
-
-    if (!payload && allowJsonFallback) {
-      setLoadingState(elements.loadProblemBtn, true, "일반 모드 재시도 중...");
-      payload = await apiRequest("/platform/analysis/problem", {
-        method: "POST",
-        body: {
-          languageId: state.selectedLanguage,
-          difficulty: state.selectedDifficulty,
-        },
-      });
-      usedJsonFallback = true;
-    }
+    const streamClient = getProblemStreamClient();
+    const { payload, streamed, usedJsonFallback } = await streamClient.loadProblemTransport({
+      streamClient,
+      streamRequest: loadProblemViaStream,
+      jsonRequest: async () => {
+        setLoadingState(elements.loadProblemBtn, true, "일반 모드 재시도 중...");
+        return apiRequest("/platform/analysis/problem", {
+          method: "POST",
+          body: {
+            languageId: state.selectedLanguage,
+            difficulty: state.selectedDifficulty,
+          },
+        });
+      },
+      shouldFallback: shouldFallbackToJson,
+    });
     if (!payload) {
       throw new Error("문제를 불러오지 못했습니다.");
     }
@@ -396,7 +419,9 @@ async function handleLoadProblem() {
     const problem = normalizeAnalysisProblem(payload);
     if (problem) {
       state.currentProblem = problem;
-      if (streamed || usedJsonFallback) {
+      if (streamed) {
+        renderProblem(problem);
+      } else if (usedJsonFallback) {
         await animateProblemRender(problem);
       } else {
         renderProblem(problem);
@@ -404,6 +429,9 @@ async function handleLoadProblem() {
       showToast("문제를 불러왔어요.");
     }
   } catch (error) {
+    state.currentProblem = null;
+    resetProblemView();
+    clearFeedback();
     showToast(error.message || "문제를 불러오지 못했습니다.");
   } finally {
     setLoadingState(elements.loadProblemBtn, false);

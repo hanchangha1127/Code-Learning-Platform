@@ -10,8 +10,8 @@ from app.core.security import is_sidless_cookie_compat_active, parse_access_toke
 from app.db.base import utcnow
 from app.db.models import User, UserSession, UserStatus
 from app.services.auth_service import issue_non_refreshable_access_token
+from app.services.runtime_bridge import set_platform_access_cookie
 from backend.admin_metrics import get_admin_metrics
-from server_runtime.context import set_access_cookie
 
 ACCESS_TOKEN_COOKIE_NAME = "code_learning_access"
 bearer = HTTPBearer(auto_error=False)
@@ -89,7 +89,7 @@ def get_current_user(
 
         replacement_token = issue_non_refreshable_access_token(db, user.id)
         db.commit()
-        set_access_cookie(response, replacement_token)
+        set_platform_access_cookie(response, replacement_token)
         _set_legacy_cookie_headers()
         return user
 

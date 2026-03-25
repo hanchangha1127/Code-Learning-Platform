@@ -64,6 +64,8 @@ class Settings(BaseSettings):
 
     ANALYSIS_QUEUE_MODE: str = "inline"
     ANALYSIS_QUEUE_NAME: str = "analysis"
+    PROBLEM_FOLLOW_UP_QUEUE_MODE: str = "inline"
+    PROBLEM_FOLLOW_UP_QUEUE_NAME: str = "problem-follow-up"
     ANALYSIS_QUEUE_JOB_TIMEOUT_SECONDS: int = 300
     ANALYSIS_QUEUE_RESULT_TTL_SECONDS: int = 3600
     ANALYSIS_QUEUE_FAILURE_TTL_SECONDS: int = 86400
@@ -76,7 +78,7 @@ class Settings(BaseSettings):
     REDIS_PASSWORD_FILE: str | None = None
     ADMIN_THROTTLE_BACKEND: str = "redis"
     ALLOW_SIDLESS_COOKIE_COMPAT: bool = Field(
-        default=True,
+        default=False,
         validation_alias="CODE_PLATFORM_ALLOW_SIDLESS_COOKIE_COMPAT",
     )
     SIDLESS_COOKIE_SUNSET_AT: str = Field(
@@ -92,6 +94,10 @@ class Settings(BaseSettings):
         self.OPENAI_API_KEY = _resolve_secret_value(self.OPENAI_API_KEY, self.OPENAI_API_KEY_FILE)
         self.REDIS_PASSWORD = _resolve_secret_value(self.REDIS_PASSWORD, self.REDIS_PASSWORD_FILE)
         self.ADMIN_THROTTLE_BACKEND = (self.ADMIN_THROTTLE_BACKEND or "redis").strip().lower() or "redis"
+        self.ANALYSIS_QUEUE_MODE = (self.ANALYSIS_QUEUE_MODE or "inline").strip().lower() or "inline"
+        self.PROBLEM_FOLLOW_UP_QUEUE_MODE = (
+            (self.PROBLEM_FOLLOW_UP_QUEUE_MODE or "inline").strip().lower() or "inline"
+        )
 
         if not self.DB_PASSWORD.strip():
             raise ValueError("DB_PASSWORD must be set via environment variable or DB_PASSWORD_FILE.")
@@ -105,6 +111,10 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET uses a development prefix in a non-development environment.")
         if self.ADMIN_THROTTLE_BACKEND not in {"redis", "memory"}:
             raise ValueError("ADMIN_THROTTLE_BACKEND must be either 'redis' or 'memory'.")
+        if self.ANALYSIS_QUEUE_MODE not in {"inline", "rq"}:
+            raise ValueError("ANALYSIS_QUEUE_MODE must be either 'inline' or 'rq'.")
+        if self.PROBLEM_FOLLOW_UP_QUEUE_MODE not in {"inline", "rq"}:
+            raise ValueError("PROBLEM_FOLLOW_UP_QUEUE_MODE must be either 'inline' or 'rq'.")
 
         return self
 

@@ -169,17 +169,17 @@ def _build_summary(event: Dict[str, Any], instance: Dict[str, Any], mode: str) -
         return title
 
     return {
-        "code-block": "빈칸 채우기",
+        "code-block": "코드 블록",
         "code-calc": "코드 계산",
         "code-error": "오류 찾기",
-        "code-arrange": "코드 정렬",
+        "code-arrange": "코드 배치",
         "auditor": "감사관 모드",
         "context-inference": "맥락 추론",
         "refactoring-choice": "최적의 선택",
         "code-blame": "범인 찾기",
         "single-file-analysis": "단일 파일 분석",
-        "multi-file-analysis": "멀티 파일 분석",
-        "fullstack-analysis": "풀스택 분석",
+        "multi-file-analysis": "다중 파일 분석",
+        "fullstack-analysis": "풀스택 코드 분석",
         "diagnostic": "진단 문제",
         "practice": "맞춤 문제",
     }.get(mode, "학습 기록")
@@ -340,20 +340,20 @@ def _build_evidence_from_records(detail_records: List[Dict[str, Any]]) -> Dict[s
 
 def _mode_label(mode: str) -> str:
     return {
-        "analysis": "코드 설명",
-        "code-block": "빈칸 채우기",
-        "code-calc": "출력 예측",
+        "analysis": "코드 분석",
+        "code-block": "코드 블록",
+        "code-calc": "코드 계산",
         "code-error": "오류 찾기",
-        "code-arrange": "코드 정렬",
-        "auditor": "감사관",
+        "code-arrange": "코드 배치",
+        "auditor": "감사관 모드",
         "context-inference": "맥락 추론",
-        "refactoring-choice": "리팩토링 선택",
-        "code-blame": "코드 블레임",
+        "refactoring-choice": "최적의 선택",
+        "code-blame": "범인 찾기",
         "single-file-analysis": "단일 파일 분석",
-        "multi-file-analysis": "멀티 파일 분석",
-        "fullstack-analysis": "풀스택 분석",
+        "multi-file-analysis": "다중 파일 분석",
+        "fullstack-analysis": "풀스택 코드 분석",
         "diagnostic": "진단",
-        "practice": "연습",
+        "practice": "맞춤 문제",
     }.get(mode, mode or "unknown")
 
 

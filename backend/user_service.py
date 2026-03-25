@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 
 from backend.config import get_settings
 from backend.security import generate_token, hash_password, verify_password
+from backend.skill_levels import DEFAULT_SKILL_LEVEL
 from backend.user_storage import UserStorageManager
 
 
@@ -31,7 +32,7 @@ def _default_profile(username: str) -> Dict[str, Any]:
     return {
         "type": "profile",
         "username": username,
-        "skill_level": "beginner",
+        "skill_level": DEFAULT_SKILL_LEVEL,
         "diagnostic_completed": True,
         "diagnostic_total": 0,
         "diagnostic_given": 0,

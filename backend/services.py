@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import random
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from backend.ai_client import AIClient
-from backend.content import LANGUAGES, TRACKS
+from backend.content import LANGUAGES, TRACKS, normalize_language_id
 from backend import learning_mode_handlers, learning_reporting, learning_tier
 from backend.problem_generator import ProblemGenerator
+from backend.skill_levels import DEFAULT_SKILL_LEVEL, normalize_skill_level, score_to_skill_level
 from backend.user_storage import UserStorageManager
 from backend.user_service import UserService
 
@@ -30,6 +31,13 @@ DIFFICULTY_CHOICES: Dict[str, Dict[str, str]] = {
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_requested_language(language_id: str) -> str:
+    normalized = normalize_language_id(language_id)
+    if normalized is None:
+        raise ValueError("지원하지 않는 언어입니다.")
+    return normalized
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -73,7 +81,7 @@ def _default_profile(username: str) -> Dict[str, Any]:
     return {
         "type": "profile",
         "username": username,
-        "skill_level": "beginner",
+        "skill_level": DEFAULT_SKILL_LEVEL,
         "diagnostic_completed": True,
         "diagnostic_total": 0,
         "diagnostic_given": 0,
@@ -137,7 +145,7 @@ class LearningService:
 
         return {
             "username": username,
-            "skillLevel": profile.get("skill_level", "beginner"),
+            "skillLevel": normalize_skill_level(profile.get("skill_level"), DEFAULT_SKILL_LEVEL),
             "diagnosticCompleted": profile.get("diagnostic_completed", False),
             "diagnosticTotal": total,
             "diagnosticAnswered": answered,
@@ -284,7 +292,15 @@ class LearningService:
     ) -> Dict[str, Any]:
         return await asyncio.to_thread(self.submit_fullstack_analysis_report, username, problem_id, report)
 
-    def request_problem(self, username: str, language_id: str, difficulty_id: str) -> Dict[str, Any]:
+    def request_problem(
+        self,
+        username: str,
+        language_id: str,
+        difficulty_id: str,
+        *,
+        on_text_delta: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        language_id = _normalize_requested_language(language_id)
         return learning_mode_handlers.request_problem(
             self,
             username,
@@ -293,9 +309,18 @@ class LearningService:
             default_track_id=DEFAULT_TRACK_ID,
             difficulty_choices=DIFFICULTY_CHOICES,
             utcnow=_utcnow,
+            on_text_delta=on_text_delta,
         )
 
-    def request_code_block_problem(self, username: str, language_id: str, difficulty_id: str) -> Dict[str, Any]:
+    def request_code_block_problem(
+        self,
+        username: str,
+        language_id: str,
+        difficulty_id: str,
+        *,
+        on_text_delta: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        language_id = _normalize_requested_language(language_id)
         return learning_mode_handlers.request_code_block_problem(
             self,
             username,
@@ -304,6 +329,7 @@ class LearningService:
             default_track_id=DEFAULT_TRACK_ID,
             difficulty_choices=DIFFICULTY_CHOICES,
             utcnow=_utcnow,
+            on_text_delta=on_text_delta,
         )
 
     def submit_code_block_answer(self, username: str, problem_id: str, selected_option: int) -> Dict[str, Any]:
@@ -316,7 +342,15 @@ class LearningService:
             utcnow=_utcnow,
         )
 
-    def request_code_calc_problem(self, username: str, language_id: str, difficulty_id: str) -> Dict[str, Any]:
+    def request_code_calc_problem(
+        self,
+        username: str,
+        language_id: str,
+        difficulty_id: str,
+        *,
+        on_text_delta: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        language_id = _normalize_requested_language(language_id)
         return learning_mode_handlers.request_code_calc_problem(
             self,
             username,
@@ -325,6 +359,7 @@ class LearningService:
             default_track_id=DEFAULT_TRACK_ID,
             difficulty_choices=DIFFICULTY_CHOICES,
             utcnow=_utcnow,
+            on_text_delta=on_text_delta,
         )
 
     def submit_code_calc_answer(self, username: str, problem_id: str, output_text: str) -> Dict[str, Any]:
@@ -337,6 +372,7 @@ class LearningService:
         )
 
     def request_code_error_problem(self, username: str, language_id: str, difficulty_id: str) -> Dict[str, Any]:
+        language_id = _normalize_requested_language(language_id)
         return learning_mode_handlers.request_code_error_problem(
             self,
             username,
@@ -356,7 +392,15 @@ class LearningService:
             utcnow=_utcnow,
         )
 
-    def request_auditor_problem(self, username: str, language_id: str, difficulty_id: str) -> Dict[str, Any]:
+    def request_auditor_problem(
+        self,
+        username: str,
+        language_id: str,
+        difficulty_id: str,
+        *,
+        on_text_delta: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        language_id = _normalize_requested_language(language_id)
         return learning_mode_handlers.request_auditor_problem(
             self,
             username,
@@ -365,9 +409,11 @@ class LearningService:
             default_track_id=DEFAULT_TRACK_ID,
             difficulty_choices=DIFFICULTY_CHOICES,
             utcnow=_utcnow,
+            on_text_delta=on_text_delta,
         )
 
     def request_context_inference_problem(self, username: str, language_id: str, difficulty_id: str) -> Dict[str, Any]:
+        language_id = _normalize_requested_language(language_id)
         return learning_mode_handlers.request_context_inference_problem(
             self,
             username,
@@ -378,7 +424,15 @@ class LearningService:
             utcnow=_utcnow,
         )
 
-    def request_refactoring_choice_problem(self, username: str, language_id: str, difficulty_id: str) -> Dict[str, Any]:
+    def request_refactoring_choice_problem(
+        self,
+        username: str,
+        language_id: str,
+        difficulty_id: str,
+        *,
+        on_text_delta: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        language_id = _normalize_requested_language(language_id)
         return learning_mode_handlers.request_refactoring_choice_problem(
             self,
             username,
@@ -387,9 +441,18 @@ class LearningService:
             default_track_id=DEFAULT_TRACK_ID,
             difficulty_choices=DIFFICULTY_CHOICES,
             utcnow=_utcnow,
+            on_text_delta=on_text_delta,
         )
 
-    def request_code_blame_problem(self, username: str, language_id: str, difficulty_id: str) -> Dict[str, Any]:
+    def request_code_blame_problem(
+        self,
+        username: str,
+        language_id: str,
+        difficulty_id: str,
+        *,
+        on_text_delta: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        language_id = _normalize_requested_language(language_id)
         return learning_mode_handlers.request_code_blame_problem(
             self,
             username,
@@ -398,6 +461,7 @@ class LearningService:
             default_track_id=DEFAULT_TRACK_ID,
             difficulty_choices=DIFFICULTY_CHOICES,
             utcnow=_utcnow,
+            on_text_delta=on_text_delta,
         )
 
     def request_single_file_analysis_problem(
@@ -405,7 +469,10 @@ class LearningService:
         username: str,
         language_id: str,
         difficulty_id: str,
+        *,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
+        language_id = _normalize_requested_language(language_id)
         return learning_mode_handlers.request_single_file_analysis_problem(
             self,
             username,
@@ -414,6 +481,7 @@ class LearningService:
             default_track_id=DEFAULT_TRACK_ID,
             difficulty_choices=DIFFICULTY_CHOICES,
             utcnow=_utcnow,
+            on_text_delta=on_text_delta,
         )
 
     def request_multi_file_analysis_problem(
@@ -421,7 +489,10 @@ class LearningService:
         username: str,
         language_id: str,
         difficulty_id: str,
+        *,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
+        language_id = _normalize_requested_language(language_id)
         return learning_mode_handlers.request_multi_file_analysis_problem(
             self,
             username,
@@ -430,6 +501,7 @@ class LearningService:
             default_track_id=DEFAULT_TRACK_ID,
             difficulty_choices=DIFFICULTY_CHOICES,
             utcnow=_utcnow,
+            on_text_delta=on_text_delta,
         )
 
     def request_fullstack_analysis_problem(
@@ -437,7 +509,10 @@ class LearningService:
         username: str,
         language_id: str,
         difficulty_id: str,
+        *,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
+        language_id = _normalize_requested_language(language_id)
         return learning_mode_handlers.request_fullstack_analysis_problem(
             self,
             username,
@@ -446,6 +521,7 @@ class LearningService:
             default_track_id=DEFAULT_TRACK_ID,
             difficulty_choices=DIFFICULTY_CHOICES,
             utcnow=_utcnow,
+            on_text_delta=on_text_delta,
         )
 
     def submit_auditor_report(self, username: str, problem_id: str, report: str) -> Dict[str, Any]:
@@ -532,6 +608,7 @@ class LearningService:
         problem_id: str,
         explanation: str,
     ) -> Dict[str, Any]:
+        language_id = _normalize_requested_language(language_id)
         return learning_mode_handlers.submit_explanation(
             self,
             username,
@@ -543,6 +620,7 @@ class LearningService:
         )
 
     def request_code_arrange_problem(self, username: str, language_id: str, difficulty_id: str) -> Dict[str, Any]:
+        language_id = _normalize_requested_language(language_id)
         return learning_mode_handlers.request_code_arrange_problem(
             self,
             username,
@@ -670,7 +748,7 @@ class LearningService:
                 profile["diagnostic_completed"] = True
 
         if profile.get("diagnostic_completed") and not profile.get("skill_level"):
-            profile["skill_level"] = "beginner"
+            profile["skill_level"] = DEFAULT_SKILL_LEVEL
 
         return profile
 
@@ -686,18 +764,10 @@ class LearningService:
         profile["diagnostic_results"] = []
 
     def _score_to_level(self, score: float) -> str:
-        if score < 0.45:
-            return "beginner"
-        if score < 0.75:
-            return "intermediate"
-        return "advanced"
+        return score_to_skill_level(score, DEFAULT_SKILL_LEVEL)
 
     def _accuracy_to_level(self, accuracy: float) -> str:
-        if accuracy >= TIER_ADVANCED_THRESHOLD:
-            return "advanced"
-        if accuracy >= TIER_INTERMEDIATE_THRESHOLD:
-            return "intermediate"
-        return "beginner"
+        return score_to_skill_level(accuracy, DEFAULT_SKILL_LEVEL)
 
     def _collect_attempt_events(self, storage) -> List[Dict[str, Any]]:
         events: List[Dict[str, Any]] = []

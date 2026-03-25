@@ -168,6 +168,10 @@ body[data-template-variant] {
   gap: 0.7rem;
 }
 
+#code-blame-section .commit-options {
+  grid-template-columns: 1fr;
+}
+
 .choice-options {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.7rem;

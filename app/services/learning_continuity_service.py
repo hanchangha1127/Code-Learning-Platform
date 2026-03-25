@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
@@ -17,6 +17,7 @@ from app.db.models import (
     User,
     UserLearningGoal,
 )
+from backend.skill_levels import DEFAULT_SKILL_LEVEL, normalize_skill_level
 from app.services.report_pdf_service import get_latest_report_detail
 
 DEFAULT_DAILY_TARGET_SESSIONS = 10
@@ -32,8 +33,8 @@ MODE_LABELS: dict[str, str] = {
     "refactoring-choice": "\uCD5C\uC801\uC758 \uC120\uD0DD",
     "code-blame": "\uBC94\uC778 \uCC3E\uAE30",
     "single-file-analysis": "\uB2E8\uC77C \uD30C\uC77C \uBD84\uC11D",
-    "multi-file-analysis": "\uBA40\uD2F0 \uD30C\uC77C \uBD84\uC11D",
-    "fullstack-analysis": "\uD480\uC2A4\uD0DD \uBD84\uC11D",
+    "multi-file-analysis": "\uB2E4\uC911 \uD30C\uC77C \uBD84\uC11D",
+    "fullstack-analysis": "\uD480\uC2A4\uD0DD \uCF54\uB4DC \uBD84\uC11D",
 }
 
 MODE_LINKS: dict[str, str] = {
@@ -163,7 +164,7 @@ def build_learning_home(
         "displayName": display_name or profile.get("displayName") or profile.get("display_name") or user.username,
         "todayDate": utcnow().date().isoformat(),
         "streakDays": streak_days,
-        "skillLevel": profile.get("skillLevel") or "beginner",
+        "skillLevel": normalize_skill_level(profile.get("skillLevel"), DEFAULT_SKILL_LEVEL),
         "dailyGoal": daily_goal,
         "reviewQueue": {
             "dueCount": len(review_items),
@@ -346,9 +347,7 @@ def _parse_history_datetime(item: dict[str, Any]) -> datetime | None:
         parsed = datetime.fromisoformat(candidate)
     except ValueError:
         return None
-    if parsed.tzinfo is not None:
-        return parsed.astimezone().replace(tzinfo=None)
-    return parsed
+    return _to_naive_utc(parsed)
 
 
 def _calculate_streak_days(history: list[dict[str, Any]], daily_target_sessions: int) -> int:
@@ -554,7 +553,7 @@ def _build_weekly_report_card(db: Session, user_id: int) -> dict[str, Any]:
             parsed_created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
         except ValueError:
             parsed_created_at = None
-    stale = _is_report_stale(parsed_created_at)
+    stale = _is_report_stale(_to_naive_utc(parsed_created_at))
     return {
         "available": True,
         "reportId": int(detail.get("reportId")),
@@ -569,7 +568,15 @@ def _build_weekly_report_card(db: Session, user_id: int) -> dict[str, Any]:
 def _is_report_stale(created_at: datetime | None) -> bool:
     if created_at is None:
         return True
-    return (utcnow() - created_at) >= timedelta(days=WEEKLY_REPORT_STALE_DAYS)
+    return (_to_naive_utc(utcnow()) - _to_naive_utc(created_at)) >= timedelta(days=WEEKLY_REPORT_STALE_DAYS)
+
+
+def _to_naive_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _build_notifications(

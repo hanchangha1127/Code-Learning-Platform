@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from backend.content import LANGUAGES, TRACKS
 from backend.mode_normalization import (
@@ -30,6 +30,7 @@ from backend.mode_policies import (
     REFACTORING_CHOICE_OPTION_IDS as POLICY_REFACTORING_CHOICE_OPTION_IDS,
 )
 from backend.security import generate_token
+from backend.skill_levels import DEFAULT_SKILL_LEVEL, normalize_skill_level
 
 
 AUDITOR_TRAP_COUNT_BY_DIFFICULTY = POLICY_AUDITOR_TRAP_COUNT_BY_DIFFICULTY
@@ -189,6 +190,7 @@ def request_problem(
     default_track_id: str,
     difficulty_choices: Dict[str, Dict[str, str]],
     utcnow: Callable[[], str],
+    on_text_delta: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     track_id = default_track_id
     if track_id not in TRACKS:
@@ -229,6 +231,7 @@ def request_problem(
         mode,
         history_context=history_context,
         retry_context=retry_context,
+        on_text_delta=on_text_delta,
     )
 
     storage.append(
@@ -265,7 +268,7 @@ def request_problem(
             "language": language_id,
         },
         "mode": generated.mode,
-        "skillLevel": profile.get("skill_level", "beginner"),
+        "skillLevel": normalize_skill_level(profile.get("skill_level"), DEFAULT_SKILL_LEVEL),
         "selectedDifficulty": difficulty_meta["title"],
     }
 
@@ -279,6 +282,7 @@ def request_code_block_problem(
     default_track_id: str,
     difficulty_choices: Dict[str, Dict[str, str]],
     utcnow: Callable[[], str],
+    on_text_delta: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     track_id = default_track_id
     if language_id not in LANGUAGES:
@@ -301,6 +305,7 @@ def request_code_block_problem(
         generator_difficulty,
         mode,
         history_context=history_context,
+        on_text_delta=on_text_delta,
     )
 
     storage.append(
@@ -374,7 +379,7 @@ def submit_code_block_answer(
         "correct": is_correct,
         "correctAnswer": correct_answer_index,
         "explanation": instance.get("explanation"),
-        "skillLevel": profile.get("skill_level", "beginner"),
+        "skillLevel": normalize_skill_level(profile.get("skill_level"), DEFAULT_SKILL_LEVEL),
     }
 
 
@@ -387,6 +392,7 @@ def request_code_calc_problem(
     default_track_id: str,
     difficulty_choices: Dict[str, Dict[str, str]],
     utcnow: Callable[[], str],
+    on_text_delta: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     track_id = default_track_id
     if language_id not in LANGUAGES:
@@ -405,6 +411,7 @@ def request_code_calc_problem(
         difficulty=difficulty_choices[difficulty_id]["generator"],
         mode="code-calc",
         history_context=history_context,
+        on_text_delta=on_text_delta,
     )
 
     storage.append(
@@ -575,6 +582,7 @@ def request_auditor_problem(
     default_track_id: str,
     difficulty_choices: Dict[str, Dict[str, str]],
     utcnow: Callable[[], str],
+    on_text_delta: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     track_id = default_track_id
     if language_id not in LANGUAGES:
@@ -595,6 +603,7 @@ def request_auditor_problem(
         mode="auditor",
         trap_count=trap_count,
         history_context=history_context,
+        on_text_delta=on_text_delta,
     )
 
     trap_catalog = generated.get("trap_catalog") or []
@@ -729,6 +738,7 @@ def request_single_file_analysis_problem(
     default_track_id: str,
     difficulty_choices: Dict[str, Dict[str, str]],
     utcnow: Callable[[], str],
+    on_text_delta: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     track_id = default_track_id
     if language_id not in LANGUAGES:
@@ -747,6 +757,7 @@ def request_single_file_analysis_problem(
         difficulty=difficulty_choices[difficulty_id]["generator"],
         mode="single-file-analysis",
         history_context=history_context,
+        on_text_delta=on_text_delta,
     )
 
     files = _normalize_advanced_analysis_files(
@@ -804,6 +815,7 @@ def request_multi_file_analysis_problem(
     default_track_id: str,
     difficulty_choices: Dict[str, Dict[str, str]],
     utcnow: Callable[[], str],
+    on_text_delta: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     track_id = default_track_id
     if language_id not in LANGUAGES:
@@ -822,6 +834,7 @@ def request_multi_file_analysis_problem(
         difficulty=difficulty_choices[difficulty_id]["generator"],
         mode="multi-file-analysis",
         history_context=history_context,
+        on_text_delta=on_text_delta,
     )
 
     files = _normalize_advanced_analysis_files(
@@ -879,6 +892,7 @@ def request_fullstack_analysis_problem(
     default_track_id: str,
     difficulty_choices: Dict[str, Dict[str, str]],
     utcnow: Callable[[], str],
+    on_text_delta: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     track_id = default_track_id
     if language_id not in LANGUAGES:
@@ -897,6 +911,7 @@ def request_fullstack_analysis_problem(
         difficulty=difficulty_choices[difficulty_id]["generator"],
         mode="fullstack-analysis",
         history_context=history_context,
+        on_text_delta=on_text_delta,
     )
 
     files = _normalize_advanced_analysis_files(
@@ -1313,6 +1328,7 @@ def request_refactoring_choice_problem(
     default_track_id: str,
     difficulty_choices: Dict[str, Dict[str, str]],
     utcnow: Callable[[], str],
+    on_text_delta: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     track_id = default_track_id
     if language_id not in LANGUAGES:
@@ -1339,6 +1355,7 @@ def request_refactoring_choice_problem(
             complexity_profile=complexity_profile,
             constraint_count=constraint_count,
             history_context=history_context,
+            on_text_delta=on_text_delta,
         )
     except Exception as exc:  # pragma: no cover - network dependent path
         raise ValueError("최적의 선택 문제 생성에 실패했습니다. 잠시 후 다시 시도해주세요.") from exc
@@ -1552,6 +1569,7 @@ def request_code_blame_problem(
     default_track_id: str,
     difficulty_choices: Dict[str, Dict[str, str]],
     utcnow: Callable[[], str],
+    on_text_delta: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     track_id = default_track_id
     if language_id not in LANGUAGES:
@@ -1576,6 +1594,7 @@ def request_code_blame_problem(
             culprit_count=culprit_count,
             decision_facets=list(CODE_BLAME_FACET_TAXONOMY),
             history_context=history_context,
+            on_text_delta=on_text_delta,
         )
     except Exception as exc:  # pragma: no cover - network dependent path
         raise ValueError("범인 찾기 문제 생성에 실패했습니다. 잠시 후 다시 시도해주세요.") from exc
@@ -1876,7 +1895,7 @@ def submit_explanation(
 
     return {
         "feedback": feedback,
-        "skillLevel": profile.get("skill_level", "beginner"),
+        "skillLevel": normalize_skill_level(profile.get("skill_level"), DEFAULT_SKILL_LEVEL),
         "model_answer": instance.get("reference", "모범 답안이 없습니다."),
     }
 

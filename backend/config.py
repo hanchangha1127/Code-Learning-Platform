@@ -149,7 +149,7 @@ class Settings:
     allow_legacy_jsonl_tokens: bool = _get_bool_env("CODE_PLATFORM_ALLOW_LEGACY_JSONL_TOKENS", False)
     legacy_token_sunset_date: str = os.getenv("CODE_PLATFORM_LEGACY_TOKEN_SUNSET_DATE", "2026-03-31")
     legacy_token_max_age_seconds: int = _get_int_env("CODE_PLATFORM_LEGACY_TOKEN_MAX_AGE_SECONDS", 86400)
-    allow_sidless_cookie_compat: bool = _get_bool_env("CODE_PLATFORM_ALLOW_SIDLESS_COOKIE_COMPAT", True)
+    allow_sidless_cookie_compat: bool = _get_bool_env("CODE_PLATFORM_ALLOW_SIDLESS_COOKIE_COMPAT", False)
     sidless_cookie_sunset_at: str = os.getenv(
         "CODE_PLATFORM_SIDLESS_COOKIE_SUNSET_AT",
         "2026-04-03T23:59:59+09:00",

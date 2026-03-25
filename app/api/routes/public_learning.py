@@ -19,7 +19,7 @@ from app.services.learning_continuity_service import (
     resume_review_queue_item,
 )
 from app.services import platform_public_bridge
-from server_runtime.routes.learning import (
+from app.api.problem_streaming import (
     _execute_stream_problem,
     _stream_problem_response,
     _wants_problem_stream,
@@ -54,7 +54,7 @@ def get_home(
     current: User = Depends(get_current_user),
 ) -> dict:
     history = platform_public_bridge.get_public_history(current.username, limit=HISTORY_DEFAULT_LIMIT)
-    profile = platform_public_bridge.get_public_profile(current.username, history=history)
+    profile = platform_public_bridge.get_public_profile(current.username)
     me = platform_public_bridge.get_public_me(current)
     return build_learning_home(
         db=db,
@@ -125,9 +125,10 @@ def _request_problem_with_optional_stream(
     current: User,
 ):
     if _wants_problem_stream(request):
+        defer_persistence = mode != "code-arrange"
         return _stream_problem_response(
             request=request,
-            work=lambda emit_payload: _execute_stream_problem(
+            work=lambda emit_payload, emit_partial: _execute_stream_problem(
                 f"{mode}_problem",
                 lambda: platform_public_bridge.request_mode_problem(
                     mode=mode,
@@ -136,8 +137,9 @@ def _request_problem_with_optional_stream(
                     language=body.language_id,
                     difficulty=body.difficulty_id,
                     db=None,
-                    defer_persistence=True,
-                    on_payload_ready=emit_payload,
+                    defer_persistence=defer_persistence,
+                    on_payload_ready=emit_payload if defer_persistence else None,
+                    on_partial_ready=emit_partial if defer_persistence else None,
                 ),
             ),
         )

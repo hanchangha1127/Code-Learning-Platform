@@ -267,12 +267,37 @@ function getProblemStreamClient() {
   return window.CodeProblemStream || null;
 }
 
+function getProblemStreamPreviewContainer() {
+  return elements.code?.parentElement || elements.objective?.closest(".cb-board") || null;
+}
+
 function shouldFallbackToJson(streamError) {
   const streamClient = getProblemStreamClient();
   if (!streamClient || typeof streamClient.shouldFallbackToJson !== "function") {
     return false;
   }
   return Boolean(streamClient.shouldFallbackToJson(streamError));
+}
+
+function applyStreamingCodeBlockPreview(draft) {
+  if (!draft || typeof draft !== "object") {
+    return;
+  }
+  renderProblemHeading({
+    title: typeof draft.title === "string" && draft.title.trim() ? draft.title.trim() : undefined,
+    objective: typeof draft.objective === "string" && draft.objective.trim() ? draft.objective.trim() : undefined,
+  });
+  if (typeof draft.code === "string" && draft.code.length > 0 && elements.code) {
+    renderCodeWithBlanks(elements.code, draft.code);
+  }
+  if (Array.isArray(draft.options) && draft.options.length) {
+    prepareOptionSlots(draft.options.length);
+    draft.options.forEach((option, index) => {
+      const button = state.optionButtons[index];
+      if (!button) return;
+      button.textContent = String(option ?? "");
+    });
+  }
 }
 
 async function loadCodeBlockProblemViaStream() {
@@ -302,6 +327,10 @@ async function loadCodeBlockProblemViaStream() {
           setStatus(statusPayload?.message || "문제 생성 중...");
           setLoadButtonLoading(true, "문제 생성 중...");
         }
+      },
+      showPartialPreview: false,
+      onPreview: (draft) => {
+        applyStreamingCodeBlockPreview(draft);
       },
       signal: state.problemStreamController.signal,
     });
@@ -409,45 +438,33 @@ async function handleLoadProblem() {
   resetProblemDisplay();
 
   try {
-    let payload = null;
-    let streamed = false;
-    let usedJsonFallback = false;
-    let allowJsonFallback = false;
-
-    try {
-      payload = await loadCodeBlockProblemViaStream();
-      streamed = Boolean(payload);
-    } catch (streamError) {
-      allowJsonFallback = shouldFallbackToJson(streamError);
-      if (!allowJsonFallback) {
-        throw streamError;
-      }
-    }
-
-    if (!payload && !allowJsonFallback) {
-      const streamClient = getProblemStreamClient();
-      allowJsonFallback = !streamClient || typeof streamClient.streamProblem !== "function";
-    }
-
-    if (!payload && allowJsonFallback) {
-      setStatus("스트림 연결이 불안정해 일반 모드로 다시 시도합니다...");
-      setLoadButtonLoading(true, "일반 모드로 다시 시도 중...");
-      payload = await apiRequest("/platform/codeblock/problem", {
-        method: "POST",
-        body: {
-          language: state.selectedLanguage,
-          difficulty: getSavedDifficulty(),
-        },
-      });
-      usedJsonFallback = true;
-    }
+    const streamClient = getProblemStreamClient();
+    const { payload, streamed, usedJsonFallback } = await streamClient.loadProblemTransport({
+      streamClient,
+      streamRequest: loadCodeBlockProblemViaStream,
+      jsonRequest: async () => {
+        setStatus("스트림 연결이 불안정해 일반 모드로 다시 시도합니다...");
+        setLoadButtonLoading(true, "일반 모드로 다시 시도 중...");
+        return apiRequest("/platform/codeblock/problem", {
+          method: "POST",
+          body: {
+            language: state.selectedLanguage,
+            difficulty: getSavedDifficulty(),
+          },
+        });
+      },
+      shouldFallback: shouldFallbackToJson,
+    });
 
     if (!payload) {
       throw new Error("문제를 불러오지 못했습니다.");
     }
 
     let animated = false;
-    if (streamed || usedJsonFallback) {
+    if (streamed) {
+      renderProblem(payload);
+      animated = true;
+    } else if (usedJsonFallback) {
       animated = await animateCodeBlockProblem(payload);
     }
     if (!animated) {
@@ -457,14 +474,8 @@ async function handleLoadProblem() {
     setStatus("코드를 분석하고 빈칸에 들어갈 정답을 선택해 보세요.");
   } catch (err) {
     console.error(err);
+    resetProblemDisplay();
     setStatus(err?.message || "문제를 불러오지 못했습니다.");
-    if (elements.objective) {
-      elements.objective.textContent = "문제 목적을 불러오지 못했습니다. 다시 시도해 주세요.";
-    }
-    if (elements.code) {
-      elements.code.textContent = "# 다시 시도해 주세요.";
-    }
-    renderOptionMessage("문제 생성에 실패했습니다. 다시 시도해 주세요.");
   } finally {
     state.isLoadingProblem = false;
     setLoadButtonLoading(false);

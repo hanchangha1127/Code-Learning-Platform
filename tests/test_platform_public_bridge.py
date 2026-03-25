@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import unittest
 from datetime import datetime
 from unittest.mock import patch
@@ -35,6 +36,24 @@ class FakeSqlSession:
 
     def query(self, *_args, **_kwargs):
         return self
+
+
+class _ManagedSession:
+    def __init__(self) -> None:
+        self.commit_calls = 0
+        self.rollback_calls = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def commit(self) -> None:
+        self.commit_calls += 1
+
+    def rollback(self) -> None:
+        self.rollback_calls += 1
 
 
 class _FakeHistoryCacheConnection:
@@ -96,10 +115,11 @@ class PlatformPublicBridgeTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "analysis")
         self.assertEqual(payload["problem"]["id"], "analysis-1")
         self.assertEqual(payload["problem"]["problemId"], "analysis-1")
-        self.assertEqual(payload["skillLevel"], "beginner")
+        self.assertEqual(payload["skillLevel"], "level1")
         persisted_payload = mock_persist.call_args.kwargs["problem_payload"]
         self.assertEqual(persisted_payload["problemId"], "analysis-1")
         self.assertEqual(persisted_payload["mode"], "analysis")
+        self.assertEqual(persisted_payload["skillLevel"], "level1")
         self.assertNotIn("problem", persisted_payload)
         self.assertEqual(fake_db.commits, 1)
         self.assertEqual(fake_db.rollbacks, 0)
@@ -148,9 +168,19 @@ class PlatformPublicBridgeTests(unittest.TestCase):
         self.assertEqual(fake_db.commits, 0)
         self.assertEqual(fake_db.rollbacks, 1)
 
-    def test_request_mode_problem_can_defer_persistence_after_payload_is_ready(self) -> None:
+    def test_request_mode_problem_can_emit_payload_early_while_local_follow_up_is_running(self) -> None:
         fake_db = FakeSqlSession()
         emitted_payloads: list[dict] = []
+        payload_emitted = threading.Event()
+        allow_follow_up_to_finish = threading.Event()
+        follow_up_started = threading.Event()
+        request_completed = threading.Event()
+        payload_holder: list[dict] = []
+        request_error: list[Exception] = []
+
+        def _slow_follow_up(**_kwargs) -> None:
+            follow_up_started.set()
+            allow_follow_up_to_finish.wait(timeout=2)
 
         with (
             patch.object(
@@ -158,10 +188,68 @@ class PlatformPublicBridgeTests(unittest.TestCase):
                 "_request_runtime_problem",
                 return_value={"problemId": "code-block-7", "objective": "반복문 누적 흐름을 완성하세요."},
             ),
-            patch.object(platform_public_bridge, "_defer_problem_follow_up") as mock_follow_up,
+            patch.object(platform_public_bridge, "_perform_problem_follow_up", side_effect=_slow_follow_up),
+        ):
+            def _run_request() -> None:
+                try:
+                    payload_holder.append(
+                        platform_public_bridge.request_mode_problem(
+                            mode="code-block",
+                            username="bridge-user",
+                            user_id=1,
+                            language="python",
+                            difficulty="beginner",
+                            db=fake_db,
+                            defer_persistence=True,
+                            on_payload_ready=lambda payload: (
+                                emitted_payloads.append(payload),
+                                payload_emitted.set(),
+                            ),
+                        )
+                    )
+                except Exception as exc:  # pragma: no cover - defensive fallback
+                    request_error.append(exc)
+                finally:
+                    request_completed.set()
+
+            request_thread = threading.Thread(target=_run_request, daemon=True)
+            request_thread.start()
+
+            self.assertTrue(follow_up_started.wait(timeout=1))
+            self.assertTrue(payload_emitted.wait(timeout=1))
+            self.assertEqual(len(emitted_payloads), 1)
+            self.assertFalse(request_completed.is_set())
+
+            allow_follow_up_to_finish.set()
+            request_thread.join(timeout=2)
+
+        self.assertFalse(request_error)
+        self.assertTrue(request_completed.is_set())
+        self.assertEqual(payload_holder[0]["problemId"], "code-block-7")
+        self.assertEqual(payload_holder[0]["objective"], "반복문 누적 흐름을 완성하세요.")
+        self.assertEqual(emitted_payloads, payload_holder)
+        self.assertEqual(fake_db.commits, 0)
+        self.assertEqual(fake_db.rollbacks, 0)
+
+    def test_request_mode_problem_disables_rq_when_streaming_follow_up_is_deferred(self) -> None:
+        fake_db = FakeSqlSession()
+        emitted_payloads: list[dict] = []
+        captured_kwargs: dict[str, object] = {}
+
+        def _capture_follow_up(**kwargs):
+            captured_kwargs.update(kwargs)
+            return None
+
+        with (
+            patch.object(
+                platform_public_bridge,
+                "_request_runtime_problem",
+                return_value={"problemId": "analysis-queued-1", "title": "queued"},
+            ),
+            patch.object(platform_public_bridge, "_defer_problem_follow_up", side_effect=_capture_follow_up),
         ):
             payload = platform_public_bridge.request_mode_problem(
-                mode="code-block",
+                mode="analysis",
                 username="bridge-user",
                 user_id=1,
                 language="python",
@@ -171,16 +259,54 @@ class PlatformPublicBridgeTests(unittest.TestCase):
                 on_payload_ready=emitted_payloads.append,
             )
 
-        self.assertEqual(payload["problemId"], "code-block-7")
-        self.assertEqual(payload["objective"], "반복문 누적 흐름을 완성하세요.")
+        self.assertEqual(payload["problemId"], "analysis-queued-1")
         self.assertEqual(emitted_payloads, [payload])
-        self.assertEqual(fake_db.commits, 0)
-        self.assertEqual(fake_db.rollbacks, 0)
-        mock_follow_up.assert_called_once()
+        self.assertFalse(captured_kwargs.get("allow_rq", True))
+
+    def test_request_mode_problem_rejects_unknown_language_instead_of_falling_back_to_python(self) -> None:
+        fake_db = FakeSqlSession()
+
+        with patch.object(platform_public_bridge, "_request_runtime_problem") as mock_runtime_request:
+            with self.assertRaisesRegex(ValueError, "지원하지 않는 언어"):
+                platform_public_bridge.request_mode_problem(
+                    mode="analysis",
+                    username="bridge-user",
+                    user_id=1,
+                    language="not-a-language",
+                    difficulty="beginner",
+                    db=fake_db,
+                )
+
+        mock_runtime_request.assert_not_called()
+
+    def test_perform_problem_follow_up_commits_problem_persistence(self) -> None:
+        managed_session = _ManagedSession()
+
+        with (
+            patch.object(platform_public_bridge, "SessionLocal", return_value=managed_session),
+            patch.object(platform_public_bridge, "_persist_problem") as mock_persist,
+            patch.object(platform_public_bridge, "_record_ops_event_best_effort") as mock_record,
+        ):
+            platform_public_bridge._perform_problem_follow_up(
+                mode="analysis",
+                username="bridge-user",
+                user_id=7,
+                problem_payload={"problemId": "analysis-17"},
+                runtime_payload={"problemId": "analysis-17"},
+                event_type="problem_requested",
+                latency_ms=120,
+                language="python",
+                difficulty="beginner",
+            )
+
+        self.assertEqual(managed_session.commit_calls, 1)
+        self.assertEqual(managed_session.rollback_calls, 0)
+        self.assertEqual(mock_persist.call_args.kwargs["db"], managed_session)
+        mock_record.assert_called_once()
 
     def test_defer_problem_follow_up_raises_when_local_queue_is_full(self) -> None:
         with (
-            patch.object(platform_public_bridge, "is_rq_enabled", return_value=False),
+            patch.object(platform_public_bridge, "is_problem_follow_up_rq_enabled", return_value=False),
             patch.object(platform_public_bridge._PROBLEM_FOLLOW_UP_SLOTS, "acquire", return_value=False),
             patch.object(platform_public_bridge, "_persist_problem") as mock_persist,
             patch.object(platform_public_bridge, "_record_ops_event_best_effort") as mock_record_event,
@@ -203,7 +329,7 @@ class PlatformPublicBridgeTests(unittest.TestCase):
 
     def test_defer_problem_follow_up_uses_rq_enqueue_when_enabled(self) -> None:
         with (
-            patch.object(platform_public_bridge, "is_rq_enabled", return_value=True),
+            patch.object(platform_public_bridge, "is_problem_follow_up_rq_enabled", return_value=True),
             patch.object(platform_public_bridge, "enqueue_problem_follow_up_job") as mock_enqueue,
             patch.object(platform_public_bridge._PROBLEM_FOLLOW_UP_SLOTS, "acquire") as mock_acquire,
         ):
@@ -224,7 +350,7 @@ class PlatformPublicBridgeTests(unittest.TestCase):
 
     def test_defer_problem_follow_up_raises_when_rq_enqueue_fails(self) -> None:
         with (
-            patch.object(platform_public_bridge, "is_rq_enabled", return_value=True),
+            patch.object(platform_public_bridge, "is_problem_follow_up_rq_enabled", return_value=True),
             patch.object(platform_public_bridge, "enqueue_problem_follow_up_job", side_effect=RuntimeError("rq down")),
         ):
             with self.assertRaises(platform_public_bridge.ProblemFollowUpUnavailableError):
@@ -466,6 +592,19 @@ class PlatformPublicBridgeTests(unittest.TestCase):
         mock_read.assert_called_once_with("bridge-user")
         mock_seed.assert_not_called()
 
+    def test_get_public_profile_uses_lightweight_stats_when_history_is_not_supplied(self) -> None:
+        with (
+            patch.object(platform_public_bridge.learning_service, "get_profile", return_value={"skillLevel": "beginner"}),
+            patch.object(platform_public_bridge, "_count_public_history_stats", return_value=(8, 5)) as mock_stats,
+        ):
+            payload = platform_public_bridge.get_public_profile("bridge-user")
+
+        self.assertEqual(payload["skillLevel"], "level1")
+        self.assertEqual(payload["totalAttempts"], 8)
+        self.assertEqual(payload["correctAnswers"], 5)
+        self.assertEqual(payload["accuracy"], 62.5)
+        mock_stats.assert_called_once_with("bridge-user")
+
     def test_increment_public_history_total_updates_existing_cache_entry(self) -> None:
         fake_conn = _FakeHistoryCacheConnection(exists=True)
 
@@ -510,7 +649,7 @@ class PlatformPublicBridgeTests(unittest.TestCase):
 
     def test_defer_problem_follow_up_runs_inline_when_executor_is_unavailable(self) -> None:
         with (
-            patch.object(platform_public_bridge, "is_rq_enabled", return_value=False),
+            patch.object(platform_public_bridge, "is_problem_follow_up_rq_enabled", return_value=False),
             patch.object(platform_public_bridge._PROBLEM_FOLLOW_UP_SLOTS, "acquire", return_value=True),
             patch.object(platform_public_bridge._PROBLEM_FOLLOW_UP_EXECUTOR, "submit", side_effect=RuntimeError("offline")),
             patch.object(platform_public_bridge._PROBLEM_FOLLOW_UP_SLOTS, "release") as mock_release,
@@ -533,7 +672,7 @@ class PlatformPublicBridgeTests(unittest.TestCase):
         mock_record_event.assert_called_once()
         mock_release.assert_called_once()
 
-    def test_request_mode_problem_does_not_emit_payload_when_follow_up_reservation_fails(self) -> None:
+    def test_request_mode_problem_still_emits_payload_before_follow_up_failure_is_reported(self) -> None:
         emitted_payloads: list[dict] = []
 
         with (
@@ -544,7 +683,7 @@ class PlatformPublicBridgeTests(unittest.TestCase):
             ),
             patch.object(
                 platform_public_bridge,
-                "_defer_problem_follow_up",
+                "_perform_problem_follow_up",
                 side_effect=platform_public_bridge.ProblemFollowUpUnavailableError("stream_capacity_exceeded"),
             ),
             patch.object(platform_public_bridge, "_defer_failure_ops_event") as mock_failure_event,
@@ -561,7 +700,8 @@ class PlatformPublicBridgeTests(unittest.TestCase):
                     on_payload_ready=emitted_payloads.append,
                 )
 
-        self.assertEqual(emitted_payloads, [])
+        self.assertEqual(len(emitted_payloads), 1)
+        self.assertEqual(emitted_payloads[0]["problemId"], "analysis-13")
         mock_failure_event.assert_called_once()
 
 

@@ -2,6 +2,13 @@
 
 from typing import Any, Callable, Dict, List
 
+from backend.skill_levels import (
+    DEFAULT_SKILL_LEVEL,
+    normalize_skill_level,
+    skill_level_id,
+    skill_level_number,
+)
+
 
 def recent_attempts(
     service: Any,
@@ -104,14 +111,22 @@ def update_tier_if_needed(
     )
     context = f"{summary}\n\n" + "\n".join(lines)
 
-    current_tier = profile.get("skill_level", "beginner")
+    current_tier = normalize_skill_level(profile.get("skill_level"), DEFAULT_SKILL_LEVEL)
     ai_result = service.ai_client.evaluate_tier(context, current_tier)
-    proposed = ai_result.get("tier", current_tier)
+    proposed = normalize_skill_level(ai_result.get("tier"), current_tier)
     reason = ai_result.get("reason", "")
 
-    tier_rank = {"beginner": 0, "intermediate": 1, "advanced": 2}
-    current_rank = tier_rank.get(current_tier, 0)
-    proposed_rank = tier_rank.get(proposed, current_rank)
+    current_rank = skill_level_number(current_tier)
+    proposed_rank = skill_level_number(proposed, current_rank)
+
+    if proposed_rank > current_rank + 1:
+        proposed_rank = current_rank + 1
+        proposed = skill_level_id(proposed_rank)
+        reason = (reason + " (한 번에 승급 가능한 폭은 1레벨로 제한됨)").strip()
+    elif proposed_rank < current_rank - 1:
+        proposed_rank = current_rank - 1
+        proposed = skill_level_id(proposed_rank)
+        reason = (reason + " (한 번에 강등 가능한 폭은 1레벨로 제한됨)").strip()
 
     if beginner_ratio >= tier_beginner_ratio_limit and proposed_rank > current_rank:
         proposed = current_tier
