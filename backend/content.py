@@ -62,6 +62,10 @@ LANGUAGES: Dict[str, Dict[str, str]] = {
         "title": "PHP",
         "description": "웹 백엔드와 CMS 생태계에서 여전히 널리 쓰이는 서버 스크립트 언어입니다.",
     },
+    "golfscript": {
+        "title": "골프스크립트",
+        "description": "짧은 코드 작성에 특화된 스택 기반 골프 언어로, 코드 추론 연습에 적합합니다.",
+    },
 }
 
 LANGUAGE_ALIASES: Dict[str, str] = {
@@ -71,6 +75,7 @@ LANGUAGE_ALIASES: Dict[str, str] = {
     "c++": "cpp",
     "cs": "csharp",
     "c#": "csharp",
+    "gs": "golfscript",
 }
 
 

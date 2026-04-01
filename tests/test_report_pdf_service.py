@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timezone
+import re
 
 from app.db.models import Report, ReportType
+import app.services.report_pdf_service as report_pdf_service
 from app.services.report_pdf_service import (
     _LATEST_REPORT_BATCH_SIZE,
     _build_feedback_chart_specs,
@@ -57,6 +59,10 @@ class _FakeDB:
     def query(self, model):
         self.last_query = _FakeQuery(self._reports)
         return self.last_query
+
+
+def _count_pdf_pages(pdf_bytes: bytes) -> int:
+    return len(re.findall(rb"/Type /Page\b", pdf_bytes))
 
 
 class ReportPdfServiceTests(unittest.TestCase):
@@ -382,7 +388,7 @@ class ReportPdfServiceTests(unittest.TestCase):
         self.assertTrue(pdf_bytes.startswith(b"%PDF-"))
         self.assertGreater(len(pdf_bytes), 1000)
 
-    def test_build_report_pdf_bytes_renders_richer_plan_and_evidence_sections(self) -> None:
+    def test_build_report_pdf_bytes_renders_compact_feedback_and_is_visual(self) -> None:
         minimal_report = Report(
             id=32,
             user_id=1,
@@ -511,8 +517,116 @@ class ReportPdfServiceTests(unittest.TestCase):
 
         self.assertTrue(rich_pdf.startswith(b"%PDF-"))
         self.assertGreater(len(minimal_pdf), 1000)
-        self.assertGreater(len(rich_pdf), len(minimal_pdf) + 800)
-        self.assertGreater(len(rich_pdf), 2500)
+        self.assertGreater(len(rich_pdf), len(minimal_pdf))
+        self.assertGreater(_count_pdf_pages(rich_pdf), 2)
+        self.assertLess(_count_pdf_pages(rich_pdf), 5)
+
+    def test_compact_pdf_places_study_guide_before_key_metrics(self) -> None:
+        original_loader = report_pdf_service._load_reportlab_components
+        original_components = original_loader()
+        original_paragraph = original_components["Paragraph"]
+        original_page_break = original_components["PageBreak"]
+        original_doc = original_components["SimpleDocTemplate"]
+        captured: dict[str, list] = {
+            "paragraphs": [],
+            "story": [],
+        }
+
+        class _SpyParagraph(original_paragraph):
+            def __init__(self, text, style, *args, **kwargs):
+                super().__init__(text, style, *args, **kwargs)
+                self._spy_text = text
+                captured["paragraphs"].append(text)
+
+        class _SpyPageBreak(original_page_break):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+
+        class _SpyDoc(original_doc):
+            def build(self, story):  # type: ignore[override]
+                captured["story"] = list(story)
+                captured["break_indices"] = [
+                    i for i, item in enumerate(story) if isinstance(item, _SpyPageBreak)
+                ]
+                super().build(story)
+
+        def _load_spy_components():
+            components = dict(original_loader())
+            components["Paragraph"] = _SpyParagraph
+            components["PageBreak"] = _SpyPageBreak
+            components["SimpleDocTemplate"] = _SpyDoc
+            return components
+
+        report_pdf_service._load_reportlab_components = _load_spy_components
+
+        try:
+            report = Report(
+                id=34,
+                user_id=1,
+                report_type=ReportType.milestone,
+                title="Learning report",
+                summary="Short summary",
+                recommendations=["Review the latest mistake"],
+                stats={
+                    "source": "milestone_report",
+                    "solutionPlan": {
+                        "goal": "Learning report",
+                        "solutionSummary": "Short summary",
+                        "priorityActions": [
+                            "Review the latest mistake",
+                            "Write one counterexample",
+                        ],
+                        "phasePlan": ["Phase 1: review the latest failure"],
+                        "learningHabits": ["Spend 10 minutes on one weak area"],
+                        "focusTopics": ["logic", "boundary conditions", "time management"],
+                        "metricsToTrack": ["accuracy", "average score", "wrong type share"],
+                        "checkpoints": [
+                            "reach 70 percent accuracy",
+                            "reduce repeated mistakes",
+                        ],
+                        "riskMitigation": [
+                            "slow down on first read",
+                            "recheck the final answer",
+                        ],
+                    },
+                    "metricSnapshot": {
+                        "attempts": 12,
+                        "accuracy": 66.7,
+                        "avgScore": 72.5,
+                        "trend": "stable",
+                    },
+                    "detailRecords": [
+                        {"title": "case 1", "modeLabel": "code-arrange", "score": 45, "result": "wrong"},
+                        {"title": "case 2", "modeLabel": "analysis", "score": 88, "result": "correct"},
+                    ],
+                    "chartScoreTrend": {
+                        "records": [
+                            {"mode": "code-arrange", "modeLabel": "코드 배치", "score": 82, "result": "correct"},
+                            {"mode": "analysis", "modeLabel": "코드 분석", "score": 48, "result": "wrong"},
+                        ],
+                    },
+                },
+                created_at=datetime(2026, 3, 19, 10, 30, tzinfo=timezone.utc),
+            )
+
+            _ = report_pdf_service.build_report_pdf_bytes(report)
+        finally:
+            report_pdf_service._load_reportlab_components = original_loader
+
+        guide_story_index = next(
+            i
+            for i, item in enumerate(captured["story"])
+            if isinstance(item, _SpyParagraph) and "가이드" in getattr(item, "_spy_text", "")
+        )
+        metrics_story_index = next(
+            i
+            for i, item in enumerate(captured["story"])
+            if isinstance(item, _SpyParagraph) and "지표" in getattr(item, "_spy_text", "")
+        )
+        first_break_index = min(captured["break_indices"])
+
+        self.assertLess(guide_story_index, first_break_index)
+        self.assertLess(first_break_index, metrics_story_index)
 
 
 if __name__ == "__main__":

@@ -74,7 +74,7 @@ def _strip_comments(code: str, language_id: str) -> str:
     """Strip common comments from generated code.
 
     Supported languages:
-    - python: '#' line comments
+    - python/golfscript: '#' line comments
     - javascript/typescript/java/c/cpp/csharp/go/rust: '//' and '/* ... */'
     - php: '//', '#', and '/* ... */'
     """
@@ -86,7 +86,7 @@ def _strip_comments(code: str, language_id: str) -> str:
     line_comment_markers: tuple[str, ...] = ()
     block_comment: tuple[str, str] | None = None
 
-    if language_id == "python":
+    if language_id in {"python", "golfscript"}:
         line_comment_markers = ("#",)
     elif language_id in {"javascript", "typescript", "java", "c", "cpp", "csharp", "go", "rust"}:
         line_comment_markers = ("//",)
@@ -164,8 +164,8 @@ def _strip_comments(code: str, language_id: str) -> str:
 
         ch = code[i]
         if ch in {"'", '"', "`"}:
-            # For python, backticks are not valid strings, but handling it is harmless.
-            if ch == "`" and language_id == "python":
+            # Python and GolfScript use backtick as syntax, not string delimiters.
+            if ch == "`" and language_id in {"python", "golfscript"}:
                 out.append(ch)
                 i += 1
                 continue
@@ -195,6 +195,7 @@ def _language_file_extension(language_id: str) -> str:
         "go": "go",
         "rust": "rs",
         "php": "php",
+        "golfscript": "gs",
     }.get(normalized, "txt")
 
 
@@ -220,6 +221,8 @@ def _fallback_code_for_language(language_id: str) -> str:
         return "fn analyze_me(value: i32) -> i32 {\n    value\n}\n"
     if normalized == "php":
         return "<?php\nfunction analyzeMe($value) {\n    return $value;\n}\n"
+    if normalized == "golfscript":
+        return "1 2+\n"
     return "function analyzeMe(value) {\n  return value;\n}\n"
 
 
@@ -571,7 +574,7 @@ def _normalize_advanced_analysis_files(
             language = str(entry.get("language") or default_language).strip().lower() or default_language
             role = str(entry.get("role") or default_role).strip() or default_role
             content = str(entry.get("content") or entry.get("code") or "").rstrip()
-            if language in {"python", "javascript", "typescript", "java", "c", "cpp", "csharp", "go", "rust", "php"}:
+            if language in {"python", "javascript", "typescript", "java", "c", "cpp", "csharp", "go", "rust", "php", "golfscript"}:
                 content = _strip_comments(content, language).rstrip()
             if not content:
                 continue

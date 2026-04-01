@@ -9,28 +9,25 @@ class MilestoneReportRequest(BaseModel):
     problem_count: int = Field(default=10, ge=1, le=200)
 
 
-class MetricSnapshot(BaseModel):
-    attempts: int
-    accuracy: float | None = None
-    avgScore: float | None = None
-    trend: str
-
-
 class LearningSolutionReportRead(BaseModel):
-    reportId: int | None
-    createdAt: str
-    goal: str
-    solutionSummary: str
-    priorityActions: list[str]
-    phasePlan: list[str]
-    dailyHabits: list[str]
-    focusTopics: list[str]
-    metricsToTrack: list[str]
-    checkpoints: list[str]
-    riskMitigation: list[str]
-    metricSnapshot: MetricSnapshot
+    status: str = "ready"
+    reportId: int | None = None
+    createdAt: str | None = None
+    goal: str = ""
+    solutionSummary: str = ""
+    priorityActions: list[str] = Field(default_factory=list)
+    phasePlan: list[str] = Field(default_factory=list)
+    dailyHabits: list[str] = Field(default_factory=list)
+    focusTopics: list[str] = Field(default_factory=list)
+    metricsToTrack: list[str] = Field(default_factory=list)
+    checkpoints: list[str] = Field(default_factory=list)
+    riskMitigation: list[str] = Field(default_factory=list)
+    metricSnapshot: dict[str, Any] = Field(default_factory=dict)
     reportBrief: dict[str, Any] = Field(default_factory=dict)
     pdfDownloadUrl: str | None = None
+    currentAttemptCount: int | None = None
+    minimumRequiredAttempts: int | None = None
+    blockingMessage: str | None = None
 
 
 class LatestLearningReportRead(BaseModel):

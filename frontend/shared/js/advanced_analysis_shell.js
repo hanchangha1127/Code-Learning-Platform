@@ -10,6 +10,7 @@ const MODE_JOB_MAX_POLL_ATTEMPTS = 60;
 
 const authClient = window.CodeAuth || null;
 const streamClient = window.CodeProblemStream || null;
+const reviewResume = window.CodeReviewResume || null;
 
 const DIFFICULTY_OPTIONS = new Set(["beginner", "intermediate", "advanced"]);
 const DIFFICULTY_LABELS = {
@@ -24,6 +25,7 @@ const STRING_PATTERN = /(`[^`]*`|"[^"]*"|'[^']*')/g;
 
 const MODE_CONFIGS = {
   "single-file": {
+    mode: "single-file-analysis",
     apiPath: "/platform/single-file-analysis/problem",
     submitPath: "/platform/single-file-analysis/submit",
     workspace: "single-file-analysis.workspace",
@@ -44,6 +46,7 @@ const MODE_CONFIGS = {
     ],
   },
   "multi-file": {
+    mode: "multi-file-analysis",
     apiPath: "/platform/multi-file-analysis/problem",
     submitPath: "/platform/multi-file-analysis/submit",
     workspace: "multi-file-analysis.workspace",
@@ -64,6 +67,7 @@ const MODE_CONFIGS = {
     ],
   },
   fullstack: {
+    mode: "fullstack-analysis",
     apiPath: "/platform/fullstack-analysis/problem",
     submitPath: "/platform/fullstack-analysis/submit",
     workspace: "fullstack-analysis.workspace",
@@ -174,6 +178,7 @@ async function init() {
   await tryLoadLanguages();
   renderLanguageDifficulty();
   renderEmptyState();
+  await tryResumeReview();
 }
 
 function resolveModeConfig() {
@@ -323,6 +328,62 @@ function renderEmptyState() {
   clearFeedback();
   renderStatusCards(false);
   updateSubmitButtonState();
+}
+
+async function tryResumeReview() {
+  if (!reviewResume?.resumeReviewProblem || !state.modeConfig) {
+    return false;
+  }
+
+  return reviewResume.resumeReviewProblem({
+    mode: state.modeConfig.mode,
+    apiRequest,
+    applyProblem: async (problem) => {
+      const normalizedProblem = normalizeProblemPayload(problem);
+      if (!normalizedProblem) {
+        throw new Error("복습 문제 데이터가 비어 있습니다.");
+      }
+
+      stopSubmitPolling();
+      state.selectedLanguage = normalizedProblem.language || state.selectedLanguage;
+      state.selectedDifficulty = normalizedProblem.difficulty || state.selectedDifficulty;
+      state.currentProblem = normalizedProblem;
+      state.activeFileId = normalizedProblem.files[0]?.id || null;
+      state.submissionPhase = "ready";
+      state.latestResult = null;
+      state.submitPending = false;
+
+      renderLanguageDifficulty();
+      if (elements.reportText) {
+        elements.reportText.value = "";
+      }
+      clearFeedback();
+      renderProblem(normalizedProblem);
+      renderStatusCards(true);
+      updateSubmitButtonState();
+
+      if (elements.modeState) {
+        elements.modeState.textContent = "복습 문제";
+      }
+      if (elements.loadStatus) {
+        elements.loadStatus.textContent = "같은 문제를 다시 열었습니다. 이어서 복습해 보세요.";
+      }
+    },
+    onStatus: (message) => {
+      if (elements.loadStatus) {
+        elements.loadStatus.textContent = message;
+      }
+    },
+    onError: (error) => {
+      if (elements.modeState) {
+        elements.modeState.textContent = "복습 문제 불러오기 실패";
+      }
+      if (elements.loadStatus) {
+        elements.loadStatus.textContent = error.message || "복습 문제를 다시 열지 못했습니다.";
+      }
+      showToast(error.message || "복습 문제를 다시 열지 못했습니다.");
+    },
+  });
 }
 
 async function loadProblem() {

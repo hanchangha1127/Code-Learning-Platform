@@ -7,7 +7,7 @@ from backend.content import LANGUAGES, normalize_language_id
 
 class LanguageCatalogTests(unittest.TestCase):
     def test_requested_languages_are_available(self) -> None:
-        for language_id in ("typescript", "cpp", "csharp", "go", "rust", "php"):
+        for language_id in ("typescript", "cpp", "csharp", "go", "rust", "php", "golfscript"):
             with self.subTest(language_id=language_id):
                 self.assertIn(language_id, LANGUAGES)
 
@@ -16,6 +16,7 @@ class LanguageCatalogTests(unittest.TestCase):
         self.assertEqual(normalize_language_id("cs"), "csharp")
         self.assertEqual(normalize_language_id("C#"), "csharp")
         self.assertEqual(normalize_language_id("TS"), "typescript")
+        self.assertEqual(normalize_language_id("gs"), "golfscript")
 
 
 if __name__ == "__main__":

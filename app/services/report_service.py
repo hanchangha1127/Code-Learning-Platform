@@ -19,6 +19,7 @@ _REPORT_SIGNAL_LIMIT = 5
 _REPORT_CHART_RECENT_WINDOW = 10
 _REPORT_CHART_WRONG_WINDOW = 10
 _REPORT_CHART_LOOKBACK_LIMIT = 40
+_MIN_REPORT_ATTEMPTS = 10
 _KST = timezone(timedelta(hours=9), name="KST")
 
 
@@ -1250,8 +1251,48 @@ def _build_chart_wrong_type_window(
     }
 
 
+def _build_insufficient_history_payload(current_attempt_count: int) -> dict[str, Any]:
+    remaining = max(_MIN_REPORT_ATTEMPTS - int(current_attempt_count), 0)
+    blocking_message = (
+        f"학습 리포트를 생성하려면 최소 {_MIN_REPORT_ATTEMPTS}문제 이상 풀이해야 합니다. "
+        f"현재 {int(current_attempt_count)}문제를 풀었으니 {remaining}문제 더 풀어 주세요."
+    )
+    return {
+        "status": "insufficient_history",
+        "reportId": None,
+        "createdAt": None,
+        "goal": "",
+        "solutionSummary": "",
+        "priorityActions": [],
+        "phasePlan": [],
+        "dailyHabits": [],
+        "focusTopics": [],
+        "metricsToTrack": [],
+        "checkpoints": [],
+        "riskMitigation": [],
+        "metricSnapshot": {
+            "attempts": int(current_attempt_count),
+            "accuracy": None,
+            "avgScore": None,
+            "trend": "insufficient_history",
+        },
+        "reportBrief": {
+            "title": "리포트 생성 준비 중",
+            "summary": blocking_message,
+        },
+        "pdfDownloadUrl": None,
+        "currentAttemptCount": int(current_attempt_count),
+        "minimumRequiredAttempts": _MIN_REPORT_ATTEMPTS,
+        "blockingMessage": blocking_message,
+    }
+
+
 def create_milestone_report(db: Session, user_id: int, problem_count: int) -> dict[str, Any]:
     recent_submissions = _load_recent_submissions(db, user_id, max(problem_count, _REPORT_CHART_LOOKBACK_LIMIT))
+    current_attempt_count = len(recent_submissions)
+    if current_attempt_count < _MIN_REPORT_ATTEMPTS:
+        return _build_insufficient_history_payload(current_attempt_count)
+
     submissions = recent_submissions[:problem_count]
     today_submissions = _load_today_submissions_kst(db, user_id)
 
@@ -1388,10 +1429,14 @@ def create_milestone_report(db: Session, user_id: int, problem_count: int) -> di
     db.commit()
     db.refresh(report)
     return {
+        "status": "ready",
         "reportId": report.id,
         "createdAt": serialize_report_created_at(report.created_at) or serialize_report_created_at(utcnow()),
         **solution_plan,
         "metricSnapshot": metric_snapshot,
         "reportBrief": report_brief,
         "pdfDownloadUrl": build_report_pdf_download_url(report.id),
+        "currentAttemptCount": None,
+        "minimumRequiredAttempts": None,
+        "blockingMessage": None,
     }

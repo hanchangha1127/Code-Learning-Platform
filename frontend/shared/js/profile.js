@@ -46,6 +46,7 @@ const LANGUAGE_LABELS = {
   go: "Go",
   rust: "Rust",
   php: "PHP",
+  golfscript: "골프스크립트",
 };
 const LANGUAGE_ALIASES = {
   py: "python",
@@ -54,6 +55,7 @@ const LANGUAGE_ALIASES = {
   "c++": "cpp",
   cs: "csharp",
   "c#": "csharp",
+  gs: "golfscript",
 };
 
 const REPORT_LOADING_STEPS = [
@@ -1597,6 +1599,27 @@ function showReportErrorModal(error) {
   );
 }
 
+function showReportBlockedModal(payload) {
+  const currentAttemptCount = Number(payload?.currentAttemptCount);
+  const minimumRequiredAttempts = Number(payload?.minimumRequiredAttempts);
+  const current = Number.isFinite(currentAttemptCount) ? currentAttemptCount : 0;
+  const minimum = Number.isFinite(minimumRequiredAttempts) && minimumRequiredAttempts > 0 ? minimumRequiredAttempts : 10;
+  const blockingMessage = escapeText(
+    payload?.blockingMessage,
+    `학습 리포트를 생성하려면 최소 ${minimum}문제 이상 풀이해야 합니다. 현재 ${current}문제를 풀었으니 문제를 더 풀어 주세요.`
+  );
+  const body = `
+    <div class="report-loading-error">
+      <p class="report-loading-error-title">리포트 생성 준비 중입니다.</p>
+      <p class="report-loading-error-desc">${blockingMessage}</p>
+      <p class="report-loading-error-desc">현재 ${current}문제 · 최소 ${minimum}문제</p>
+      <button id="report-blocked-close-btn" type="button" class="primary block">확인</button>
+    </div>
+  `;
+  showModal("학습 리포트", body, { wide: true });
+  document.getElementById("report-blocked-close-btn")?.addEventListener("click", hideModal, { once: true });
+}
+
 async function openReportModal() {
   showReportOverviewModal();
 
@@ -1625,6 +1648,11 @@ async function generateReport() {
       body: { problem_count: 10 },
     });
     if (state.activeReportRequestId !== requestId) return;
+    if (normalizeText(payload?.status) === "insufficient_history") {
+      stopReportLoadingAnimation();
+      showReportBlockedModal(payload);
+      return;
+    }
     state.latestReportRequestId += 1;
     setLatestReport({
       available: Number(payload?.reportId) > 0,

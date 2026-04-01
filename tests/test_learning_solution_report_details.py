@@ -219,11 +219,13 @@ class LearningSolutionReportDetailTests(unittest.TestCase):
             captured.update(kwargs)
             return _solution_plan()
 
-        with patch.object(report_service, "_load_recent_submissions", return_value=[submission]), patch.object(
-            report_service, "_load_today_submissions_kst", return_value=[submission]
-        ), patch.object(report_service, "_load_recent_analyses", return_value=[analysis]), patch.object(
-            report_service, "_load_problem_stats_map", return_value=stats_by_problem
-        ), patch.object(report_service._learning_report_ai, "generate_learning_solution_report", side_effect=_capture_generate):
+        with patch.object(report_service, "_MIN_REPORT_ATTEMPTS", 1), patch.object(
+            report_service, "_load_recent_submissions", return_value=[submission]
+        ), patch.object(report_service, "_load_today_submissions_kst", return_value=[submission]), patch.object(
+            report_service, "_load_recent_analyses", return_value=[analysis]
+        ), patch.object(report_service, "_load_problem_stats_map", return_value=stats_by_problem), patch.object(
+            report_service._learning_report_ai, "generate_learning_solution_report", side_effect=_capture_generate
+        ):
             result = report_service.create_milestone_report(fake_db, user_id=1, problem_count=10)
 
         self.assertEqual(result["reportId"], 901)
@@ -329,6 +331,25 @@ class LearningSolutionReportDetailTests(unittest.TestCase):
         self.assertEqual(metric_snapshot["chartWrongTypes"]["label"], "최근 오답 10회")
         self.assertEqual(metric_snapshot["chartWrongTypes"]["rows"][0]["label"], "logic_error")
         self.assertEqual(metric_snapshot["chartWrongTypes"]["rows"][0]["count"], 6)
+
+    def test_milestone_report_blocks_when_attempt_count_is_below_minimum(self) -> None:
+        fake_db = _FakeDB()
+        submission_stub = SimpleNamespace(id=10, user_id=1)
+
+        with patch.object(report_service, "_load_recent_submissions", return_value=[submission_stub] * 3), patch.object(
+            report_service._learning_report_ai, "generate_learning_solution_report"
+        ) as generate_mock:
+            result = report_service.create_milestone_report(fake_db, user_id=1, problem_count=10)
+
+        self.assertEqual(result["status"], "insufficient_history")
+        self.assertIsNone(result["reportId"])
+        self.assertIsNone(result["createdAt"])
+        self.assertIsNone(result["pdfDownloadUrl"])
+        self.assertEqual(result["currentAttemptCount"], 3)
+        self.assertEqual(result["minimumRequiredAttempts"], 10)
+        self.assertIn("7문제 더 풀어", result["blockingMessage"] or "")
+        self.assertEqual(fake_db.added, [])
+        generate_mock.assert_not_called()
 
     def test_milestone_report_detail_records_keep_advanced_analysis_mode(self) -> None:
         now = datetime(2026, 3, 16, 10, 0, tzinfo=timezone.utc)

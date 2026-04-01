@@ -541,6 +541,7 @@ function formatLanguageLabel(language, files = []) {
   if (normalized === "go") return "Go";
   if (normalized === "rust") return "Rust";
   if (normalized === "php") return "PHP";
+  if (normalized === "golfscript" || normalized === "gs") return "GolfScript";
   if (normalized === "tsx") return "TSX";
   if (normalized === "html") return "HTML";
   if (normalized === "css") return "CSS";

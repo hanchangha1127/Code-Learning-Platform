@@ -83,6 +83,8 @@ _LANGUAGE_LABELS: dict[str, str] = {
     "go": "Go",
     "rust": "Rust",
     "php": "PHP",
+    "golfscript": "골프스크립트",
+    "gs": "골프스크립트",
 }
 
 _WRONG_TYPE_LABELS: dict[str, str] = {
@@ -827,7 +829,7 @@ def _load_reportlab_components() -> dict[str, Any]:
         from reportlab.graphics.widgets.markers import makeMarker
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+        from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
     except ImportError as exc:
         raise RuntimeError("report_pdf_generation_unavailable") from exc
 
@@ -845,6 +847,7 @@ def _load_reportlab_components() -> dict[str, Any]:
         "makeMarker": makeMarker,
         "pdfmetrics": pdfmetrics,
         "UnicodeCIDFont": UnicodeCIDFont,
+        "PageBreak": PageBreak,
         "Paragraph": Paragraph,
         "SimpleDocTemplate": SimpleDocTemplate,
         "Spacer": Spacer,
@@ -880,10 +883,10 @@ def _append_feedback_charts(
     section_style: Any,
     metric_snapshot: Mapping[str, Any] | None,
     detail_records: list[dict[str, Any]] | None,
-) -> None:
+) -> bool:
     chart_specs = _build_feedback_chart_specs(metric_snapshot, detail_records)
     if not chart_specs:
-        return
+        return False
 
     colors = components["colors"]
     mm = components["mm"]
@@ -896,22 +899,12 @@ def _append_feedback_charts(
     paragraph = components["Paragraph"]
     spacer = components["Spacer"]
 
-    story.extend(
-        [
-            paragraph("시각 피드백", section_style),
-            paragraph(
-                "아래 차트는 서술형 피드백에 사용된 근거를 한눈에 보이도록 정리한 것입니다.",
-                base_style,
-            ),
-        ]
-    )
-
     chart_width = 168 * mm
-    chart_height = 62 * mm
+    chart_height = 48 * mm
     inner_x = 12 * mm
-    inner_y = 12 * mm
+    inner_y = 10 * mm
     inner_width = 142 * mm
-    inner_height = 34 * mm
+    inner_height = 24 * mm
 
     for spec in chart_specs:
         drawing = drawing_cls(chart_width, chart_height)
@@ -928,10 +921,10 @@ def _append_feedback_charts(
         drawing.add(
             string_cls(
                 8 * mm,
-                chart_height - (8 * mm),
+                chart_height - (6 * mm),
                 _normalize_text(spec.get("title"), limit=40),
                 fontName=font_name,
-                fontSize=10.5,
+                fontSize=10,
                 fillColor=colors.HexColor("#0f172a"),
             )
         )
@@ -958,7 +951,7 @@ def _append_feedback_charts(
             chart.categoryAxis.labels.fontSize = 7
             chart.categoryAxis.labels.fillColor = colors.HexColor("#475569")
             chart.valueAxis.labels.fontName = font_name
-            chart.valueAxis.labels.fontSize = 7
+            chart.valueAxis.labels.fontSize = 6.5
             chart.valueAxis.labels.fillColor = colors.HexColor("#475569")
             chart.valueAxis.visibleGrid = 1
             chart.valueAxis.gridStrokeColor = colors.HexColor("#e2e8f0")
@@ -980,7 +973,7 @@ def _append_feedback_charts(
             chart.categoryAxis.labels.angle = 15
             chart.categoryAxis.labels.boxAnchor = "n"
             chart.valueAxis.labels.fontName = font_name
-            chart.valueAxis.labels.fontSize = 7
+            chart.valueAxis.labels.fontSize = 6.5
             chart.valueAxis.labels.fillColor = colors.HexColor("#475569")
             chart.valueAxis.visibleGrid = 1
             chart.valueAxis.gridStrokeColor = colors.HexColor("#e2e8f0")
@@ -988,22 +981,333 @@ def _append_feedback_charts(
             chart.valueAxis.valueMax = float(spec.get("valueMax") or _round_chart_max(max(values)))
             chart.valueAxis.valueStep = max(math.ceil(chart.valueAxis.valueMax / 4.0), 1.0)
             chart.barLabelFormat = "%0.0f"
-            chart.barLabels.nudge = 8
+            chart.barLabels.nudge = 6
             chart.barLabels.fontName = font_name
-            chart.barLabels.fontSize = 7
+            chart.barLabels.fontSize = 6.5
             chart.barLabels.fillColor = colors.HexColor("#334155")
             chart.bars[0].fillColor = colors.HexColor(spec.get("color") or "#2563eb")
             chart.bars[0].strokeColor = colors.HexColor(spec.get("color") or "#2563eb")
 
         drawing.add(chart)
         story.append(drawing)
-        caption = _normalize_text(spec.get("caption"), limit=200)
+        caption = _normalize_text(spec.get("caption"), limit=140)
         if caption:
             story.append(paragraph(escape(caption), base_style))
-        story.append(spacer(1, 3 * mm))
+        story.append(spacer(1, 2 * mm))
+    return True
+
+
+def _build_compact_report_pdf_bytes(report: Report) -> bytes:
+    components = _load_reportlab_components()
+    colors = components["colors"]
+    paragraph_style = components["ParagraphStyle"]
+    get_sample_style_sheet = components["getSampleStyleSheet"]
+    page_break = components["PageBreak"]
+    simple_doc_template = components["SimpleDocTemplate"]
+    spacer = components["Spacer"]
+    paragraph = components["Paragraph"]
+    table = components["Table"]
+    table_style = components["TableStyle"]
+    a4 = components["A4"]
+    mm = components["mm"]
+
+    font_name = _ensure_pdf_font(components)
+    brief = build_report_brief_from_report(report)
+    solution_plan = _extract_solution_plan(report)
+    metric_snapshot = _extract_metric_snapshot(report)
+    detail_records = _extract_detail_records(report)
+    created_at = _format_created_at(report.created_at)
+    styles = get_sample_style_sheet()
+
+    base_style = paragraph_style(
+        "ReportBaseCompact",
+        parent=styles["BodyText"],
+        fontName=font_name,
+        fontSize=10.5,
+        leading=15,
+        textColor=colors.HexColor("#1f2937"),
+        spaceAfter=5,
+    )
+    title_style = paragraph_style(
+        "ReportTitleCompact",
+        parent=styles["Title"],
+        fontName=font_name,
+        fontSize=19,
+        leading=24,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=8,
+    )
+    meta_style = paragraph_style(
+        "ReportMetaCompact",
+        parent=base_style,
+        fontSize=9.5,
+        leading=13,
+        textColor=colors.HexColor("#64748b"),
+        spaceAfter=10,
+    )
+    section_style = paragraph_style(
+        "ReportSectionCompact",
+        parent=base_style,
+        fontName=font_name,
+        fontSize=12,
+        leading=16,
+        textColor=colors.HexColor("#0f172a"),
+        spaceBefore=6,
+        spaceAfter=5,
+    )
+    bullet_style = paragraph_style(
+        "ReportBulletCompact",
+        parent=base_style,
+        leftIndent=10,
+        bulletIndent=0,
+        spaceAfter=3,
+    )
+    metric_card_style = paragraph_style(
+        "ReportMetricCardCompact",
+        parent=base_style,
+        fontName=font_name,
+        fontSize=9.5,
+        leading=14,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=0,
+    )
+    table_header_style = paragraph_style(
+        "ReportTableHeaderCompact",
+        parent=base_style,
+        fontName=font_name,
+        fontSize=9.5,
+        leading=12,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=0,
+    )
+    table_cell_style = paragraph_style(
+        "ReportTableCellCompact",
+        parent=base_style,
+        fontName=font_name,
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#1f2937"),
+        wordWrap="CJK",
+        splitLongWords=1,
+        spaceAfter=0,
+    )
+
+    title_text = "\ud559\uc2b5 \ub9ac\ud3ec\ud2b8"
+    study_guide = _normalize_text(
+        brief.get("studyGuide") or solution_plan.get("solutionSummary"),
+        limit=320,
+    ) or "\ucd5c\uadfc \ud559\uc2b5 \ud750\ub984\uc744 \uae30\uc900\uc73c\ub85c \ub2e4\uc74c \ud559\uc2b5 \uc9c0\uce68\uc744 \uc815\ub9ac\ud588\uc2b5\ub2c8\ub2e4."
+    next_steps = _normalize_list(
+        brief.get("nextSteps") or solution_plan.get("priorityActions") or report.recommendations,
+        limit=3,
+        item_limit=140,
+    )
+    focus_actions = _normalize_list(
+        brief.get("focusActions") or solution_plan.get("focusTopics"),
+        limit=3,
+        item_limit=140,
+    )
+    learning_habits = _normalize_list(
+        brief.get("learningHabits") or solution_plan.get("dailyHabits"),
+        limit=3,
+        item_limit=140,
+    )
+    checkpoints = _normalize_list(
+        brief.get("checkpoints") or solution_plan.get("checkpoints") or solution_plan.get("metricsToTrack"),
+        limit=3,
+        item_limit=140,
+    )
+    metric_items = list(brief.get("metrics") or [])
+    if not metric_items:
+        metric_items = [
+            {"label": "\ud480\uc774 \uc218", "value": _format_metric_number(metric_snapshot.get("attempts"), suffix="\ud68c")},
+            {"label": "\uc815\ud655\ub3c4", "value": _format_metric_number(metric_snapshot.get("accuracy"), suffix="%")},
+            {"label": "\ud3c9\uade0 \uc810\uc218", "value": _format_metric_number(metric_snapshot.get("avgScore"), suffix="\uc810")},
+            {"label": "\ud750\ub984", "value": _normalize_text(metric_snapshot.get("trend"), limit=32) or "-"},
+        ]
+    metric_items = metric_items[:4]
+    compact_records = detail_records[:3]
+
+    story: list[Any] = [
+        paragraph(escape(title_text), title_style),
+        paragraph(
+            escape(f"\ub9ac\ud3ec\ud2b8 ID {int(report.id)} | \uc0dd\uc131 \uc2dc\uac01 {created_at}"),
+            meta_style,
+        ),
+    ]
+    story.append(spacer(1, 4 * mm))
+
+    metric_card_rows: list[list[Any]] = []
+    pending_cells: list[Any] = []
+    for item in metric_items:
+        label = _normalize_text(item.get("label"), limit=24) or "-"
+        value = _normalize_text(item.get("value"), limit=40) or "-"
+        pending_cells.append(
+            paragraph(
+                f"<font size='8.5'>{escape(label)}</font><br/><font size='13'><b>{escape(value)}</b></font>",
+                metric_card_style,
+            )
+        )
+        if len(pending_cells) == 2:
+            metric_card_rows.append(pending_cells)
+            pending_cells = []
+    if pending_cells:
+        while len(pending_cells) < 2:
+            pending_cells.append(paragraph("", metric_card_style))
+        metric_card_rows.append(pending_cells)
+
+    metrics_table = table(metric_card_rows, colWidths=[81 * mm, 81 * mm])
+    metrics_table.setStyle(
+        table_style(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), font_name),
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#eff6ff")),
+                ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#0f172a")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#bfdbfe")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    guide_table = table([[paragraph(escape(study_guide), base_style)]], colWidths=[162 * mm])
+    guide_table.setStyle(
+        table_style(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    story.extend(
+        [
+            paragraph("\ud559\uc2b5 \uac00\uc774\ub4dc", section_style),
+            guide_table,
+            spacer(1, 3 * mm),
+        ]
+    )
+
+    for section_title, section_items, empty_text in (
+        (
+            "\uc2e4\ud589 \uc9c0\uc2dc",
+            next_steps or focus_actions,
+            "\ubc14\ub85c \uc2e4\ud589\ud560 \ud56d\ubaa9\uc740 \ub2e4\uc74c \ud480\uc774 \ub370\uc774\ud130\uc640 \ud568\uaed8 \ub2e4\uc2dc \uc81c\uc548\ud569\ub2c8\ub2e4.",
+        ),
+        (
+            "\ud559\uc2b5 \ub8e8\ud2f4",
+            learning_habits,
+            "\ud480\uc774 \ub8e8\ud2f4\uc740 \ucd5c\uadfc \uae30\ub85d\uc744 \ub354 \uc313\uc740 \ub4a4 \uc81c\uc548\ud569\ub2c8\ub2e4.",
+        ),
+        (
+            "\ub2e4\uc74c \uccb4\ud06c\ud3ec\uc778\ud2b8",
+            checkpoints,
+            "\ub2e4\uc74c \uccb4\ud06c\ud3ec\uc778\ud2b8\ub294 \ucd94\uac00 \ud480\uc774 \ub370\uc774\ud130\uac00 \uc313\uc774\uba74 \uc81c\uc2dc\ud569\ub2c8\ub2e4.",
+        ),
+    ):
+        story.append(paragraph(section_title, section_style))
+        if section_items:
+            for item in section_items[:3]:
+                story.append(paragraph(escape(item), bullet_style, bulletText="-"))
+        else:
+            story.append(paragraph(escape(empty_text), base_style))
+        story.append(spacer(1, 2 * mm))
+
+    story.extend(
+        [
+            page_break(),
+            paragraph("\ud575\uc2ec \uc9c0\ud45c", section_style),
+            metrics_table,
+            spacer(1, 3 * mm),
+            paragraph("\uc2dc\uac01 \ud53c\ub4dc\ubc31", section_style),
+            paragraph(
+                "\ucc28\ud2b8 3\uc885\uc73c\ub85c \ucd5c\uadfc \ud480\uc774 \ud750\ub984\uacfc \ubc18\ubcf5 \uc624\ub2f5 \ud328\ud134\uc744 \uc694\uc57d\ud588\uc2b5\ub2c8\ub2e4.",
+                base_style,
+            ),
+            spacer(1, 2 * mm),
+        ]
+    )
+
+    has_charts = _append_feedback_charts(
+        story=story,
+        components=components,
+        font_name=font_name,
+        base_style=base_style,
+        section_style=section_style,
+        metric_snapshot=metric_snapshot,
+        detail_records=detail_records,
+    )
+    if not has_charts:
+        story.append(
+            paragraph(
+                "\uc2dc\uac01 \ucc28\ud2b8\ub97c \uad6c\uc131\ud560 \uc218 \uc788\ub294 \ucd5c\uadfc \ub370\uc774\ud130\uac00 \ucda9\ubd84\ud558\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4.",
+                base_style,
+            )
+        )
+
+    story.extend([page_break(), paragraph("\ucd5c\uadfc \ud480\uc774 \uc0ac\ub840", section_style)])
+    if compact_records:
+        detail_summary_rows = [
+            [
+                paragraph("\uc0ac\ub840", table_header_style),
+                paragraph("\ud575\uc2ec \uc694\uc57d", table_header_style),
+            ]
+        ]
+        for index, record in enumerate(compact_records, start=1):
+            header = _build_detail_record_header(record, index)
+            summary_line = _normalize_text(
+                " | ".join(line for line in _build_detail_record_lines(record)[:2] if line),
+                limit=180,
+            )
+            detail_summary_rows.append(
+                [
+                    paragraph(escape(header), table_cell_style),
+                    paragraph(escape(summary_line or "-"), table_cell_style),
+                ]
+            )
+
+        detail_summary_table = table(detail_summary_rows, colWidths=[36 * mm, 126 * mm], repeatRows=1)
+        detail_summary_table.setStyle(
+            table_style(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e0f2fe")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+                    ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cbd5e1")),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]
+            )
+        )
+        story.append(detail_summary_table)
+    else:
+        story.append(paragraph("\ucd5c\uadfc \ud480\uc774 \uc0ac\ub840 \uc694\uc57d\uc740 \uc544\uc9c1 \uc5c6\uc2b5\ub2c8\ub2e4.", base_style))
+
+    buffer = BytesIO()
+    document = simple_doc_template(
+        buffer,
+        pagesize=a4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+        title=title_text,
+        author="Code Learning Platform",
+    )
+    document.build(story)
+    return buffer.getvalue()
 
 
 def build_report_pdf_bytes(report: Report) -> bytes:
+    return _build_compact_report_pdf_bytes(report)
     components = _load_reportlab_components()
     colors = components["colors"]
     paragraph_style = components["ParagraphStyle"]

@@ -76,6 +76,7 @@ class PageTemplateVariantTests(unittest.TestCase):
                 self.assertIn('id="advanced-load-btn"', response.text)
                 self.assertIn('id="advanced-problem-title"', response.text)
                 self.assertIn('id="advanced-result-panel"', response.text)
+                self.assertRegex(response.text, r"/static/shared/js/review_resume\.js\?v=[0-9a-f]+")
 
     def test_advanced_analysis_routes_use_mobile_template_for_mobile_ua(self) -> None:
         for path in ("/single-file-analysis.html", "/multi-file-analysis.html", "/fullstack-analysis.html"):
@@ -91,6 +92,7 @@ class PageTemplateVariantTests(unittest.TestCase):
                 self.assertIn('id="advanced-load-btn"', response.text)
                 self.assertIn('id="advanced-problem-title"', response.text)
                 self.assertIn('id="advanced-result-panel"', response.text)
+                self.assertRegex(response.text, r"/static/shared/js/review_resume\.js\?v=[0-9a-f]+")
 
     def test_root_route_varies_on_user_agent_for_mobile_template(self) -> None:
         response = self.client.get("/", headers=self._mobile_headers())
@@ -116,6 +118,7 @@ class PageTemplateVariantTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertRegex(response.text, r"/static/shared/js/api_client\.js\?v=[0-9a-f]+")
         self.assertRegex(response.text, r"/static/shared/js/problem_stream_client\.js\?v=[0-9a-f]+")
+        self.assertRegex(response.text, r"/static/shared/js/review_resume\.js\?v=[0-9a-f]+")
         self.assertRegex(response.text, r"/static/shared/js/advanced_analysis_shell\.js\?v=[0-9a-f]+")
 
     def test_runtime_pages_include_request_id_header(self) -> None:

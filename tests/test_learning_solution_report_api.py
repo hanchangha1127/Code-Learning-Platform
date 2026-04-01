@@ -24,6 +24,7 @@ from server_runtime.webapp import app as root_app
 
 def _new_report_payload(report_id: int | None) -> dict[str, object]:
     return {
+        "status": "ready",
         "reportId": report_id,
         "createdAt": "2026-03-05T10:00:00+00:00",
         "goal": "Lock in the review loop for the next week.",
@@ -46,6 +47,9 @@ def _new_report_payload(report_id: int | None) -> dict[str, object]:
             "summary": "Use repeated review plus a short daily habit block.",
         },
         "pdfDownloadUrl": f"/platform/reports/{report_id}/pdf" if report_id else None,
+        "currentAttemptCount": None,
+        "minimumRequiredAttempts": None,
+        "blockingMessage": None,
     }
 
 
@@ -98,6 +102,49 @@ class LearningSolutionReportApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), payload)
+
+    def test_platform_milestone_returns_blocked_schema_when_attempts_are_insufficient(self) -> None:
+        payload = {
+            "status": "insufficient_history",
+            "reportId": None,
+            "createdAt": None,
+            "goal": "",
+            "solutionSummary": "",
+            "priorityActions": [],
+            "phasePlan": [],
+            "dailyHabits": [],
+            "focusTopics": [],
+            "metricsToTrack": [],
+            "checkpoints": [],
+            "riskMitigation": [],
+            "metricSnapshot": {
+                "attempts": 3,
+                "accuracy": None,
+                "avgScore": None,
+                "trend": "insufficient_history",
+            },
+            "reportBrief": {
+                "title": "리포트 생성 준비 중",
+                "summary": "학습 리포트를 생성하려면 최소 10문제 이상 풀이해야 합니다. 현재 3문제를 풀었으니 7문제 더 풀어 주세요.",
+            },
+            "pdfDownloadUrl": None,
+            "currentAttemptCount": 3,
+            "minimumRequiredAttempts": 10,
+            "blockingMessage": "학습 리포트를 생성하려면 최소 10문제 이상 풀이해야 합니다. 현재 3문제를 풀었으니 7문제 더 풀어 주세요.",
+        }
+
+        with patch.object(platform_reports_route, "create_milestone_report", return_value=payload):
+            response = self.platform_client.post("/reports/milestone", json={"problem_count": 10})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), payload)
+        body = response.json()
+        self.assertEqual(body["status"], "insufficient_history")
+        self.assertIsNone(body["reportId"])
+        self.assertIsNone(body["pdfDownloadUrl"])
+        self.assertEqual(body["currentAttemptCount"], 3)
+        self.assertEqual(body["minimumRequiredAttempts"], 10)
+        self.assertIn("7문제 더 풀어", body["blockingMessage"] or "")
 
     def test_platform_report_pdf_download_returns_attachment(self) -> None:
         with patch.object(
