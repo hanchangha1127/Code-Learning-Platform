@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>단일 파일 분석 - 코드 학습 플랫폼</title>
+  <link rel="stylesheet" href="/static/assets/css/base.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/assets/css/app.css" />
+  <link rel="stylesheet" href="/static/assets/css/whiteboard-theme.css" />
+  <link rel="stylesheet" href="/static/assets/css/mobile.css" />
+</head>
+<body data-template-variant="mobile" data-advanced-analysis-mode="single-file">
+  <section id="advanced-analysis-shell" class="app advanced-analysis-view" aria-live="polite">
+    <header class="app-header page-header">
+      <div>
+        <h1>단일 파일 분석</h1>
+        <p class="header-status">하나의 파일만 보고 핵심 로직과 상태 변화, 예외 흐름을 설명하는 고급 분석 모드입니다.</p>
+      </div>
+      <div class="header-actions">
+        <a href="/dashboard.html" class="ghost">대시보드</a>
+        <span id="advanced-user-display" class="user-chip"></span>
+      </div>
+    </header>
+
+    <main class="advanced-analysis-layout">
+      <section class="panel advanced-analysis-panel advanced-analysis-overview">
+        <div class="advanced-mode-summary">
+          <p id="advanced-mode-state" class="badge soft">문제 대기</p>
+          <h2 id="advanced-mode-headline">단일 파일 분석 문제를 생성할 준비가 되어 있습니다.</h2>
+          <p id="advanced-mode-summary">문제 받기를 누르면 AI가 매번 단일 파일 분석 문제를 생성하고 IDE 화면에 스트리밍처럼 표시합니다.</p>
+        </div>
+        <div class="advanced-mode-meta">
+          <span id="advanced-mode-file-range" class="pill">파일 수 -</span>
+          <span id="advanced-mode-language-range" class="pill">언어 범위 -</span>
+          <span id="advanced-mode-scope" class="pill">범위 -</span>
+          <span id="advanced-selected-language" class="pill soft">언어 -</span>
+          <span id="advanced-selected-difficulty" class="pill soft">난이도 -</span>
+        </div>
+        <div class="advanced-mode-actions">
+          <button id="advanced-load-btn" type="button" class="primary">문제 받기</button>
+          <p id="advanced-load-status" class="advanced-load-status">문제 받기를 누르면 AI가 문제를 생성합니다.</p>
+        </div>
+      </section>
+
+      <section class="panel advanced-analysis-panel advanced-analysis-stage">
+        <div class="advanced-workbench-titlebar">
+          <div class="advanced-workbench-title">
+            <span class="advanced-workbench-title-label">ADVANCED ANALYSIS</span>
+            <strong id="advanced-workspace-title">single-file-analysis.workspace</strong>
+          </div>
+        </div>
+
+        <div class="advanced-workbench">
+          <aside class="advanced-activity-bar" aria-label="IDE 활동">
+            <button type="button" class="advanced-activity-item is-active" aria-pressed="true">EX</button>
+            <button type="button" class="advanced-activity-item" aria-pressed="false">AI</button>
+            <button type="button" class="advanced-activity-item" aria-pressed="false">OUT</button>
+          </aside>
+
+          <aside class="advanced-sidebar">
+            <div class="advanced-sidebar-head">
+              <span class="advanced-sidebar-label">Explorer</span>
+              <strong>읽기 전용 워크스페이스</strong>
+            </div>
+            <div class="advanced-sidebar-section-label">FILES</div>
+            <div id="advanced-file-rail" class="advanced-file-rail"></div>
+          </aside>
+
+          <div class="advanced-editor-workbench">
+            <div class="advanced-editor-topbar">
+              <div id="advanced-file-strip" class="advanced-file-strip"></div>
+              <div class="advanced-file-meta">
+                <span id="advanced-active-file-language" class="pill soft">언어 -</span>
+                <span id="advanced-active-file-role" class="pill soft">역할 -</span>
+              </div>
+            </div>
+
+            <div id="advanced-editor-breadcrumbs" class="advanced-editor-breadcrumbs"></div>
+
+            <div class="advanced-editor-surface">
+              <div class="advanced-editor-header">
+                <div>
+                  <p class="eyebrow">Read-only IDE</p>
+                  <h2 id="advanced-active-file-name">파일을 기다리는 중입니다.</h2>
+                  <p id="advanced-active-file-path">경로 -</p>
+                </div>
+              </div>
+              <div id="advanced-code-view" class="advanced-code-view" role="region" aria-label="코드 보기"></div>
+            </div>
+
+            <div class="advanced-statusbar">
+              <span id="advanced-statusbar-left">0 files loaded</span>
+              <span id="advanced-statusbar-right">Read-only</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="advanced-analysis-bottom">
+        <article class="panel advanced-analysis-panel advanced-task-panel">
+          <div class="advanced-task-head">
+            <h3>분석 과제</h3>
+            <p id="advanced-problem-title" class="advanced-problem-title">문제를 아직 불러오지 않았습니다.</p>
+            <p id="advanced-task-prompt">문제를 받은 뒤 파일의 핵심 흐름을 설명해 주세요.</p>
+          </div>
+          <ul id="advanced-checklist" class="advanced-checklist"></ul>
+          <label for="advanced-report-text">분석 리포트</label>
+          <textarea id="advanced-report-text" rows="10" placeholder="분석 리포트를 작성하세요."></textarea>
+          <button id="advanced-submit-btn" type="button" class="primary block">리포트 제출</button>
+        </article>
+
+        <article class="panel advanced-analysis-panel advanced-status-panel">
+          <div class="advanced-status-head">
+            <h3>연결 상태</h3>
+          <p>문제 생성, 리포트 제출, AI 피드백 결과가 이 영역에서 단계별로 갱신됩니다.</p>
+          </div>
+          <div id="advanced-status-cards" class="advanced-status-cards"></div>
+          <section id="advanced-result-panel" class="advanced-result-panel hidden">
+            <div class="advanced-result-summary-bar">
+              <strong id="advanced-result-score">점수 대기</strong>
+              <span id="advanced-result-verdict" class="badge soft" data-state="neutral">판정 대기</span>
+              <span id="advanced-result-threshold" class="pill soft">합격 기준 70점</span>
+            </div>
+            <p id="advanced-result-summary" class="advanced-result-summary">리포트를 제출하면 AI 요약과 피드백이 여기에 표시됩니다.</p>
+            <div class="advanced-result-columns">
+              <article class="advanced-result-card">
+                <h4>강점</h4>
+                <ul id="advanced-result-strengths" class="advanced-result-list"></ul>
+              </article>
+              <article class="advanced-result-card">
+                <h4>개선 포인트</h4>
+                <ul id="advanced-result-improvements" class="advanced-result-list"></ul>
+              </article>
+            </div>
+            <article class="advanced-result-card advanced-reference-card">
+              <h4>모범 분석 리포트</h4>
+              <pre id="advanced-reference-report" class="advanced-reference-report">모범 분석 리포트가 여기에 표시됩니다.</pre>
+            </article>
+          </section>
+        </article>
+      </section>
+    </main>
+
+    <div id="advanced-analysis-toast" class="toast hidden" role="status" aria-live="assertive"></div>
+  </section>
+
+  <script src="/static/assets/js/core/api_client.js"></script>
+  <script src="/static/assets/js/core/problem_stream_client.js"></script>
+  <script src="/static/assets/js/core/auth_client.js"></script>
+  <script src="/static/assets/js/widgets/review_resume.js"></script>
+  <script src="/static/assets/js/widgets/advanced_analysis_shell.js" type="module"></script>
+</body>
+</html>

@@ -40,4 +40,4 @@ echo "Running Alembic migrations..."
 alembic -c alembic.ini upgrade head
 
 echo "Starting FastAPI..."
-exec python -m server_runtime.runtime_server --host 0.0.0.0 --workers "${UVICORN_WORKERS:-4}"
+exec python -m server.runtime_server --host 0.0.0.0 --workers "${UVICORN_WORKERS:-4}"

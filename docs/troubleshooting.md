@@ -1,197 +1,151 @@
-# 문제 해결
+# 트러블슈팅
 
-## 1. 페이지 수정이 바로 안 보임
+## 1. 서버가 바로 뜨지 않음
 
-확인 포인트:
+확인 순서:
 
-- 사용자 페이지는 desktop/mobile variant 로 나뉩니다.
-- 정적 자산에는 `?v=` 버전 쿼리가 자동 주입됩니다.
-- 사용자 페이지 응답에는 `Vary: User-Agent` 가 붙습니다.
+1. `.env`에 `DB_PASSWORD` 또는 `DB_PASSWORD_FILE`이 있는지 확인
+2. `.env`에 `JWT_SECRET` 또는 `JWT_SECRET_FILE`이 있는지 확인
+3. `alembic upgrade head` 실행
+4. MySQL / Redis 상태 확인
+5. `python run_server.py --local --workers 1`로 최소 구성 재현
 
-확인 대상:
+자주 보이는 원인:
 
-- `frontend/desktop/*.html`
-- `frontend/mobile/*.html`
-- `frontend/shared/js/*`
-- `server_runtime/routes/pages.py`
-- `server_runtime/template_renderer.py`
+- `DB_PASSWORD`가 비어 있음
+- `JWT_SECRET` 길이가 32자 미만
+- `.env`에는 빈 값만 있고 실제 비밀 파일 경로가 잘못됨
 
-권장 확인:
+## 2. 도커는 떴는데 도메인 접속이 안 됨
 
-```bash
-python -m unittest tests.test_pages_template_variant -v
-```
+확인 항목:
 
-## 2. 관리자 페이지에서 종료 버튼이 비활성화됨
+- `ENABLE_HTTPS=true`
+- 인증서 파일 존재 여부
+- `80`, `443` 포트포워딩
+- 방화벽 인바운드 허용
+- `https://<도메인>/health` 응답 여부
 
-주요 원인:
-
-- `CODE_PLATFORM_ENABLE_ADMIN_SHUTDOWN=false`
-- `ADMIN_PANEL_KEY` 미설정 또는 오설정
-- Docker socket 미마운트 상태에서 전체 스택 종료를 기대함
-
-확인:
-
-- `/api/admin/metrics` 응답의 shutdown capability 관련 필드
-- 실행 옵션 `--with-docker-socket` / `--without-docker-socket`
-
-## 3. 로컬 실행이 기동 직후 실패함
-
-주요 원인:
-
-- `DB_PASSWORD` 누락
-- `JWT_SECRET` 누락 또는 32자 미만
-- Alembic 미적용
-- MySQL / Redis 미기동
-
-권장 순서:
+확인 명령:
 
 ```bash
-alembic upgrade head
-python run_server.py --local --host 127.0.0.1 --port 8000 --workers 1
+curl.exe -k --resolve hhtj.site:443:127.0.0.1 -I https://hhtj.site/health
+curl.exe --resolve hhtj.site:80:127.0.0.1 -I http://hhtj.site/health
 ```
 
-참고:
+## 3. `/api/*`가 410을 반환함
 
-- 런처의 로컬 기본 worker 값은 `16`
-- 디버깅과 재현에는 `--workers 1` 이 더 낫습니다.
+정상 동작일 수 있습니다. 현재 canonical 경로는 `/platform/*`이고, 대부분의 제거된 옛 학습 경로는 `410 Gone`으로 새 경로를 안내합니다.
 
-## 4. queued 응답만 오고 피드백이 안 돌아옴
+## 4. 페이지가 desktop/mobile 기준과 다르게 보임
 
-먼저 아래를 확인합니다.
+확인 파일:
+
+- `server/features/runtime_ui/pages.py`
+- `server/features/runtime_ui/template_renderer.py`
+- `server/features/runtime_ui/user_agent.py`
+
+빠른 검증:
+
+```bash
+python -m unittest discover -s tests/server/runtime -t . -p "test_pages_template_variant.py" -v
+```
+
+## 5. queued submit만 되고 결과가 돌아오지 않음
+
+확인 항목:
 
 - `ANALYSIS_QUEUE_MODE=rq`
-- `redis` 실행 여부
-- `worker` 실행 여부
+- Redis 연결 가능 여부
+- `python -m server.worker` 또는 worker 컨테이너 실행 여부
+- `RQ_WORKER_QUEUES` 설정
 
-queued 제출이 가능한 대표 모드:
-
-- `auditor`
-- `refactoring-choice`
-- `code-blame`
-- `single-file-analysis`
-- `multi-file-analysis`
-- `fullstack-analysis`
-
-클라이언트는 `jobId` 로 아래 경로를 polling 해야 합니다.
+job 상태 확인:
 
 ```text
 GET /platform/mode-jobs/{job_id}
 ```
 
-## 5. 문제는 보였는데 이력, 리포트, 오답 노트에 반영되지 않음
+## 6. 문제 생성 후 늦게 에러가 나면서 화면에서 문제가 사라짐
 
-문제 생성 후속 저장이 별도 큐/워커로 분리된 상태인지 확인합니다.
+최근 프런트는 `payload`를 받은 뒤 늦은 stream 오류가 와도 이미 받은 문제를 유지하도록 수정되어 있습니다.
 
-확인 포인트:
+그래도 같은 현상이 보이면 먼저 확인할 것:
 
-- `PROBLEM_FOLLOW_UP_QUEUE_MODE=rq`
-- `worker-follow-up` 실행 여부
-- `problem-follow-up` 큐 backlog 유무
+- 브라우저 강력 새로고침 `Ctrl+F5`
+- `frontend/assets/js/core/problem_stream_client.js`
+- `frontend/assets/js/widgets/advanced_analysis_shell.js`
+- `tests/e2e/inline_streaming.spec.mjs`
 
-관련 증상:
+## 7. 고급 분석 3모드가 생성 후 500 에러가 남
 
-- 새로 생성한 문제가 `/platform/learning/history` 에 늦게 보임
-- 프로필 누적 통계가 바로 증가하지 않음
-- 복습 큐/리포트 반영이 지연됨
+`single-file-analysis`, `multi-file-analysis`, `fullstack-analysis`는 공통 생성 경로를 공유합니다. 하나가 깨지면 셋이 같이 영향받을 수 있습니다.
 
-## 6. 문제 생성이 느리게 느껴짐
+우선 확인할 파일:
 
-현재 구조는 “본문 토큰 스트리밍” 이 아닙니다.
+- `server/features/learning/api_advanced_analysis.py`
+- `server/features/learning/service.py`
+- `server/features/learning/generator.py`
+- `server/features/learning/generator_normalize.py`
+- `server/features/learning/history.py`
 
-실제 동작:
+빠른 검증:
 
-- SSE 상태 이벤트 먼저 전송
-- 최종 문제 본문은 `payload` 한 번으로 전달
-- 그 뒤 `persisting` 단계를 거쳐 `done.persisted=true` 로 마감
+```bash
+python -m unittest tests.server.learning.test_advanced_analysis_runtime tests.server.learning.test_problem_generator -v
+cmd /c npm run test:e2e -- tests/e2e/inline_streaming.spec.mjs
+```
 
-예외:
+## 8. AI 피드백이 생성되지 않음
 
-- `arrange` 는 의도적인 가짜 스트리밍 UI입니다.
+확인 항목:
 
-즉 “상태는 빨리 오는데 본문 시작이 늦다” 는 느낌은 현재 구조상 정상일 수 있습니다.
+- 제출 API가 500 없이 끝나는지
+- `server/features/learning/history.py`의 persistence helper가 정상인지
+- worker / follow-up queue가 막히지 않았는지
 
-## 7. Google OAuth 시작 또는 callback 이 실패함
+우선 확인할 파일:
 
-확인 포인트:
+- `server/features/learning/history.py`
+- `server/features/learning/reporting.py`
+- `server/features/learning/streaming.py`
+
+## 9. 프로필에서 공통 학습 설정이 비어 있음
+
+프로필은 로컬 저장값만 보지 않고 `/platform/me/settings`를 기준으로 렌더링해야 합니다.
+
+확인 파일:
+
+- `frontend/assets/js/pages/profile.js`
+- `frontend/pages/desktop/profile.html`
+- `frontend/pages/mobile/profile.html`
+
+캐시된 JS 때문에 예전 화면이 보일 수 있으니 `Ctrl+F5`를 먼저 해보는 것이 좋습니다.
+
+## 10. Google OAuth 시작 또는 콜백이 실패함
+
+확인 항목:
 
 - `GOOGLE_OAUTH_CLIENT_ID`
 - `GOOGLE_OAUTH_CLIENT_SECRET`
 - `GOOGLE_OAUTH_ALLOWED_REDIRECT_URIS`
-- 필요 시 `GOOGLE_OAUTH_REDIRECT_URI`
+- 프록시의 forwarded header 전달 상태
 
-프록시 뒤 운영이면 아래 헤더 전달도 맞아야 합니다.
+대표 원인:
 
-- `X-Forwarded-Proto`
-- `X-Forwarded-Host`
-- `X-Forwarded-Port`
+- 실제 도메인 callback URL이 허용 목록에 없음
+- `X-Forwarded-Proto` / `X-Forwarded-Host`가 올바르게 전달되지 않음
 
-또한 프록시 IP 신뢰 범위를 아래 값으로 명시해야 합니다.
+## 11. 관리자 종료 버튼이 비활성화됨
 
-- `CODE_PLATFORM_TRUSTED_PROXY_CIDRS`
+주요 원인:
 
-외부/운영 callback URI 는 HTTPS 만 허용하는 것이 안전합니다.
+- `CODE_PLATFORM_ENABLE_ADMIN_SHUTDOWN=false`
+- `ADMIN_PANEL_KEY` 미설정
+- Docker socket 없이 전체 stack 종료를 기대하는 경우
 
-## 8. 기존 `/api/...` 호출이 갑자기 실패함
+확인 API:
 
-학습 관련 레거시 `/api` 경로 대부분은 현재 기준 경로가 아닙니다.
-
-대표 동작:
-
-- `410 Gone`
-- 응답 본문에 새 `/platform/...` 경로 포함
-
-예시:
-
-- `/api/report` -> `/platform/report`
-- `/api/auth/register` -> `/platform/auth/signup`
-- `/api/auth/guest/start` -> `/platform/auth/guest`
-- `/api/learning/memory` -> `/platform/learning/memory`
-
-예외적으로 `GET /api/tracks` 는 아직 레거시 조회 경로로 남아 있습니다.
-
-## 9. 저장한 언어가 거부되거나 다시 기본값으로 돌아감
-
-지원 언어는 canonical ID 기준으로만 저장됩니다.
-
-canonical ID:
-
-- `python`
-- `javascript`
-- `typescript`
-- `c`
-- `java`
-- `cpp`
-- `csharp`
-- `go`
-- `rust`
-- `php`
-
-허용 alias:
-
-- `py`
-- `js`
-- `ts`
-- `c++`
-- `cs`
-- `c#`
-
-지원하지 않는 값은 `400` 으로 거부되거나, 기존에 저장된 잘못된 값이라면 조회 시 `python` 같은 유효값으로 복구될 수 있습니다.
-
-## 10. 최신 리포트 카드가 비어 있음
-
-프로필의 최신 리포트 카드는 milestone 리포트가 저장돼 있어야 채워집니다.
-
-확인 순서:
-
-- `POST /platform/reports/milestone` 호출 성공 여부
-- `GET /platform/reports/latest` 응답의 `available` 값
-- PDF 생성 시 `GET /platform/reports/{report_id}/pdf` 응답 여부
-
-Playwright smoke 재실행:
-
-```bash
-set CI=1
-set ENABLE_HTTPS=0
-npx playwright test tests/e2e/smoke.spec.mjs
+```text
+GET /api/admin/metrics
 ```

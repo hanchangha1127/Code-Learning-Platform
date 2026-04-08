@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from server_runtime.webapp import app
+from server.app import app
 
 
 if __name__ == "__main__":
-    from server_runtime.launcher import main
+    from server.launcher import main
 
     raise SystemExit(main())
+

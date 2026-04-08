@@ -219,6 +219,74 @@ async function installFailingStreamThenJsonFallbackMock(
   });
 }
 
+async function installPayloadThenLateErrorMock(
+  page,
+  {
+    path,
+    payload,
+    fallbackPayload,
+    statusMessage = "Generating...",
+  }
+) {
+  await page.addInitScript(({ streamPath, finalPayload, fallbackBody, message }) => {
+    const originalFetch = window.fetch.bind(window);
+    const encoder = new TextEncoder();
+
+    window.fetch = async (input, init) => {
+      const requestUrl =
+        typeof input === "string" ? input : input instanceof Request ? input.url : String(input?.url || "");
+      const pathname = new URL(requestUrl, window.location.origin).pathname;
+      if (pathname !== streamPath) {
+        return originalFetch(input, init);
+      }
+
+      const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
+      const accept = (headers.get("Accept") || "").toLowerCase();
+      if (!accept.includes("text/event-stream")) {
+        return new Response(JSON.stringify(fallbackBody), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        });
+      }
+
+      let delay = 0;
+      const stream = new ReadableStream({
+        start(controller) {
+          const emit = (eventName, data, waitMs = 0) => {
+            delay += waitMs;
+            window.setTimeout(() => {
+              controller.enqueue(
+                encoder.encode(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`)
+              );
+            }, delay);
+          };
+
+          emit("status", { phase: "generating", message }, 10);
+          emit("status", { phase: "rendering", message: "Rendering..." }, 120);
+          emit("payload", { payload: finalPayload }, 120);
+          emit("error", { code: "stream_failed", message: "late stream failed", retryable: true }, 200);
+          emit("done", { ok: false, code: "stream_failed", persisted: false }, 40);
+          window.setTimeout(() => controller.close(), delay + 80);
+        },
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      });
+    };
+  }, {
+    streamPath: path,
+    finalPayload: payload,
+    fallbackBody: fallbackPayload,
+    message: statusMessage,
+  });
+}
+
 test.describe("inline problem streaming", () => {
   test("analysis streams into the existing problem card without a preview block", async ({ page }) => {
     await installCommonMocks(page);
@@ -277,5 +345,71 @@ test.describe("inline problem streaming", () => {
     await expect(page.locator("#problem-code")).toHaveText("// 아직 로드된 문제가 없습니다.");
     await expect(page.locator("#problem-prompt")).toContainText("맞춤 문제를 받은 뒤");
     await expect(page.locator("#code-problem-stream-preview-inline")).toHaveCount(0);
+  });
+
+  test("analysis keeps the streamed problem after a late stream error", async ({ page }) => {
+    await installCommonMocks(page);
+    await installPayloadThenLateErrorMock(page, {
+      path: "/platform/analysis/problem",
+      payload: analysisProblemPayload,
+      fallbackPayload: {
+        problem: {
+          problemId: "analysis-fallback",
+          title: "JSON fallback title",
+          code: "print('fallback')",
+          prompt: "Fallback prompt",
+          mode: "analysis",
+          difficulty: "beginner",
+          track: "fallback",
+          language: "python",
+        },
+      },
+    });
+
+    await page.goto("/analysis.html");
+    await page.locator("#btn-load-problem").click();
+
+    await expect(page.locator("#problem-title")).toContainText("Trace the accumulator");
+    await expect(page.locator("#problem-code")).toContainText("total = 0");
+    await page.waitForTimeout(500);
+    await expect(page.locator("#problem-title")).toContainText("Trace the accumulator");
+    await expect(page.locator("#problem-title")).not.toContainText("JSON fallback title");
+  });
+
+  test("advanced analysis keeps the streamed problem after a late stream error", async ({ page }) => {
+    await installCommonMocks(page);
+    await installPayloadThenLateErrorMock(page, {
+      path: "/platform/single-file-analysis/problem",
+      payload: singleFileAnalysisPayload,
+      fallbackPayload: {
+        problemId: "advanced-fallback",
+        title: "Fallback advanced title",
+        prompt: "Fallback prompt",
+        workspace: "single-file-analysis.workspace",
+        language: "python",
+        difficulty: "beginner",
+        checklist: ["fallback"],
+        files: [
+          {
+            id: "fallback-file",
+            path: "src/fallback.py",
+            name: "fallback.py",
+            language: "python",
+            role: "entrypoint",
+            content: "print('fallback')",
+          },
+        ],
+      },
+    });
+
+    await page.goto("/single-file-analysis.html");
+    await page.locator("#advanced-load-btn").click();
+
+    await expect(page.locator("#advanced-problem-title")).toContainText("Checkout discount flow");
+    await expect(page.locator("#advanced-code-view")).toContainText("def checkout");
+    await page.waitForTimeout(500);
+    await expect(page.locator("#advanced-problem-title")).toContainText("Checkout discount flow");
+    await expect(page.locator("#advanced-problem-title")).not.toContainText("Fallback advanced title");
+    await expect(page.locator("#advanced-code-view")).toContainText("def checkout");
   });
 });

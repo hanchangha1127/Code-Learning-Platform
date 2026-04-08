@@ -1,4 +1,4 @@
-# alembic/env.py
+﻿# alembic/env.py
 from __future__ import annotations
 
 from logging.config import fileConfig
@@ -6,9 +6,9 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from app.core.config import settings
-from app.db.base import Base
-import app.db.models  # noqa: F401  (모델 import로 metadata 등록)
+from server.core.config import settings
+from server.db.base import Base
+import server.db.models  # noqa: F401  (紐⑤뜽 import濡?metadata ?깅줉)
 
 config = context.config
 
@@ -58,3 +58,4 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
+

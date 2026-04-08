@@ -1,0 +1,143 @@
+﻿<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>프로필 - 코드 학습 플랫폼</title>
+  <link rel="stylesheet" href="/static/assets/css/base.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/assets/css/app.css" />
+  <link rel="stylesheet" href="/static/assets/css/whiteboard-theme.css" />
+  <link rel="stylesheet" href="/static/assets/css/mobile.css" />
+</head>
+<body data-template-variant="mobile">
+  <section id="profile-section" class="app">
+    <header class="app-header page-header">
+      <div>
+        <p class="eyebrow">계정과 학습 설정</p>
+        <h1>프로필</h1>
+        <p class="header-status">설정, 오답 노트, 학습 리포트를 한 화면에서 관리합니다.</p>
+      </div>
+      <div class="header-actions">
+        <a href="/dashboard.html" class="ghost">대시보드</a>
+      </div>
+    </header>
+
+    <main class="profile-grid">
+      <section class="panel profile-summary">
+        <div class="profile-identity">
+          <div id="profile-avatar" class="profile-avatar" aria-hidden="true">학</div>
+          <div class="profile-identity-text">
+            <h2 id="profile-name">사용자</h2>
+        <span id="profile-tier" class="pill">레벨 -</span>
+            <p class="panel-description">저장된 설정을 기준으로 모든 모드가 동작합니다.</p>
+          </div>
+        </div>
+        <button id="btn-wrong-note" class="profile-action" type="button">오답 노트 열기</button>
+        <button id="btn-report" class="profile-action" type="button">학습 리포트 보기</button>
+        <section id="latest-report-card" class="profile-report-card" aria-live="polite">
+          <div class="profile-report-copy">
+            <p class="panel-note">최근 학습 리포트</p>
+            <strong id="latest-report-title">아직 저장된 리포트가 없습니다.</strong>
+            <p id="latest-report-meta" class="profile-action-desc">학습 리포트를 생성하면 여기서 다시 PDF로 내려받을 수 있습니다.</p>
+          </div>
+          <button id="btn-latest-report-download" type="button" class="ghost" disabled>최근 PDF 다운로드</button>
+        </section>
+        <button id="btn-logout" class="profile-logout" type="button">로그아웃</button>
+      </section>
+
+      <section class="panel profile-settings-panel">
+        <div class="panel-group">
+          <p class="panel-note">공통 설정</p>
+          <h3>학습 설정</h3>
+          <p class="panel-description">여기서 저장한 값은 모든 학습 모드에 공통으로 반영됩니다.</p>
+        </div>
+        <div class="panel-group">
+          <h4>문제 언어</h4>
+          <div id="language-setting" class="setting-select"></div>
+        </div>
+        <div class="panel-group">
+          <h4>문제 난이도</h4>
+          <div id="difficulty-setting" class="pill-group"></div>
+          <p id="profile-settings-status" class="panel-description">설정을 불러오는 중입니다.</p>
+        </div>
+        <div class="panel-group">
+          <p class="panel-note">학습 요약</p>
+          <div class="dashboard-focus-grid">
+            <article class="home-stat-card">
+              <span class="home-stat-label">총 시도</span>
+              <strong id="profile-total-attempts">-</strong>
+              <p>누적 학습 시도 수</p>
+            </article>
+            <article class="home-stat-card">
+              <span class="home-stat-label">정답률</span>
+              <strong id="profile-accuracy">-</strong>
+              <p>최근 기록 기준 정답률</p>
+            </article>
+            <article class="home-stat-card">
+              <span class="home-stat-label">최근 7일</span>
+              <strong id="profile-week-attempts">-</strong>
+              <p>최근 7일 학습 시도</p>
+            </article>
+            <article class="home-stat-card">
+              <span class="home-stat-label">대기 복습</span>
+              <strong id="profile-review-count">-</strong>
+              <p>지금 다시 볼 문제 수</p>
+            </article>
+          </div>
+        </div>
+        <div class="panel-group">
+          <p class="panel-note">오늘 목표</p>
+          <article class="dashboard-goal-card">
+            <div class="dashboard-goal-overview">
+              <div class="dashboard-goal-progress-block">
+                <span class="dashboard-section-label">Daily Goal</span>
+                <div class="dashboard-goal-summary">
+                  <strong id="profile-goal-progress">-</strong>
+                  <p id="profile-goal-note">오늘 목표를 불러오는 중입니다.</p>
+                </div>
+              </div>
+              <div class="dashboard-streak-mini">
+                <span class="dashboard-streak-label">Streak</span>
+                <strong id="profile-streak-days">-</strong>
+              </div>
+            </div>
+            <div class="dashboard-focus-grid">
+              <article class="home-stat-card">
+                <span class="home-stat-label">집중 모드</span>
+                <strong id="profile-focus-modes-count">-</strong>
+                <p id="profile-focus-modes">-</p>
+              </article>
+              <article class="home-stat-card">
+                <span class="home-stat-label">약한 주제</span>
+                <strong id="profile-weak-topics-count">-</strong>
+                <p id="profile-weak-topics">-</p>
+              </article>
+            </div>
+            <div class="dashboard-action-stack">
+              <a id="profile-review-link" href="/analysis.html" class="ghost">복습 시작</a>
+              <a id="profile-recommend-link" href="/dashboard.html" class="ghost">추천 모드 열기</a>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+  </section>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="assertive"></div>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-card">
+      <button id="modal-close" type="button" class="ghost close-btn" aria-label="닫기">&times;</button>
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="/static/assets/js/core/auth_client.js"></script>
+  <script src="/static/assets/js/core/api_client.js"></script>
+  <script src="/static/assets/js/pages/profile.js" type="module"></script>
+</body>
+</html>

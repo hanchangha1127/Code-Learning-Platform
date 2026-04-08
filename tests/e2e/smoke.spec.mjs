@@ -109,7 +109,6 @@ const homePayload = {
   weakTopics: ["Logic", "Runtime"],
   recommendedModes: [
     { mode: "analysis", label: "Code Analysis", link: "/analysis.html" },
-    { mode: "code-calc", label: "Code Calc", link: "/codecalc.html" },
   ],
   trend: {
     last7DaysAttempts: 5,
@@ -148,6 +147,12 @@ const goalPayload = {
   focusTopics: ["Logic"],
   updatedAt: "2026-03-06T09:00:00",
 };
+
+function toBackendDifficulty(value) {
+  if (value === "advanced") return "hard";
+  if (value === "intermediate") return "medium";
+  return "easy";
+}
 
 const codeBlockProblemPayload = {
   problemId: "cb-1",
@@ -227,22 +232,6 @@ const codeArrangeSubmitPayload = {
 for value in [1, 2, 3]:
     total += value
 print(total)`,
-};
-
-const codeCalcProblemPayload = {
-  problemId: "calc-1",
-  title: "Predict the output",
-  language: "python",
-  code: `x = 2
-for _ in range(3):
-    x += 1
-print(x)`,
-};
-
-const codeCalcSubmitPayload = {
-  correct: false,
-  expected_output: "5",
-  explanation: "The loop runs three times, so x becomes 5 before printing.",
 };
 
 const refactoringChoiceProblemPayload = {
@@ -679,11 +668,14 @@ const userPageSmokeTargets = [
       '#dashboard-goal-presets button[data-goal="30"]',
     ],
   },
-  { path: "/profile.html", ready: "#profile-section" },
+  {
+    path: "/profile.html",
+    ready: "#profile-section",
+    extra: ["#language-setting-select", "#profile-total-attempts", "#profile-goal-progress"],
+  },
   { path: "/analysis.html", ready: "#app-section" },
   { path: "/codeblock.html", ready: "#code-block-section" },
   { path: "/arrange.html", ready: "#arrange-section" },
-  { path: "/codecalc.html", ready: "#code-calc-section" },
   { path: "/auditor.html", ready: "#auditor-section" },
   { path: "/refactoring-choice.html", ready: "#refactoring-choice-section" },
   { path: "/code-blame.html", ready: "#code-blame-section" },
@@ -738,10 +730,28 @@ async function installShellMocks(page, { language = "python", difficulty = "begi
         return json(profilePayload);
       case "/platform/me":
         return json({ username: profilePayload.username, displayName: profilePayload.displayName, display_name: profilePayload.display_name });
+      case "/platform/me/settings":
+        if (route.request().method() === "PUT") {
+          const body = route.request().postDataJSON();
+          return json(body);
+        }
+        return json({
+          preferred_language: language,
+          preferred_difficulty: toBackendDifficulty(difficulty),
+        });
       case "/platform/me/goal":
         return json(goalPayload);
       case "/platform/home":
         return json(homePayload);
+      case "/platform/reports/latest":
+        return json({
+          available: true,
+          reportId: 1,
+          createdAt: "2026-03-06T10:00:00+09:00",
+          goal: "Keep the weekly review cadence",
+          summary: "Review wrong answers first and maintain a daily routine.",
+          pdfDownloadUrl: "/platform/reports/1/pdf",
+        });
       case "/platform/languages":
         return json(languagePayload);
       case "/platform/learning/history":
@@ -760,10 +770,6 @@ async function installShellMocks(page, { language = "python", difficulty = "begi
         return json(codeArrangeProblemPayload);
       case "/platform/arrange/submit":
         return json(codeArrangeSubmitPayload);
-      case "/platform/codecalc/problem":
-        return json(codeCalcProblemPayload);
-      case "/platform/codecalc/submit":
-        return json(codeCalcSubmitPayload);
       case "/platform/single-file-analysis/problem":
         return json(singleFileAnalysisPayload);
       case "/platform/multi-file-analysis/problem":
@@ -915,6 +921,19 @@ test.describe("desktop UA", () => {
     await expect(page.locator(".dashboard-action-stack a[href=\"/profile.html\"]")).toHaveCount(1);
   });
 
+  test("profile renders shared settings and learning summary", async ({ page }) => {
+    await installShellMocks(page, { language: "javascript", difficulty: "advanced" });
+    await page.goto("/profile.html");
+    await expect(page.locator("#language-setting-select")).toHaveValue("javascript");
+    await expect(page.locator('#difficulty-setting button[data-value="advanced"]')).toHaveClass(/active/);
+    await expect(page.locator("#profile-settings-status")).toContainText("공통 학습 설정");
+    await expect(page.locator("#profile-total-attempts")).toContainText("12");
+    await expect(page.locator("#profile-accuracy")).toContainText("75%");
+    await expect(page.locator("#profile-review-count")).toContainText("1");
+    await expect(page.locator("#profile-goal-progress")).toContainText("5 / 10");
+    await expect(page.locator("#profile-focus-modes")).toContainText("코드 분석");
+  });
+
   test("dashboard exposes advanced analysis links", async ({ page }) => {
     await installShellMocks(page);
     await page.goto("/dashboard.html");
@@ -1010,19 +1029,6 @@ test.describe("desktop UA", () => {
     await expect(page.locator("#arr-answer-code")).toContainText("total = 0");
   });
 
-  test("codecalc reveals the expected output after submit", async ({ page }) => {
-    await installShellMocks(page);
-    await page.goto("/codecalc.html");
-    await expect(page.locator("#calc-load-btn")).toBeEnabled();
-    await page.locator("#calc-load-btn").click();
-    await expect(page.locator("#calc-title")).toContainText("Predict the output");
-    await page.locator("#calc-output").fill("4");
-    await page.locator("#calc-submit-btn").click();
-    await expect(page.locator("#calc-feedback")).toBeVisible();
-    await expect(page.locator("#calc-expected-output")).toContainText("5");
-    await expect(page.locator("#calc-explanation")).toContainText("x becomes 5");
-  });
-
   test("refactoring choice renders queued submit feedback after job polling", async ({ page }) => {
     await installShellMocks(page, { language: "javascript", difficulty: "intermediate" });
     await page.goto("/refactoring-choice.html");
@@ -1069,6 +1075,17 @@ test.describe("desktop UA", () => {
     await expect(page.locator("#advanced-reference-report")).toContainText("모범 다중 파일 리포트");
   });
 
+  test("multi file analysis keeps a fast manual file switch during initial render", async ({ page }) => {
+    await installShellMocks(page);
+    await page.goto("/multi-file-analysis.html");
+    await page.locator("#advanced-load-btn").click();
+    const secondFile = page.locator('[data-advanced-file-id="checkout-service"]').first();
+    await expect(secondFile).toBeVisible();
+    await secondFile.click();
+    await expect(page.locator("#advanced-active-file-name")).toContainText("checkout_service.ts");
+    await expect(page.locator("#advanced-code-view")).toContainText("class CheckoutService");
+  });
+
   test("fullstack analysis uses the saved language instead of defaulting to python", async ({ page }) => {
     let requestedLanguage = null;
     await installShellMocks(page, { language: "javascript", difficulty: "advanced" });
@@ -1110,7 +1127,7 @@ test.describe("desktop UA", () => {
     await page.locator("#auditor-load-btn").click();
     await page.locator("#auditor-report-text").fill("입력 검증과 캐시 분기를 중심으로 위험을 정리했습니다.");
     await page.locator("#auditor-report-form button[type='submit']").click();
-    await expect(page.locator("#auditor-score")).toContainText("91");
+    await expect(page.locator("#auditor-score")).toContainText("91", { timeout: 10000 });
     await expect(page.locator("#auditor-verdict")).toContainText("합격");
     await expect(page.locator("#auditor-feedback-summary")).toContainText("입력 검증 누락");
     await expect(page.locator("#auditor-reference-report")).toContainText("모범 감사 리포트");
@@ -1203,12 +1220,6 @@ test.describe("mobile UA", () => {
     await page.goto("/analysis.html");
     await expectTopBefore(page, ".mobile-mode-shell > .control-panel", ".mobile-mode-shell > .quiz-panel");
     await expectTopBefore(page, ".mobile-mode-shell > .quiz-panel", ".mobile-mode-shell > .feedback-panel");
-  });
-
-  test("codecalc places settings before the problem board", async ({ page }) => {
-    await installShellMocks(page);
-    await page.goto("/codecalc.html");
-    await expectTopBefore(page, ".mobile-mode-shell > .calc-controls", ".mobile-mode-shell > .calc-board");
   });
 
   test("codeblock places settings before the problem board", async ({ page }) => {

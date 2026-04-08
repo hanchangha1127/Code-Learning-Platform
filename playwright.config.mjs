@@ -1,7 +1,8 @@
-import { defineConfig } from "@playwright/test";
+﻿import { defineConfig } from "@playwright/test";
 
 const runtimeEnv = {
   APP_ENV: "test",
+  ENABLE_HTTPS: "false",
   DB_PASSWORD: "test-db-password",
   JWT_SECRET: "test-jwt-secret-value-12345678901234567890",
   DB_HOST: "127.0.0.1",
@@ -22,10 +23,11 @@ export default defineConfig({
     headless: true,
   },
   webServer: {
-    command: "python -m server_runtime.runtime_server --host 127.0.0.1 --port 8000",
+    command: "python -m server.runtime_server --host 127.0.0.1 --port 8000",
     url: "http://127.0.0.1:8000/health",
     timeout: 120_000,
     reuseExistingServer: !process.env.CI,
     env: runtimeEnv,
   },
 });
+
