@@ -77,6 +77,20 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(str(ctx.exception), "email already exists")
         self.assertEqual(db.rollback_calls, 1)
 
+    def test_signup_stores_non_unique_display_name(self):
+        db = _FakeSignupSession()
+
+        user = signup(
+            db,
+            "display@example.com",
+            "login_id",
+            "strong-password",
+            display_name="Same Nickname",
+        )
+
+        self.assertIs(user, db.user)
+        self.assertEqual(db.user.display_name, "Same Nickname")
+
 
 if __name__ == "__main__":
     unittest.main()

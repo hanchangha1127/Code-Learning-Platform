@@ -17,6 +17,16 @@ class SchemaValidationTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             SignUpRequest(email="a@b.com", username="bad name", password="password123")
 
+    def test_signup_accepts_display_name_alias(self):
+        req = SignUpRequest(
+            email="a@b.com",
+            username="user_123",
+            displayName="Same Nickname",
+            password="password123",
+        )
+
+        self.assertEqual(req.display_name, "Same Nickname")
+
     def test_submit_rejects_blank_code(self):
         with self.assertRaises(ValidationError):
             SubmitRequest(language="python", code="   \n\t")

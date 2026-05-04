@@ -73,7 +73,7 @@ def enforce_guest_rate_limit(
 def issue_guest_jwt() -> str:
     legacy_token = user_service.create_guest()
     username = legacy_token.partition(":")[0]
-    return issue_platform_access_token(username=username, guest=True)
+    return issue_platform_access_token(username=username, display_name="Guest", guest=True)
 
 
 def start_google_login(request: Request, *, callback_route_name: str) -> Response:
@@ -139,6 +139,7 @@ def complete_google_login(
         token = issue_platform_access_token(
             username=username,
             email=user_info.get("email"),
+            display_name=user_info.get("display_name"),
             guest=bool(user_info.get("guest")),
         )
     except ValueError as exc:

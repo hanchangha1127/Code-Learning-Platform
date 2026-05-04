@@ -8,6 +8,7 @@ CREATE TABLE users (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   email VARCHAR(255) NOT NULL UNIQUE,
   username VARCHAR(50) NOT NULL UNIQUE,
+  display_name VARCHAR(100),
   password_hash VARCHAR(255) NOT NULL,
   role ENUM('user','admin') NOT NULL DEFAULT 'user',
   status ENUM('active','blocked','deleted') NOT NULL DEFAULT 'active',

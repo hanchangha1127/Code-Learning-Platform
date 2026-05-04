@@ -1509,7 +1509,7 @@ def request_code_blame_problem(
         min_count=3,
         max_count=4,
     )
-    culprit_commits = normalize_code_blame_option_ids(generated.get("culprit_commits"), option_ids)
+    culprit_commits = normalize_code_blame_option_ids(generated.get("culprit_commits"), allowed_ids=option_ids)
     if culprit_count == 1:
         culprit_commits = culprit_commits[:1]
     else:
@@ -1595,13 +1595,13 @@ def submit_code_blame_report(
         missing_diff="diff --git a/app.py b/app.py\n@@\n+pass",
     )
     option_ids = [row["optionId"] for row in commits]
-    normalized_selected_commits = normalize_code_blame_option_ids(selected_commits, option_ids)
+    normalized_selected_commits = normalize_code_blame_option_ids(selected_commits, allowed_ids=option_ids)
     if not normalized_selected_commits:
         raise ValueError("selectedCommits를 최소 1개 선택해야 합니다.")
     if len(normalized_selected_commits) > 2:
         raise ValueError("selectedCommits는 최대 2개까지 선택할 수 있습니다.")
 
-    culprit_commits = normalize_code_blame_option_ids(instance.get("culprit_commits"), option_ids)
+    culprit_commits = normalize_code_blame_option_ids(instance.get("culprit_commits"), allowed_ids=option_ids)
     if not culprit_commits:
         culprit_commits = option_ids[:1]
     if len(culprit_commits) > 2:

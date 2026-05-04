@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from pydantic import BaseModel, EmailStr, StringConstraints
+from pydantic import AliasChoices, BaseModel, EmailStr, Field, StringConstraints
 
 UsernameStr = Annotated[
     str,
@@ -14,11 +14,16 @@ UsernameStr = Annotated[
 SignupPasswordStr = Annotated[str, StringConstraints(min_length=8, max_length=128)]
 LoginPasswordStr = Annotated[str, StringConstraints(min_length=1, max_length=128)]
 RefreshTokenStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=20, max_length=512)]
+DisplayNameStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 
 
 class SignUpRequest(BaseModel):
     email: EmailStr
     username: UsernameStr
+    display_name: DisplayNameStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("display_name", "displayName"),
+    )
     password: SignupPasswordStr
 
 

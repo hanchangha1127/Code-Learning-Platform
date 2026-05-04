@@ -6,12 +6,12 @@ from pathlib import Path
 from fastapi.responses import HTMLResponse
 
 _STATIC_ASSET_PATTERN = re.compile(
-    r'(?P<prefix>\b(?:href|src)=["\'])(?P<url>/static/[^"\'?#]+)(?:\?[^"\']*)?(?P<suffix>["\'])'
+    r'(?P<prefix>\b(?:href|src)=["\'])(?P<url>/(?:assets|static)/[^"\'?#]+)(?:\?[^"\']*)?(?P<suffix>["\'])'
 )
 
 
 def _asset_version(frontend_dir: Path, asset_url: str) -> str:
-    asset_path = frontend_dir / asset_url.removeprefix("/static/")
+    asset_path = frontend_dir / asset_url.removeprefix("/")
     try:
         stat = asset_path.stat()
     except OSError:

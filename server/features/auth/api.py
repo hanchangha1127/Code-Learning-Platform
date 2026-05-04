@@ -74,7 +74,13 @@ def post_guest(request: Request, response: Response) -> dict:
 def post_signup(body: SignUpRequest, db: Session = Depends(get_db)):
     _require_password_auth_enabled()
     try:
-        user = signup(db, body.email, body.username, body.password)
+        user = signup(
+            db,
+            body.email,
+            body.username,
+            body.password,
+            display_name=body.display_name,
+        )
         return {"id": user.id}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

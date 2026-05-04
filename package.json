@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:e2e": "playwright test"
+    "build:frontend": "npm --prefix \"new frontend\" run build",
+    "test:e2e": "npm run build:frontend && playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.51.1"

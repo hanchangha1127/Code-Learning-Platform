@@ -60,6 +60,7 @@ def ensure_platform_user(
     *,
     username: str,
     email: str | None = None,
+    display_name: str | None = None,
     guest: bool = False,
 ) -> User:
     last_integrity_error: IntegrityError | None = None
@@ -73,6 +74,7 @@ def ensure_platform_user(
                 user = User(
                     email=resolved_email,
                     username=username,
+                    display_name=str(display_name or "").strip() or username,
                     password_hash=hash_password(random_password),
                 )
                 db.add(user)
@@ -82,6 +84,10 @@ def ensure_platform_user(
                     db.rollback()
                     last_integrity_error = exc
                     continue
+
+            normalized_display_name = str(display_name or "").strip()
+            if normalized_display_name and getattr(user, "display_name", None) != normalized_display_name:
+                user.display_name = normalized_display_name
 
             _ensure_default_settings(db, user.id)
             try:
@@ -106,9 +112,15 @@ def issue_platform_access_token(
     *,
     username: str,
     email: str | None = None,
+    display_name: str | None = None,
     guest: bool = False,
 ) -> str:
-    user = ensure_platform_user(username=username, email=email, guest=guest)
+    user = ensure_platform_user(
+        username=username,
+        email=email,
+        display_name=display_name,
+        guest=guest,
+    )
     if user.status != UserStatus.active:
         raise ValueError("account is not active")
     with SessionLocal() as db:

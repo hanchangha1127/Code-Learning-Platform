@@ -15,6 +15,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Re
 from fastapi.responses import Response
 
 from server.core.proxy import extract_forwarded_client_ip
+from server.bootstrap import FRONTEND_DIR
 from server.features.runtime_ui.template_renderer import render_template_response
 
 DOCKER_SOCKET_PATH = Path("/var/run/docker.sock")
@@ -853,13 +854,12 @@ def register_admin_api(
 
     @app.get("/admin.html", include_in_schema=False)
     def admin_page() -> Response:
-        frontend_dir = admin_file.parent.parent
         if not admin_file.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin page not found")
 
         return render_template_response(
             admin_file,
-            frontend_dir=frontend_dir,
+            frontend_dir=FRONTEND_DIR,
             template_variant="responsive",
             vary_user_agent=False,
         )

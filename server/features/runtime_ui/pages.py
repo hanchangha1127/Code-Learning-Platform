@@ -3,9 +3,9 @@
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
-from server.bootstrap import FRONTEND_DIR
+from server.bootstrap import FRONTEND_DIR, FRONTEND_IS_REACT_BUILD
 from server.features.runtime_ui.template_renderer import render_template_response
 from server.features.runtime_ui.user_agent import is_mobile_user_agent
 
@@ -16,6 +16,21 @@ DESKTOP_DIR = FRONTEND_DIR / "pages" / "desktop"
 MOBILE_DIR = FRONTEND_DIR / "pages" / "mobile"
 
 PAGE_FILES: dict[str, str] = {
+    "index": "index.html",
+    "dashboard": "dashboard.html",
+    "profile": "profile.html",
+    "analysis": "analysis.html",
+    "codeblock": "codeblock.html",
+    "arrange": "arrange.html",
+    "auditor": "auditor.html",
+    "refactoring-choice": "refactoring-choice.html",
+    "code-blame": "code-blame.html",
+    "single-file-analysis": "single-file-analysis.html",
+    "multi-file-analysis": "multi-file-analysis.html",
+    "fullstack-analysis": "fullstack-analysis.html",
+}
+
+REACT_PAGE_PATHS = {
     "index": "index.html",
     "dashboard": "dashboard.html",
     "profile": "profile.html",
@@ -51,6 +66,9 @@ def _render_template(template_path: Path, *, variant: str) -> Response:
 
 
 def _render_page_or_404(request: Request, page_key: str, *, detail: str) -> Response:
+    if FRONTEND_IS_REACT_BUILD:
+        return _render_react_app(detail=detail)
+
     variant = _variant_for_request(request)
     template_path = _template_path(page_key, variant=variant)
     if not template_path.exists():
@@ -58,13 +76,44 @@ def _render_page_or_404(request: Request, page_key: str, *, detail: str) -> Resp
     return _render_template(template_path, variant=variant)
 
 
+def _render_react_app(*, detail: str) -> Response:
+    index_path = FRONTEND_DIR / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+    return render_template_response(
+        index_path,
+        frontend_dir=FRONTEND_DIR,
+        template_variant="react",
+        vary_user_agent=False,
+    )
+
+
 @router.get("/favicon.ico", include_in_schema=False)
 def favicon() -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.get("/favicon.svg", include_in_schema=False)
+def favicon_svg() -> Response:
+    icon_path = FRONTEND_DIR / "favicon.svg"
+    if not icon_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Favicon not found")
+    return FileResponse(icon_path)
+
+
+@router.get("/icons.svg", include_in_schema=False)
+def icons_svg() -> Response:
+    icons_path = FRONTEND_DIR / "icons.svg"
+    if not icons_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Icons not found")
+    return FileResponse(icons_path)
+
+
 @router.get("/", include_in_schema=False)
 def root(request: Request) -> Response:
+    if FRONTEND_IS_REACT_BUILD:
+        return _render_react_app(detail="React app not found")
+
     variant = _variant_for_request(request)
     template_path = _template_path("index", variant=variant)
     if template_path.exists():

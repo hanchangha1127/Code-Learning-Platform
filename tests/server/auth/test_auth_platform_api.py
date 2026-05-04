@@ -200,6 +200,18 @@ class PlatformAuthTests(unittest.TestCase):
         self.assertEqual(fake_session.rollback_calls, 1)
         self.assertEqual(fake_session.commit_calls, 1)
 
+    def test_ensure_platform_user_stores_display_name(self):
+        fake_session = _FakePlatformAuthSession()
+
+        with patch.object(platform_auth, "SessionLocal", return_value=fake_session):
+            user = platform_auth.ensure_platform_user(
+                username="display_user",
+                display_name="Same Nickname",
+            )
+
+        self.assertEqual(user.username, "display_user")
+        self.assertEqual(user.display_name, "Same Nickname")
+
     def test_ensure_platform_user_recovers_from_concurrent_settings_create(self):
         existing_user = SimpleNamespace(
             id=7,

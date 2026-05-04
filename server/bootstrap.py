@@ -26,8 +26,18 @@ learning_service = LearningService(storage_manager)
 admin_metrics = get_admin_metrics()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FRONTEND_DIR = (PROJECT_ROOT / "frontend").resolve()
-ADMIN_FILE = FRONTEND_DIR / "pages" / "admin.html"
+REACT_FRONTEND_DIR_CANDIDATES = (
+    (PROJECT_ROOT / "new-frontend" / "dist").resolve(),
+    (PROJECT_ROOT / "new frontend" / "dist").resolve(),
+)
+REACT_FRONTEND_DIR = next(
+    (candidate for candidate in REACT_FRONTEND_DIR_CANDIDATES if (candidate / "index.html").exists()),
+    REACT_FRONTEND_DIR_CANDIDATES[-1],
+)
+LEGACY_FRONTEND_DIR = (PROJECT_ROOT / "frontend").resolve()
+FRONTEND_DIR = REACT_FRONTEND_DIR if (REACT_FRONTEND_DIR / "index.html").exists() else LEGACY_FRONTEND_DIR
+FRONTEND_IS_REACT_BUILD = FRONTEND_DIR == REACT_FRONTEND_DIR
+ADMIN_FILE = FRONTEND_DIR / "index.html" if FRONTEND_IS_REACT_BUILD else FRONTEND_DIR / "pages" / "admin.html"
 
 TOKEN_STORAGE_KEY = "code-learning-token"
 TOKEN_STORAGE_MARKER = "cookie-session"

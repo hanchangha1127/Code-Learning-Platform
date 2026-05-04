@@ -5,6 +5,7 @@ class UserRead(BaseModel):
     id: int
     email: str
     username: str
+    display_name: str | None = None
     role: str
     status: str
     model_config = {"from_attributes": True}

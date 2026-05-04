@@ -12,3 +12,10 @@ mysql_data
 .env
 .env.*
 !.env.example
+node_modules
+new frontend/node_modules
+new frontend/dist
+new frontend/dist-ssr
+new frontend/.vite
+playwright-report
+test-results

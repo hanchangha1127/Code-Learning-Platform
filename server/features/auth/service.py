@@ -92,13 +92,29 @@ def _raise_signup_conflict(db: Session, *, email: str, username: str, exc: Integ
     raise ValueError("account already exists") from exc
 
 
-def signup(db: Session, email: str, username: str, password: str) -> User:
+def _normalize_display_name(display_name: str | None, username: str) -> str:
+    return str(display_name or "").strip() or username
+
+
+def signup(
+    db: Session,
+    email: str,
+    username: str,
+    password: str,
+    *,
+    display_name: str | None = None,
+) -> User:
     if db.query(User).filter(User.email == email).first():
         raise ValueError("email already exists")
     if db.query(User).filter(User.username == username).first():
         raise ValueError("username already exists")
 
-    user = User(email=email, username=username, password_hash=hash_password(password))
+    user = User(
+        email=email,
+        username=username,
+        display_name=_normalize_display_name(display_name, username),
+        password_hash=hash_password(password),
+    )
     db.add(user)
     try:
         db.flush()

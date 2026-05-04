@@ -953,14 +953,19 @@ def get_public_me(current: User) -> dict[str, Any]:
             "guest": False,
             "provider": None,
         }
+    display_name = (
+        getattr(current, "display_name", None)
+        or info.get("display_name")
+        or current.username
+    )
     return {
         "id": current.id,
         "email": info.get("email") or current.email,
         "username": current.username,
         "role": current.role.value if hasattr(current.role, "value") else str(current.role),
         "status": current.status.value if hasattr(current.status, "value") else str(current.status),
-        "display_name": info.get("display_name") or current.username,
-        "displayName": info.get("display_name") or current.username,
+        "display_name": display_name,
+        "displayName": display_name,
         "guest": bool(info.get("guest")),
         "provider": info.get("provider"),
     }
