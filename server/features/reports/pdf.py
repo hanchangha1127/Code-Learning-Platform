@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
@@ -21,11 +21,8 @@ _MODE_LABELS: dict[str, str] = {
     "diagnostic": "진단",
     "practice": "맞춤 문제",
     "code-block": "코드 블록",
-    "code-calc": "코드 계산",
-    "code-error": "오류 찾기",
     "code-arrange": "코드 배치",
     "auditor": "감사관 모드",
-    "context-inference": "맥락 추론",
     "refactoring-choice": "최적의 선택",
     "code-blame": "범인 찾기",
     "single-file-analysis": "단일 파일 분석",
@@ -1615,3 +1612,4 @@ def get_latest_report_download_metadata(db: Session, user_id: int) -> dict[str, 
         "summary": _normalize_text(brief.get("summary"), limit=220) or _normalize_text(report.summary, limit=220),
         "pdfDownloadUrl": build_report_pdf_download_url(report.id),
     }
+

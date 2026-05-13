@@ -22,14 +22,14 @@ run_server.py
 
 ```text
 server/
-frontend/
+new frontend/
 tests/
 docs/
 alembic/
 ```
 
 - `server/`: 백엔드와 런타임
-- `frontend/`: 정적 페이지와 공용 자산
+- `new frontend/`: Vite + React 프런트엔드
 - `tests/`: 서버 테스트와 E2E
 - `docs/`: 구조와 운영 문서
 - `alembic/`: DB 마이그레이션
@@ -43,7 +43,7 @@ alembic/
   - CORS, request-id, metrics, redirect middleware 등록
   - canonical `/platform/*` router 등록
   - legacy `/api/*` router 등록
-  - `/static/*` mount
+  - React build `/assets/*`, `/static/*` mount
   - admin / health / page endpoint 등록
 
 ### 부트스트랩과 dependency
@@ -136,11 +136,10 @@ api_advanced_analysis.py
 
 ### `server/features/runtime_ui`
 
-- `pages.py`: desktop/mobile HTML 응답
+- `pages.py`: React SPA entry 응답
 - `health.py`: health endpoint
 - `admin.py`: admin page와 shutdown API
 - `template_renderer.py`: asset version injection
-- `user_agent.py`: 모바일/데스크톱 분기
 
 ## 라우팅 정책
 
@@ -163,23 +162,22 @@ api_advanced_analysis.py
 ## 프런트 구조
 
 ```text
-frontend/
-  pages/
-    admin.html
-    desktop/
-    mobile/
-  assets/
-    css/
-    js/
-      core/
-      pages/
-      widgets/
+new frontend/
+  src/
+    App.jsx
+    components/
+    pages/
+    lib/
+  public/
+    favicon.svg
+    icons.svg
+    static/site-image.png
 ```
 
-- `pages/`: 실제 HTML 엔트리
-- `assets/js/core`: API/auth/stream 공용 클라이언트
-- `assets/js/pages`: 페이지별 엔트리 스크립트
-- `assets/js/widgets`: 고급 분석 셸, history view, review resume 같은 UI 모듈
+- `src/App.jsx`: 기존 `.html` 경로를 React 컴포넌트로 매핑하는 SPA entry
+- `src/pages`와 `src/components`: 대시보드와 공용 UI
+- `src/lib`: 학습 설정 등 프런트 공용 helper
+- `public`: favicon, icons, 대표 이미지 같은 정적 public asset
 
 ## 저장소와 queue
 

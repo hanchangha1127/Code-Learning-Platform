@@ -42,14 +42,10 @@ class PreferredDifficulty(str, Enum):
 
 
 class ProblemKind(str, Enum):
-    coding = "coding"
     analysis = "analysis"
     code_block = "code_block"
     code_arrange = "code_arrange"
-    code_calc = "code_calc"
-    code_error = "code_error"
     auditor = "auditor"
-    context_inference = "context_inference"
     refactoring_choice = "refactoring_choice"
     code_blame = "code_blame"
 

@@ -853,6 +853,7 @@ def register_admin_api(
             shutdown_gate.release()
 
     @app.get("/admin.html", include_in_schema=False)
+    @app.get("/admin", include_in_schema=False)
     def admin_page() -> Response:
         if not admin_file.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin page not found")

@@ -1,4 +1,4 @@
-"""Gemini 기반 문제 생성 로직."""
+﻿"""Gemini 기반 문제 생성 로직."""
 
 from __future__ import annotations
 
@@ -28,7 +28,6 @@ from server.features.learning.generator_normalize import (
     _normalize_code_blame_facets,
     _normalize_code_blame_option_ids,
     _normalize_code_block_objective,
-    _normalize_context_inference_facets,
     _normalize_refactoring_choice_facets,
     _normalize_refactoring_choice_option_reviews,
     _normalize_refactoring_choice_options,
@@ -442,70 +441,6 @@ class ProblemGenerator:
             answer_index=answer_index,
             explanation=explanation,
         )
-    def generate_code_error_problem_sync(
-        self,
-        problem_id: str,
-        track_id: str,
-        language_id: str,
-        difficulty: str,
-        mode: str,
-        history_context: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Generate code with one incorrect 3-line block among several 3-line blocks."""
-
-        self._require_client()
-
-        contents = _join_prompt_sections(
-            "당신은 학습자가 잘못된 코드 블록을 찾는 연습 문제를 만듭니다.\n"
-            "반드시 JSON 으로만 답변하세요.\n"
-            '{"title": 문자열, "blocks": ["3줄 블록1", "3줄 블록2", ...], "wrong_block_index": 0, "explanation": 문자열}\n\n'
-            f"언어: {language_id}\n"
-            f"난이도: {difficulty}\n",
-            _history_block(
-                history_context,
-                "최근 출제된 코드 오류 찾기 기록입니다. 동일한 주제/패턴/실수 유형을 피해서 새로운 문제를 만드세요.",
-                "",
-            ),
-            "요구사항:\n"
-            "- 전체 코드는 3줄씩 묶인 블록으로 제공하며 최소 3개 이상 블록을 제공하세요.\n"
-            "- 각 블록은 선택한 언어 문법을 사용하세요. 주석/불필요한 영어 문장을 넣지 맙니다.\n"
-            "- wrong_block_index는 0부터 시작하며, 단 하나의 블록만 잘못된 코드입니다. 나머지는 정상 동작 코드여야 합니다.\n"
-            "- explanation에는 왜 해당 블록이 잘못되었는지, 올바른 형태는 무엇인지 한국어로 설명하세요.\n",
-        )
-        data = self._request_json(contents, use_generation_request=False)
-
-        blocks = data.get("blocks") or []
-        if not isinstance(blocks, list):
-            blocks = []
-        # Ensure each block is stripped and non-empty
-        clean_blocks = []
-        for blk in blocks:
-            if not isinstance(blk, str):
-                continue
-            stripped = _strip_comments(blk, language_id).strip("\n")
-            if stripped:
-                clean_blocks.append(stripped)
-
-        if len(clean_blocks) < 3:
-            raise ValueError("블록 수가 부족합니다.")
-
-        try:
-            wrong_index = int(data.get("wrong_block_index", 0))
-        except (TypeError, ValueError):
-            wrong_index = 0
-        wrong_index = max(0, min(wrong_index, len(clean_blocks) - 1))
-
-        return _base_payload(
-            problem_id,
-            mode,
-            difficulty,
-            language_id,
-            title=data.get("title") or "코드 오류 찾기",
-            blocks=clean_blocks,
-            wrong_block_index=wrong_index,
-            explanation=data.get("explanation") or "",
-        )
-
     def generate_auditor_problem_sync(
         self,
         problem_id: str,
@@ -571,87 +506,6 @@ class ProblemGenerator:
             prompt=prompt,
             trap_catalog=trap_catalog,
             reference_report=reference_report,
-        )
-
-    def generate_context_inference_problem_sync(
-        self,
-        problem_id: str,
-        track_id: str,
-        language_id: str,
-        difficulty: str,
-        mode: str,
-        inference_type: str,
-        complexity_profile: str,
-        history_context: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        self._require_client()
-
-        normalized_type = str(inference_type or "pre_condition").strip().lower()
-        if normalized_type not in {"pre_condition", "post_condition"}:
-            normalized_type = "pre_condition"
-
-        type_instruction = (
-            "질문은 함수 실행 전에 입력/상태를 추론하게 만드세요."
-            if normalized_type == "pre_condition"
-            else "질문은 로직 실행 후 상태/부작용 변화를 추론하게 만드세요."
-        )
-
-        contents = _join_prompt_sections(
-            "당신은 코드 학습 플랫폼의 맥락 추론 문제 생성기입니다.\n"
-            "반드시 JSON으로만 답변하세요.\n"
-            '{"title": 문자열, "snippet": 문자열, "prompt": 문자열, '
-            '"inference_type": "pre_condition|post_condition", "expected_facets": 문자열 배열, '
-            '"reference_report": 문자열, "difficulty": 문자열}\n\n'
-            f"문제 ID: {problem_id}\n"
-            f"트랙: {track_id}\n"
-            f"언어: {language_id}\n"
-            f"난이도: {difficulty}\n"
-            f"출제 타입: {normalized_type}\n"
-            f"복잡도 프로파일: {complexity_profile}\n",
-            _history_block(
-                history_context,
-                "최근 맥락 추론 문제 기록입니다. 동일한 시나리오/질문을 피하고 새로운 시스템 문맥으로 생성하세요.",
-                "",
-            ),
-            "요구사항:\n"
-            "- snippet은 전체 프로그램이 아니라 부분 코드(6~24줄)로 작성하세요.\n"
-            "- prompt는 단일 질문 1개만 제공하세요.\n"
-            f"- {type_instruction}\n"
-            "- expected_facets에는 정답 핵심 포인트를 3~6개의 짧은 토큰으로 작성하세요.\n"
-            "- reference_report는 제출 직후 공개할 모범 추론 리포트를 한국어로 작성하세요.\n"
-            "- snippet에 정답을 직접 암시하는 주석/문장을 넣지 마세요.\n",
-        )
-        data = self._request_json(contents, use_generation_request=False)
-
-        snippet = _strip_comments(data.get("snippet", ""), language_id).rstrip()
-        if not snippet:
-            snippet = _strip_comments(data.get("code", ""), language_id).rstrip()
-        prompt = str(data.get("prompt") or "").strip()
-        if not prompt:
-            prompt = "주어진 코드 조각을 바탕으로 시스템 맥락을 추론해 리포트를 작성하세요."
-
-        result_type = str(data.get("inference_type") or normalized_type).strip().lower()
-        if result_type not in {"pre_condition", "post_condition"}:
-            result_type = normalized_type
-
-        expected_facets = _normalize_context_inference_facets(data.get("expected_facets"))
-        reference_report = str(data.get("reference_report") or "").strip()
-        if not reference_report:
-            reference_lines = [f"- {facet}" for facet in expected_facets[:5]]
-            reference_report = "다음 맥락 포인트를 모두 다루는 추론 리포트를 작성해야 합니다.\n" + "\n".join(reference_lines)
-
-        return _base_payload(
-            problem_id,
-            mode,
-            data.get("difficulty", difficulty),
-            language_id,
-            title=data.get("title") or "맥락 추론 문제",
-            snippet=snippet,
-            prompt=prompt,
-            inference_type=result_type,
-            expected_facets=expected_facets,
-            reference_report=reference_report,
-            complexity_profile=complexity_profile,
         )
 
     def generate_refactoring_choice_problem_sync(
@@ -1040,25 +894,6 @@ class ProblemGenerator:
             history_context,
         )
 
-    async def generate_code_error_problem(
-        self,
-        problem_id: str,
-        track_id: str,
-        language_id: str,
-        difficulty: str,
-        mode: str,
-        history_context: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        return await asyncio.to_thread(
-            self.generate_code_error_problem_sync,
-            problem_id,
-            track_id,
-            language_id,
-            difficulty,
-            mode,
-            history_context,
-        )
-
     async def generate_auditor_problem(
         self,
         problem_id: str,
@@ -1077,29 +912,6 @@ class ProblemGenerator:
             difficulty,
             mode,
             trap_count,
-            history_context,
-        )
-
-    async def generate_context_inference_problem(
-        self,
-        problem_id: str,
-        track_id: str,
-        language_id: str,
-        difficulty: str,
-        mode: str,
-        inference_type: str,
-        complexity_profile: str,
-        history_context: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        return await asyncio.to_thread(
-            self.generate_context_inference_problem_sync,
-            problem_id,
-            track_id,
-            language_id,
-            difficulty,
-            mode,
-            inference_type,
-            complexity_profile,
             history_context,
         )
 
@@ -1282,3 +1094,4 @@ class ProblemGenerator:
         except Exception:
             self.metrics.end_ai_call(token, success=False)
             raise
+

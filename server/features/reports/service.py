@@ -413,13 +413,9 @@ def _mode_from_problem_kind(kind: Any) -> str:
     value = _safe_enum_value(kind).strip().lower()
     return {
         "analysis": "analysis",
-        "coding": "analysis",
         "code_block": "code-block",
         "code_arrange": "code-arrange",
-        "code_calc": "code-calc",
-        "code_error": "code-error",
         "auditor": "auditor",
-        "context_inference": "context-inference",
         "refactoring_choice": "refactoring-choice",
         "code_blame": "code-blame",
     }.get(value, value or "analysis")
@@ -455,7 +451,6 @@ def _mode_from_problem(
             "rchoice": "refactoring-choice",
             "cblame": "code-blame",
             "auditor": "auditor",
-            "ccalc": "code-calc",
             "cblock": "code-block",
             "analysis": "analysis",
         }.get(prefix)
@@ -472,10 +467,7 @@ def _mode_label(mode: str) -> str:
         "practice": "맞춤 문제",
         "code-block": "빈칸 채우기",
         "code-arrange": "코드 정렬",
-        "code-calc": "코드 계산",
-        "code-error": "오류 찾기",
         "auditor": "감사관 모드",
-        "context-inference": "맥락 추론",
         "refactoring-choice": "최적안 선택",
         "code-blame": "범인 찾기",
         "single-file-analysis": "단일 파일 분석",
@@ -740,16 +732,6 @@ def _extract_reference_answer(
         if isinstance(options, list) and normalized_index is not None and 0 <= normalized_index < len(options):
             return _clip_detail_text(options[normalized_index], 220)
 
-    if mode == "code-calc":
-        return _clip_detail_text(answer_payload.get("expected_output") or problem_payload.get("expected_output"), 220)
-
-    if mode == "code-error":
-        correct_index = answer_payload.get("wrong_block_index") or problem_payload.get("wrong_block_index")
-        try:
-            return f"{int(correct_index) + 1}번 블록"
-        except (TypeError, ValueError):
-            return None
-
     if mode == "code-arrange":
         correct_order = answer_payload.get("correct_order") or problem_payload.get("correct_order")
         if isinstance(correct_order, list) and correct_order:
@@ -816,21 +798,6 @@ def _extract_learner_response(
             return _clip_detail_text("제출 순서: " + " -> ".join(str(item) for item in order[:8]), 260)
         return None
 
-    if mode == "code-calc":
-        value = submission_payload.get("output") or submission_payload.get("outputText") or submission_payload.get("output_text")
-        if value is None:
-            value = submission.code
-        return _clip_detail_text(value, 220)
-
-    if mode == "code-error":
-        selected = submission_payload.get("selectedIndex")
-        if selected is None:
-            selected = submission_payload.get("selected_index")
-        try:
-            return f"{int(selected) + 1}번 블록"
-        except (TypeError, ValueError):
-            return _clip_detail_text(selected, 80)
-
     if mode == "code-blame":
         commits = _normalize_detail_list(
             submission_payload.get("selectedCommits") or submission_payload.get("selected_commits"),
@@ -890,36 +857,6 @@ def _build_submission_comparison(
             return f"{selected}를 골랐지만 정답은 {expected}였습니다."
         if selected and expected and is_correct:
             return f"{expected}를 정확히 골랐습니다."
-
-    if mode == "code-calc":
-        submitted = _clip_detail_text(
-            submission_payload.get("output") or submission_payload.get("outputText") or submission_payload.get("output_text") or submission.code,
-            220,
-        )
-        expected = _clip_detail_text(answer_payload.get("expected_output") or problem_payload.get("expected_output"), 220)
-        if submitted and expected and not is_correct:
-            return f"예상 출력 '{expected}' 대신 '{submitted}'를 제출했습니다."
-        if submitted and expected and is_correct:
-            return f"출력 '{submitted}'를 정확히 예측했습니다."
-
-    if mode == "code-error":
-        selected = _extract_learner_response(
-            mode=mode,
-            submission=submission,
-            submission_payload=submission_payload,
-            problem_payload=problem_payload,
-        )
-        expected = _extract_reference_answer(
-            mode=mode,
-            problem_payload=problem_payload,
-            answer_payload=answer_payload,
-            problem=submission.problem,
-            result_payload=result_payload,
-        )
-        if selected and expected and not is_correct:
-            return f"{selected}을 골랐지만 실제 오류 블록은 {expected}였습니다."
-        if selected and expected and is_correct:
-            return f"오류 블록 {expected}을 정확히 찾았습니다."
 
     if mode == "refactoring-choice":
         selected = _clip_detail_text(submission_payload.get("selectedOption") or submission_payload.get("selected_option"), 40)

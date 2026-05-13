@@ -268,30 +268,6 @@ def _normalize_auditor_trap_catalog(value: Any, trap_count: int) -> list[dict[st
     return deduped[:trap_count]
 
 
-_CONTEXT_INFERENCE_FACET_DEFAULTS: list[str] = [
-    "input_shape",
-    "state_transition",
-    "side_effect",
-    "data_consistency",
-    "security_guard",
-]
-
-
-def _normalize_context_inference_facets(value: Any) -> list[str]:
-    facets: list[str] = []
-    if isinstance(value, list):
-        for entry in value:
-            facet = str(entry or "").strip().lower()
-            if not facet:
-                continue
-            if facet in facets:
-                continue
-            facets.append(facet)
-    if not facets:
-        facets.extend(_CONTEXT_INFERENCE_FACET_DEFAULTS)
-    return facets
-
-
 _REFACTORING_CHOICE_FACET_TAXONOMY: tuple[str, ...] = (
     "performance",
     "memory",

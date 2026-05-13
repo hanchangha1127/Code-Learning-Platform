@@ -198,6 +198,21 @@ def _stream_problem_response(
     partial_lock = threading.Lock()
     started_at = time.monotonic()
     future: Future[None] | None = None
+    slot_released = threading.Event()
+    slot_release_lock = threading.Lock()
+
+    def _release_stream_slot(*, context: str) -> None:
+        if slot_released.is_set():
+            return
+        with slot_release_lock:
+            if slot_released.is_set():
+                return
+            try:
+                _STREAM_SLOTS.release()
+                slot_released.set()
+            except ValueError:
+                logger.debug("problem_stream_slot_release_redundant context=%s", context)
+                slot_released.set()
 
     def _merge_partial_payload(partial: dict | str | None) -> dict:
         normalized = partial if isinstance(partial, dict) else {"delta": str(partial or "")}
@@ -253,12 +268,21 @@ def _stream_problem_response(
             )
         finally:
             finished.set()
-            _STREAM_SLOTS.release()
+            _release_stream_slot(context="worker_finished")
+
+    def _mark_disconnected() -> None:
+        cancelled.set()
+        if future is not None and not future.done():
+            if future.cancel():
+                logger.info("problem_stream_worker_cancelled_by_client")
+                _release_stream_slot(context="client_disconnected")
+            else:
+                logger.info("problem_stream_future_cancel_rejected")
 
     try:
         future = _STREAM_EXECUTOR.submit(_worker)
     except RuntimeError:
-        _STREAM_SLOTS.release()
+        _release_stream_slot(context="executor_reject")
         return _stream_capacity_exceeded_response()
 
     async def _event_stream():
@@ -276,116 +300,114 @@ def _stream_problem_response(
                     },
                 )
 
-        yield _sse_event(
-            "status",
-            {
-                "phase": "queued",
-                "message": queued_message,
-                "elapsedMs": 0,
-            },
-        )
+        try:
+            yield _sse_event(
+                "status",
+                {
+                    "phase": "queued",
+                    "message": queued_message,
+                    "elapsedMs": 0,
+                },
+            )
 
-        while not finished.is_set() and not payload_ready.is_set():
+            while not finished.is_set() and not payload_ready.is_set():
+                if await request.is_disconnected():
+                    _mark_disconnected()
+                    logger.info("problem_stream_client_disconnected")
+                    return
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                yield _sse_event(
+                    "status",
+                    {
+                        "phase": "generating",
+                        "message": generating_message,
+                        "elapsedMs": elapsed_ms,
+                    },
+                )
+                for partial_event in _drain_partial_events(elapsed_ms=elapsed_ms):
+                    yield partial_event
+                await asyncio.sleep(STREAM_HEARTBEAT_SECONDS)
+
             if await request.is_disconnected():
-                cancelled.set()
-                if future is not None and not future.done():
-                    future.cancel()
-                logger.info("problem_stream_client_disconnected")
+                _mark_disconnected()
+                logger.info("problem_stream_client_disconnected_after_finish")
                 return
-            elapsed_ms = int((time.monotonic() - started_at) * 1000)
-            yield _sse_event(
-                "status",
-                {
-                    "phase": "generating",
-                    "message": generating_message,
-                    "elapsedMs": elapsed_ms,
-                },
-            )
-            for partial_event in _drain_partial_events(elapsed_ms=elapsed_ms):
-                yield partial_event
-            await asyncio.sleep(STREAM_HEARTBEAT_SECONDS)
 
-        if await request.is_disconnected():
-            cancelled.set()
-            if future is not None and not future.done():
-                future.cancel()
-            logger.info("problem_stream_client_disconnected_after_finish")
-            return
-
-        if cancelled.is_set():
-            logger.info("problem_stream_cancelled_before_emit")
-            return
-
-        payload_emitted = False
-        if payload_ready.is_set():
-            elapsed_ms = int((time.monotonic() - started_at) * 1000)
-            for partial_event in _drain_partial_events(elapsed_ms=elapsed_ms):
-                yield partial_event
-            payload = result_holder.get("payload", {})
-            yield _sse_event(
-                "status",
-                {
-                    "phase": "rendering",
-                    "message": rendering_message,
-                    "elapsedMs": elapsed_ms,
-                },
-            )
-            yield _sse_event(
-                "payload",
-                {
-                    "payload": payload,
-                    "elapsedMs": elapsed_ms,
-                },
-            )
-            payload_emitted = True
-
-        while not finished.is_set():
-            if await request.is_disconnected():
-                cancelled.set()
-                if future is not None and not future.done():
-                    future.cancel()
-                logger.info("problem_stream_client_disconnected_after_payload")
+            if cancelled.is_set():
+                logger.info("problem_stream_cancelled_before_emit")
                 return
+
+            payload_emitted = False
+            if payload_ready.is_set():
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                for partial_event in _drain_partial_events(elapsed_ms=elapsed_ms):
+                    yield partial_event
+                payload = result_holder.get("payload", {})
+                yield _sse_event(
+                    "status",
+                    {
+                        "phase": "rendering",
+                        "message": rendering_message,
+                        "elapsedMs": elapsed_ms,
+                    },
+                )
+                yield _sse_event(
+                    "payload",
+                    {
+                        "payload": payload,
+                        "elapsedMs": elapsed_ms,
+                    },
+                )
+                payload_emitted = True
+
+            while not finished.is_set():
+                if await request.is_disconnected():
+                    _mark_disconnected()
+                    logger.info("problem_stream_client_disconnected_after_payload")
+                    return
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                for partial_event in _drain_partial_events(elapsed_ms=elapsed_ms):
+                    yield partial_event
+                yield _sse_event(
+                    "status",
+                    {
+                        "phase": "persisting",
+                        "message": STREAM_PERSISTING_MESSAGE,
+                        "elapsedMs": elapsed_ms,
+                    },
+                )
+                await asyncio.sleep(STREAM_HEARTBEAT_SECONDS)
+
             elapsed_ms = int((time.monotonic() - started_at) * 1000)
             for partial_event in _drain_partial_events(elapsed_ms=elapsed_ms):
                 yield partial_event
-            yield _sse_event(
-                "status",
-                {
-                    "phase": "persisting",
-                    "message": STREAM_PERSISTING_MESSAGE,
-                    "elapsedMs": elapsed_ms,
-                },
-            )
-            await asyncio.sleep(STREAM_HEARTBEAT_SECONDS)
+            stream_error = error_holder.get("error")
+            if stream_error:
+                yield _sse_event("error", stream_error.to_payload(elapsed_ms=elapsed_ms))
+                yield _sse_event("done", {"ok": False, "code": stream_error.code, "elapsedMs": elapsed_ms, "persisted": False})
+                return
 
-        elapsed_ms = int((time.monotonic() - started_at) * 1000)
-        for partial_event in _drain_partial_events(elapsed_ms=elapsed_ms):
-            yield partial_event
-        stream_error = error_holder.get("error")
-        if stream_error:
-            yield _sse_event("error", stream_error.to_payload(elapsed_ms=elapsed_ms))
-            yield _sse_event("done", {"ok": False, "code": stream_error.code, "elapsedMs": elapsed_ms, "persisted": False})
-            return
-
-        if not payload_emitted:
-            payload = result_holder.get("payload", {})
-            yield _sse_event(
-                "status",
-                {
-                    "phase": "rendering",
-                    "message": rendering_message,
-                    "elapsedMs": elapsed_ms,
-                },
-            )
-            yield _sse_event(
-                "payload",
-                {
-                    "payload": payload,
-                    "elapsedMs": elapsed_ms,
-                },
-            )
-        yield _sse_event("done", {"ok": True, "elapsedMs": elapsed_ms, "persisted": True})
+            if not payload_emitted:
+                payload = result_holder.get("payload", {})
+                yield _sse_event(
+                    "status",
+                    {
+                        "phase": "rendering",
+                        "message": rendering_message,
+                        "elapsedMs": elapsed_ms,
+                    },
+                )
+                yield _sse_event(
+                    "payload",
+                    {
+                        "payload": payload,
+                        "elapsedMs": elapsed_ms,
+                    },
+                )
+            yield _sse_event("done", {"ok": True, "elapsedMs": elapsed_ms, "persisted": True})
+        finally:
+            _mark_disconnected()
+            _release_stream_slot(context="event_stream_cleanup")
 
     return StreamingResponse(
         _event_stream(),

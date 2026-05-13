@@ -22,16 +22,10 @@ def trend_summary(recent_accuracy: float | None, previous_accuracy: float | None
 
 
 def _mode_from_event(item: Dict[str, Any]) -> str:
-    if item.get("type") == "code_calc_event":
-        return "code-calc"
-    if item.get("type") == "code_error_event":
-        return "code-error"
     if item.get("type") == "code_arrange_event":
         return "code-arrange"
     if item.get("type") == "auditor_event":
         return "auditor"
-    if item.get("type") == "context_inference_event":
-        return "context-inference"
     if item.get("type") == "refactoring_choice_event":
         return "refactoring-choice"
     if item.get("type") == "code_blame_event":
@@ -51,16 +45,10 @@ def _build_prompt(mode: str, instance: Dict[str, Any]) -> str:
         return prompt
     if mode == "code-block":
         return "빈칸을 채워 올바른 선택지를 고르세요."
-    if mode == "code-calc":
-        return "코드를 실행했을 때 출력될 값을 예측하세요."
-    if mode == "code-error":
-        return "오류가 있는 코드 블록을 선택하세요."
     if mode == "code-arrange":
         return "코드 블록을 올바른 순서로 배열하세요."
     if mode == "auditor":
         return "코드의 치명적 함정을 찾아 감사 리포트를 작성하세요."
-    if mode == "context-inference":
-        return "코드 맥락을 추론해 리포트를 작성하세요."
     if mode == "refactoring-choice":
         return "A/B/C 옵션 중 최적의 코드를 선택하고 근거를 작성하세요."
     if mode == "code-blame":
@@ -110,16 +98,6 @@ def _build_answer(event: Dict[str, Any], instance: Dict[str, Any]) -> str | None
         return event.get("explanation")
 
     event_type = event.get("type")
-    if event_type == "code_calc_event":
-        submitted = (event.get("submitted_output") or "").strip()
-        return f"제출 출력: {submitted}" if submitted else None
-
-    if event_type == "code_error_event":
-        selected = event.get("selected_index")
-        if selected is not None:
-            return f"선택 블록: {int(selected) + 1}번"
-        return None
-
     if event_type == "code_arrange_event":
         order = event.get("submitted_order") or []
         if order:
@@ -135,9 +113,6 @@ def _build_answer(event: Dict[str, Any], instance: Dict[str, Any]) -> str | None
             return f"선택 옵션: {selected}"
 
     if event_type == "auditor_event":
-        submitted = (event.get("report") or "").strip()
-        return submitted or None
-    if event_type == "context_inference_event":
         submitted = (event.get("report") or "").strip()
         return submitted or None
     if event_type == "refactoring_choice_event":
@@ -170,11 +145,8 @@ def _build_summary(event: Dict[str, Any], instance: Dict[str, Any], mode: str) -
 
     return {
         "code-block": "코드 블록",
-        "code-calc": "코드 계산",
-        "code-error": "오류 찾기",
         "code-arrange": "코드 배치",
         "auditor": "감사관 모드",
-        "context-inference": "맥락 추론",
         "refactoring-choice": "최적의 선택",
         "code-blame": "범인 찾기",
         "single-file-analysis": "단일 파일 분석",
@@ -342,11 +314,8 @@ def _mode_label(mode: str) -> str:
     return {
         "analysis": "코드 분석",
         "code-block": "코드 블록",
-        "code-calc": "코드 계산",
-        "code-error": "오류 찾기",
         "code-arrange": "코드 배치",
         "auditor": "감사관 모드",
-        "context-inference": "맥락 추론",
         "refactoring-choice": "최적의 선택",
         "code-blame": "범인 찾기",
         "single-file-analysis": "단일 파일 분석",
@@ -361,14 +330,6 @@ def _build_legacy_expected_answer(event: Dict[str, Any]) -> str | None:
     mode = str(event.get("mode") or "").strip()
     if mode == "code-block":
         return _clip_detail_text(event.get("correct_option_text"))
-    if mode == "code-calc":
-        return _clip_detail_text(event.get("expected_output"))
-    if mode == "code-error":
-        correct_index = event.get("correct_index")
-        try:
-            return f"{int(correct_index) + 1}번 블록"
-        except (TypeError, ValueError):
-            return None
     if mode == "code-arrange":
         correct_order = event.get("correct_order")
         if isinstance(correct_order, list) and correct_order:
@@ -399,30 +360,6 @@ def _build_legacy_response_comparison(event: Dict[str, Any]) -> str | None:
             return f"제출 선택지는 '{selected}'였고 정답은 '{expected}'였습니다."
         if selected and is_correct:
             return f"정답 선택지 '{selected}'를 맞혔습니다."
-
-    if mode == "code-calc":
-        submitted = _clip_detail_text(event.get("submitted_output"), 160)
-        expected = _clip_detail_text(event.get("expected_output"), 160)
-        if submitted and expected and not is_correct:
-            return f"예상 출력 '{expected}' 대신 '{submitted}'를 제출했습니다."
-        if submitted and is_correct:
-            return f"출력 '{submitted}'를 정확히 예측했습니다."
-
-    if mode == "code-error":
-        selected_index = event.get("selected_index")
-        correct_index = event.get("correct_index")
-        try:
-            selected_label = f"{int(selected_index) + 1}번 블록"
-        except (TypeError, ValueError):
-            selected_label = None
-        try:
-            correct_label = f"{int(correct_index) + 1}번 블록"
-        except (TypeError, ValueError):
-            correct_label = None
-        if selected_label and correct_label and not is_correct:
-            return f"{selected_label}을 골랐지만 실제 오류 블록은 {correct_label}였습니다."
-        if selected_label and is_correct:
-            return f"오류 블록 {selected_label}을 정확히 찾았습니다."
 
     if mode == "code-arrange":
         submitted_order = event.get("submitted_order")
@@ -623,11 +560,6 @@ def user_history(
             enriched_event["found_types"] = event.get("found_types") or []
             enriched_event["missed_types"] = event.get("missed_types") or []
             enriched_event["reference_report"] = event.get("reference_report") or ""
-        if event.get("type") == "context_inference_event":
-            enriched_event["found_types"] = event.get("found_types") or []
-            enriched_event["missed_types"] = event.get("missed_types") or []
-            enriched_event["reference_report"] = event.get("reference_report") or ""
-            enriched_event["inference_type"] = event.get("inference_type") or instance.get("inference_type")
         if event.get("type") == "refactoring_choice_event":
             enriched_event["found_types"] = event.get("found_types") or []
             enriched_event["missed_types"] = event.get("missed_types") or []

@@ -516,6 +516,9 @@ class LearningHistoryBridgeTests(unittest.TestCase):
                 "id": 101,
                 "language": "python",
                 "created_by": 1,
+                "content_status": learning_history_bridge.ProblemContentStatus.approved,
+                "answer_payload": {"type": "problem_instance", "problem_id": "analysis-1"},
+                "is_published": False,
             },
         )()
 
@@ -552,6 +555,7 @@ class LearningHistoryBridgeTests(unittest.TestCase):
         self.assertEqual(submissions[0].status, learning_history_bridge.SubmissionStatus.passed)
         self.assertEqual(submissions[0].submission_payload["bridgeId"].startswith("submission-"), True)
         self.assertEqual(analyses[0].result_summary, "좋아요")
+        self.assertTrue(fake_problem.is_published)
         self.assertEqual(fake_db.commits, 1)
 
     def test_submit_mode_answer_rejects_deleted_modes(self) -> None:
@@ -559,10 +563,10 @@ class LearningHistoryBridgeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "unsupported mode"):
             learning_history_bridge.submit_mode_answer(
-                mode="context-inference",
+                mode="removed-mode",
                 username="bridge-user",
                 user_id=1,
-                body={"problemId": "cinfer-1", "report": "context report"},
+                body={"problemId": "removed-1", "report": "removed mode report"},
                 db=fake_db,
             )
 

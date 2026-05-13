@@ -10,7 +10,7 @@ const home = {
   streakDays: 4,
   stats: { totalAttempts: 12, accuracy: 75 },
   dailyGoal: { targetSessions: 10, completedSessions: 5, remainingSessions: 5 },
-  reviewQueue: { dueCount: 1, items: [{ id: 1, title: "Trace the loop", weaknessLabel: "Logic", resumeLink: "/analysis.html" }] },
+  reviewQueue: { dueCount: 1, items: [{ id: 1, title: "Trace the loop", weaknessLabel: "Logic", resumeLink: "/analysis.html?resume_review=1" }] },
   trend: { last7DaysAttempts: 5 },
   weakTopics: ["Logic"],
   recommendedModes: [{ mode: "analysis" }],
@@ -98,6 +98,72 @@ const advancedProblem = {
     { id: "service", name: "checkout_service.ts", path: "src/service.ts", content: "export class CheckoutService {}" },
   ],
 };
+const problemBankPage = {
+  items: [
+    {
+      id: 1,
+      title: "Bank analysis problem",
+      mode: "analysis",
+      mode_label: "코드 분석",
+      language: "python",
+      difficulty: "easy",
+      submissions: 12,
+      success_rate: 75,
+      my_status: "unsolved",
+      updated_at: "2026-03-06T09:20:00",
+      solve_link: "/analysis.html?bank_problem=1",
+    },
+    {
+      id: 2,
+      title: "Bank code block",
+      mode: "code-block",
+      mode_label: "코드 블록",
+      language: "python",
+      difficulty: "medium",
+      submissions: 8,
+      success_rate: 62.5,
+      my_status: "tried",
+      updated_at: "2026-03-05T09:20:00",
+      solve_link: "/codeblock.html?bank_problem=2",
+    },
+    {
+      id: 3,
+      title: "Bank arrange",
+      mode: "code-arrange",
+      mode_label: "코드 배치",
+      language: "python",
+      difficulty: "easy",
+      submissions: 5,
+      success_rate: 80,
+      my_status: "solved",
+      updated_at: "2026-03-04T09:20:00",
+      solve_link: "/arrange.html?bank_problem=3",
+    },
+    {
+      id: 4,
+      title: "Bank advanced",
+      mode: "multi-file-analysis",
+      mode_label: "다중 파일 분석",
+      language: "typescript",
+      difficulty: "hard",
+      submissions: 3,
+      success_rate: 33.3,
+      my_status: "unsolved",
+      updated_at: "2026-03-03T09:20:00",
+      solve_link: "/multi-file-analysis.html?bank_problem=4",
+    },
+  ],
+  summary: {
+    total_problems: 4,
+    total_submissions: 28,
+    solved_count: 1,
+    tried_count: 1,
+    average_success_rate: 64.3,
+  },
+  total: 4,
+  limit: 30,
+  offset: 0,
+};
 const adminMetrics = {
   generatedAt: "2026-03-06T09:30:00",
   activeUsers: 3,
@@ -147,7 +213,7 @@ const adminMetrics = {
   },
 };
 
-async function installMocks(page, { language = "python", difficulty = "beginner", authenticated = true } = {}) {
+async function installMocks(page, { language = "python", difficulty = "beginner", authenticated = true, problemBankResponder = null } = {}) {
   let jobPolls = 0;
   let sessionActive = authenticated;
   await page.addInitScript(({ marker, adminKey, languageId, difficultyId }) => {
@@ -180,6 +246,19 @@ async function installMocks(page, { language = "python", difficulty = "beginner"
         return json(historyPage);
       case "/platform/learning/review-queue":
         return json(home.reviewQueue);
+      case "/platform/review-queue/1/resume":
+        return json({ reviewItemId: 1, mode: "analysis", resumeLink: "/analysis.html?resume_review=1", problem: analysisProblem.problem });
+      case "/platform/problem-bank":
+        if (problemBankResponder) return problemBankResponder(route, url, json);
+        return json(problemBankPage);
+      case "/platform/problem-bank/1/resume":
+        return json({ bank_problem_id: 1, mode: "analysis", resume_link: "/analysis.html?bank_problem=1", problem: analysisProblem.problem });
+      case "/platform/problem-bank/2/resume":
+        return json({ bank_problem_id: 2, mode: "code-block", resume_link: "/codeblock.html?bank_problem=2", problem: codeBlockProblem });
+      case "/platform/problem-bank/3/resume":
+        return json({ bank_problem_id: 3, mode: "code-arrange", resume_link: "/arrange.html?bank_problem=3", problem: arrangeProblem });
+      case "/platform/problem-bank/4/resume":
+        return json({ bank_problem_id: 4, mode: "multi-file-analysis", resume_link: "/multi-file-analysis.html?bank_problem=4", problem: advancedProblem });
       case "/platform/auth/guest":
         sessionActive = true;
         return json({ accessToken: SESSION_MARKER, username: "guest" });
@@ -271,6 +350,74 @@ test.describe("React frontend smoke", () => {
     await page.getByRole("button", { name: "로그아웃" }).click();
     await expect(page).toHaveURL(/index\.html$/);
     await expect(page.locator("#google-login")).toBeVisible();
+  });
+
+  test("profile wrong note review link resumes the selected problem", async ({ page }) => {
+    await installMocks(page);
+    await page.goto("/profile.html");
+    await page.locator("#btn-wrong-note").click();
+    await page.locator("#modal-body a.ghost").first().click();
+    await expect(page).toHaveURL(/analysis\.html\?resume_review=1$/);
+    await expect(page.locator("#problem-title")).toContainText("Trace the accumulator");
+    await expect(page.locator("#problem-code")).toContainText("total = 0");
+  });
+
+  test("problem bank lists shared problems and reuses mode pages", async ({ page }) => {
+    await installMocks(page);
+    await page.goto("/problems.html");
+    await expect(page.locator("#problem-bank-table")).toContainText("Bank analysis problem");
+    await expect(page.locator("#problem-bank-table")).toContainText("75%");
+    await page.locator(".problem-bank-title-link").first().click();
+    await expect(page).toHaveURL(/analysis\.html\?bank_problem=1$/);
+    await expect(page.locator("#problem-title")).toContainText("Trace the accumulator");
+
+    await page.goto("/codeblock.html?bank_problem=2");
+    await expect(page.locator("#cb-problem-title")).toContainText("Complete the sum");
+
+    await page.goto("/arrange.html?bank_problem=3");
+    await expect(page.locator("#arr-title")).toContainText("Arrange the loop");
+
+    await page.goto("/multi-file-analysis.html?bank_problem=4");
+    await expect(page.locator("#advanced-active-file-name")).toContainText("checkout_controller.ts");
+  });
+
+  test("problem bank ignores stale filter responses", async ({ page }) => {
+    const seenQueries = [];
+    const fastPage = {
+      ...problemBankPage,
+      items: [{ ...problemBankPage.items[0], id: 21, title: "Fast filter result", solve_link: "" }],
+      total: 1,
+      summary: { ...problemBankPage.summary, total_problems: 1 },
+    };
+    const slowPage = {
+      ...problemBankPage,
+      items: [{ ...problemBankPage.items[0], id: 22, title: "Slow stale result", solve_link: "" }],
+      total: 1,
+      summary: { ...problemBankPage.summary, total_problems: 1 },
+    };
+
+    await installMocks(page, {
+      problemBankResponder: async (_route, url, json) => {
+        const query = url.searchParams.get("q") || "";
+        seenQueries.push(query);
+        if (query === "slow") {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          return json(slowPage);
+        }
+        if (query === "fast") return json(fastPage);
+        return json(problemBankPage);
+      },
+    });
+    await page.goto("/problems.html");
+    await expect(page.locator("#problem-bank-table")).toContainText("Bank analysis problem");
+
+    await page.locator("#problem-bank-search").fill("slow");
+    await expect.poll(() => seenQueries.includes("slow")).toBeTruthy();
+    await page.locator("#problem-bank-search").fill("fast");
+
+    await expect(page.locator("#problem-bank-table")).toContainText("Fast filter result");
+    await expect(page.locator("#problem-bank-table")).not.toContainText("Slow stale result");
+    await expect(page.locator(".problem-bank-title-link").first()).toHaveAttribute("href", /analysis\.html\?bank_problem=21$/);
   });
 
   test("analysis mode loads and submits", async ({ page }) => {

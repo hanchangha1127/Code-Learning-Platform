@@ -24,22 +24,6 @@ AUDITOR_TRAP_COUNT_BY_DIFFICULTY: Mapping[str, int] = MappingProxyType(
     }
 )
 
-CONTEXT_INFERENCE_TYPE_WEIGHTS: Mapping[str, Mapping[str, int]] = MappingProxyType(
-    {
-        "beginner": MappingProxyType({"pre_condition": 70, "post_condition": 30}),
-        "intermediate": MappingProxyType({"pre_condition": 50, "post_condition": 50}),
-        "advanced": MappingProxyType({"pre_condition": 30, "post_condition": 70}),
-    }
-)
-
-CONTEXT_INFERENCE_COMPLEXITY_PROFILE_BY_DIFFICULTY: Mapping[str, str] = MappingProxyType(
-    {
-        "beginner": "single_function_local_state",
-        "intermediate": "service_plus_repository_side_effect",
-        "advanced": "multi_stage_transaction_auth_concurrency",
-    }
-)
-
 REFACTORING_CHOICE_OPTION_IDS: tuple[str, str, str] = ("A", "B", "C")
 REFACTORING_CHOICE_FACET_TAXONOMY: tuple[str, ...] = (
     "performance",
@@ -90,4 +74,3 @@ CODE_BLAME_CULPRIT_COUNT_WEIGHTS: Mapping[int, int] = MappingProxyType(
         2: 30,
     }
 )
-

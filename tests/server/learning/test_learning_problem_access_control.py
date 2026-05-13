@@ -77,7 +77,7 @@ def _build_problem(*, problem_id: int, is_published: bool, created_by: int | Non
     now = utcnow()
     problem = Problem(
         id=problem_id,
-        kind=ProblemKind.coding,
+        kind=ProblemKind.analysis,
         title="Problem",
         description="Read this problem.",
         difficulty=ProblemDifficulty.easy,

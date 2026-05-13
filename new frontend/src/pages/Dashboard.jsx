@@ -12,8 +12,6 @@ import {
 
 const TOKEN_KEY = "code-learning-token";
 const SESSION_MARKER = "cookie-session";
-const DEFAULT_DAILY_TARGET = 10;
-
 function Dashboard() {
   const [token] = useState(localStorage.getItem(TOKEN_KEY));
   const [me, setMe] = useState(null);
@@ -21,6 +19,8 @@ function Dashboard() {
   const [goal, setGoal] = useState(null);
   const [settings, setSettings] = useState(readStoredProfileSettings);
   const [loading, setLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [notice, setNotice] = useState("");
 
   const apiRequest = useCallback(async (url, options = {}) => {
     const response = await fetch(url, {
@@ -32,12 +32,23 @@ function Dashboard() {
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
     });
-
-    if (!response.ok) {
-      throw new Error("대시보드 정보를 불러오지 못했습니다.");
+    const text = await response.text();
+    let payload = {};
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { detail: text };
+      }
     }
 
-    return response.json();
+    if (!response.ok) {
+      const error = new Error(payload.detail || payload.message || `대시보드 정보를 불러오지 못했습니다. (${response.status})`);
+      error.status = response.status;
+      throw error;
+    }
+
+    return payload;
   }, [token]);
 
   const loadDashboard = useCallback(async () => {
@@ -57,14 +68,15 @@ function Dashboard() {
       setGoal(goalData);
       setSettings(normalizedSettings);
       persistLearningSettings(normalizedSettings);
+      setErrorMessage("");
     } catch (error) {
-      console.warn(error);
-
-      // 백엔드 연결 전에도 화면을 확인할 수 있도록 기본값 처리
-      setMe({ display_name: "사용자" });
-      setHome(null);
-      setGoal({ dailyTargetSessions: DEFAULT_DAILY_TARGET });
-      setSettings(readStoredProfileSettings());
+      if (error.status === 401 || error.status === 403) {
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem("code-learning-display-name");
+        window.location.replace("/index.html");
+        return;
+      }
+      setErrorMessage(error.message || "대시보드를 불러오지 못했습니다.");
     } finally {
       setLoading(false);
     }
@@ -81,8 +93,8 @@ function Dashboard() {
         credentials: "same-origin",
         headers: token && token !== SESSION_MARKER ? { Authorization: `Bearer ${token}` } : {},
       });
-    } catch (error) {
-      console.warn(error);
+    } catch {
+      // Local session cleanup below is enough for the user-facing logout flow.
     }
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem("code-learning-display-name");
@@ -101,8 +113,9 @@ function Dashboard() {
       });
 
       await loadDashboard();
+      setNotice("일간 목표를 저장했습니다.");
     } catch (error) {
-      alert(error.message || "일간 목표 저장에 실패했습니다.");
+      setNotice(error.message || "일간 목표 저장에 실패했습니다.");
     }
   };
 
@@ -119,16 +132,32 @@ function Dashboard() {
       const normalizedSaved = normalizeProfileSettings(saved, nextSettings);
       setSettings(normalizedSaved);
       persistLearningSettings(normalizedSaved);
+      setNotice("학습 설정을 저장했습니다.");
     } catch (error) {
-      console.warn(error);
+      setNotice(error.message || "학습 설정 저장에 실패했습니다.");
     }
   };
+
+  const showBlockingError = Boolean(errorMessage && !home);
 
   return (
     <section id="dashboard-section" className="app dashboard-shell" aria-live="polite">
       <DashboardHeader onLogout={handleLogout} />
 
+      {showBlockingError ? (
+        <main className="dashboard-main">
+          <section id="dashboard-error" className="card dashboard-panel feedback-panel">
+            <h2>대시보드를 불러오지 못했습니다.</h2>
+            <p className="status-line">{errorMessage}</p>
+            <button className="primary" type="button" onClick={loadDashboard} disabled={loading}>
+              {loading ? "다시 불러오는 중" : "다시 시도"}
+            </button>
+          </section>
+        </main>
+      ) : (
       <main className="dashboard-main">
+        {notice ? <p id="dashboard-notice" className="toast">{notice}</p> : null}
+        {errorMessage ? <p id="dashboard-error-inline" className="status-line">{errorMessage}</p> : null}
         <DashboardHero
           me={me}
           home={home}
@@ -150,6 +179,7 @@ function Dashboard() {
 
         <ModeSection recommendedModes={home?.recommendedModes || []} />
       </main>
+      )}
     </section>
   );
 }

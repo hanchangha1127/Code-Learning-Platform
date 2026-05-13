@@ -1,0 +1,86 @@
+@media (max-width: 980px) {
+  .mode-shell,
+  .advanced-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .problem-bank-hero,
+  .problem-bank-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .problem-bank-hero {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .problem-bank-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    min-width: 0;
+  }
+
+  .admin-shell {
+    width: min(100% - 24px, 1380px);
+    padding-top: 16px;
+  }
+
+  .admin-topbar,
+  .admin-key-panel,
+  .admin-stat-grid,
+  .admin-chart-grid,
+  .admin-summary-grid,
+  .admin-summary-columns,
+  .admin-summary-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-topbar-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .admin-topbar-actions > * {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+
+  .admin-mode-table-head {
+    display: none;
+  }
+
+  .admin-mode-table-row {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .advanced-analysis-overview,
+  .advanced-workbench,
+  .advanced-analysis-bottom,
+  .advanced-editor-topbar,
+  .advanced-result-lists {
+    grid-template-columns: 1fr;
+  }
+
+  .advanced-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid #dde4ec;
+  }
+
+  .advanced-file-rail {
+    display: flex;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .advanced-explorer-item {
+    min-width: 190px;
+  }
+
+  .advanced-editor-header {
+    flex-direction: column;
+  }
+
+  .advanced-code-view {
+    max-height: min(42vh, 360px);
+  }
+}

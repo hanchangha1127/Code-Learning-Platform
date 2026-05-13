@@ -14,6 +14,9 @@ function DashboardHeader({ onLogout }) {
       </div>
 
       <div className="header-actions">
+        <a className="ghost" href="/problems.html">
+          문제
+        </a>
         <a className="ghost" href="/profile.html">
           프로필
         </a>

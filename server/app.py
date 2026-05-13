@@ -9,7 +9,7 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from server.bootstrap import ADMIN_FILE, FRONTEND_DIR, FRONTEND_IS_REACT_BUILD, admin_metrics, request_client_id, settings
+from server.bootstrap import ADMIN_FILE, FRONTEND_DIR, admin_metrics, request_client_id, settings
 from server.core.request_context import ensure_request_id, set_request_id
 from server.features.account.api import router as account_router
 from server.features.auth.api import router as platform_auth_router
@@ -195,8 +195,6 @@ def _mount_runtime_static(app: FastAPI) -> None:
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
         if static_dir.exists():
             app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-        elif not FRONTEND_IS_REACT_BUILD:
-            app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 
 def _include_runtime_routes(app: FastAPI) -> None:

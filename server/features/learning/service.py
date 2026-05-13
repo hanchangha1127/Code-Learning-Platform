@@ -1,4 +1,4 @@
-"""Domain services orchestrating storage, diagnostics, and learning logic."""
+﻿"""Domain services orchestrating storage, diagnostics, and learning logic."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from server.features.learning.normalization import (
     normalize_refactoring_choice_option_reviews,
     normalize_refactoring_choice_options,
     normalize_str_list,
-    select_context_inference_type,
     select_weighted_count,
 )
 from server.features.learning.policies import (
@@ -29,8 +28,6 @@ from server.features.learning.policies import (
     CODE_BLAME_CULPRIT_COUNT_WEIGHTS,
     CODE_BLAME_FACET_TAXONOMY,
     CODE_BLAME_OPTION_IDS,
-    CONTEXT_INFERENCE_COMPLEXITY_PROFILE_BY_DIFFICULTY,
-    CONTEXT_INFERENCE_TYPE_WEIGHTS,
     MODE_PASS_THRESHOLD,
     REFACTORING_CHOICE_COMPLEXITY_PROFILE_BY_DIFFICULTY,
     REFACTORING_CHOICE_CONSTRAINT_COUNT_BY_DIFFICULTY,
@@ -126,8 +123,6 @@ def _default_profile(username: str) -> Dict[str, Any]:
 # Mode handlers --------------------------------------------------------
 
 AUDITOR_PASS_THRESHOLD = MODE_PASS_THRESHOLD
-
-CONTEXT_INFERENCE_PASS_THRESHOLD = MODE_PASS_THRESHOLD
 
 REFACTORING_CHOICE_PASS_THRESHOLD = MODE_PASS_THRESHOLD
 
@@ -661,103 +656,6 @@ def submit_code_block_answer(
     }
 
 
-def request_code_error_problem(
-    service: Any,
-    username: str,
-    language_id: str,
-    difficulty_id: str,
-    *,
-    default_track_id: str,
-    difficulty_choices: Dict[str, Dict[str, str]],
-    utcnow: Callable[[], str],
-) -> Dict[str, Any]:
-    track_id = default_track_id
-    if language_id not in LANGUAGES:
-        raise ValueError("지원하지 않는 언어입니다.")
-    if difficulty_id not in difficulty_choices:
-        raise ValueError("지원하지 않는 난이도입니다.")
-
-    storage = service._get_user_storage(username)
-    history_context = service._code_error_history_context(storage)
-    problem_id = generate_token("cerr")
-
-    generated = service.problem_generator.generate_code_error_problem_sync(
-        problem_id=problem_id,
-        track_id=track_id,
-        language_id=language_id,
-        difficulty=difficulty_choices[difficulty_id]["generator"],
-        mode="code-error",
-        history_context=history_context,
-    )
-
-    storage.append(
-        {
-            "type": "code_error_instance",
-            "problem_id": problem_id,
-            "track": track_id,
-            "language": language_id,
-            "difficulty": difficulty_id,
-            "title": generated["title"],
-            "blocks": generated["blocks"],
-            "wrong_block_index": generated["wrong_block_index"],
-            "explanation": generated["explanation"],
-            "created_at": utcnow(),
-        }
-    )
-
-    return {
-        "problemId": problem_id,
-        "title": generated["title"],
-        "language": language_id,
-        "blocks": generated["blocks"],
-    }
-
-
-def submit_code_error_answer(
-    service: Any,
-    username: str,
-    problem_id: str,
-    selected_index: int,
-    *,
-    utcnow: Callable[[], str],
-) -> Dict[str, Any]:
-    storage = service._get_user_storage(username)
-    instance = storage.find_one(
-        lambda item: item.get("type") == "code_error_instance" and item.get("problem_id") == problem_id
-    )
-    if not instance:
-        raise ValueError("해당 코드 오류 문제를 찾지 못했습니다.")
-
-    try:
-        selected_idx = int(selected_index)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("선택한 블록 번호가 올바르지 않습니다.") from exc
-
-    correct_idx = int(instance.get("wrong_block_index", 0))
-    is_correct = selected_idx == correct_idx
-
-    _record_mode_event(
-        service,
-        storage,
-        username,
-        event_type="code_error_event",
-        problem_id=problem_id,
-        instance=instance,
-        utcnow=utcnow,
-        event_extra={
-            "selected_index": selected_idx,
-            "correct_index": correct_idx,
-            "correct": is_correct,
-        },
-    )
-
-    return {
-        "correct": is_correct,
-        "correctIndex": correct_idx,
-        "explanation": instance.get("explanation"),
-    }
-
-
 def request_auditor_problem(
     service: Any,
     username: str,
@@ -1101,142 +999,6 @@ def submit_fullstack_analysis_report(
         mode="fullstack-analysis",
         missing_problem_message="해당 풀스택 코드 분석 문제를 찾지 못했습니다.",
         utcnow=utcnow,
-    )
-
-
-def request_context_inference_problem(
-    service: Any,
-    username: str,
-    language_id: str,
-    difficulty_id: str,
-    *,
-    default_track_id: str,
-    difficulty_choices: Dict[str, Dict[str, str]],
-    utcnow: Callable[[], str],
-) -> Dict[str, Any]:
-    track_id = default_track_id
-    if language_id not in LANGUAGES:
-        raise ValueError("지원하지 않는 언어입니다.")
-    if difficulty_id not in difficulty_choices:
-        raise ValueError("지원하지 않는 난이도입니다.")
-
-    storage = service._get_user_storage(username)
-    history_context = service._context_inference_history_context(storage)
-    inference_type = select_context_inference_type(
-        difficulty_id,
-        weights_by_difficulty=CONTEXT_INFERENCE_TYPE_WEIGHTS,
-        default_difficulty="intermediate",
-    )
-    complexity_profile = CONTEXT_INFERENCE_COMPLEXITY_PROFILE_BY_DIFFICULTY.get(
-        difficulty_id,
-        CONTEXT_INFERENCE_COMPLEXITY_PROFILE_BY_DIFFICULTY["intermediate"],
-    )
-    problem_id = generate_token("cinfer")
-
-    try:
-        generated = service.problem_generator.generate_context_inference_problem_sync(
-            problem_id=problem_id,
-            track_id=track_id,
-            language_id=language_id,
-            difficulty=difficulty_choices[difficulty_id]["generator"],
-            mode="context-inference",
-            inference_type=inference_type,
-            complexity_profile=complexity_profile,
-            history_context=history_context,
-        )
-    except Exception as exc:  # pragma: no cover - network dependent path
-        raise ValueError("맥락 추론 문제 생성에 실패했습니다. 잠시 후 다시 시도해주세요.") from exc
-
-    expected_facets = normalize_str_list(generated.get("expected_facets"))
-    reference_report = str(generated.get("reference_report") or "").strip()
-    snippet = str(generated.get("snippet") or "").rstrip()
-    prompt = str(generated.get("prompt") or "").strip()
-    final_type = str(generated.get("inference_type") or inference_type).strip() or inference_type
-
-    storage.append(
-        {
-            "type": "context_inference_instance",
-            "problem_id": problem_id,
-            "track": track_id,
-            "language": language_id,
-            "mode": "context-inference",
-            "difficulty": difficulty_id,
-            "title": generated.get("title"),
-            "snippet": snippet,
-            "prompt": prompt,
-            "inference_type": final_type,
-            "expected_facets": expected_facets,
-            "reference_report": reference_report,
-            "complexity_profile": complexity_profile,
-            "created_at": utcnow(),
-        }
-    )
-
-    return {
-        "problemId": problem_id,
-        "title": generated.get("title"),
-        "language": language_id,
-        "difficulty": difficulty_id,
-        "snippet": snippet,
-        "prompt": prompt,
-        "inferenceType": final_type,
-    }
-
-
-def submit_context_inference_report(
-    service: Any,
-    username: str,
-    problem_id: str,
-    report: str,
-    *,
-    utcnow: Callable[[], str],
-) -> Dict[str, Any]:
-    normalized_report = _normalize_report_text(report)
-
-    storage = service._get_user_storage(username)
-    instance = _load_mode_instance(
-        storage,
-        instance_type="context_inference_instance",
-        problem_id=problem_id,
-        missing_message="problemId가 올바르지 않습니다.",
-    )
-
-    expected_facets = normalize_str_list(instance.get("expected_facets"))
-    reference_report = str(instance.get("reference_report") or "").strip()
-    inference_type = str(instance.get("inference_type") or "").strip() or "pre_condition"
-
-    try:
-        evaluation = service.ai_client.analyze_context_inference_report(
-            snippet=str(instance.get("snippet") or ""),
-            prompt=str(instance.get("prompt") or ""),
-            report=normalized_report,
-            expected_facets=expected_facets,
-            reference_report=reference_report,
-            inference_type=inference_type,
-            language=str(instance.get("language") or ""),
-            difficulty=str(instance.get("difficulty") or ""),
-        )
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        evaluation = _fallback_report_evaluation(exc, missed_types=expected_facets)
-
-    found_types = normalize_str_list((evaluation or {}).get("found_types"))
-    missed_types = normalize_str_list((evaluation or {}).get("missed_types"))
-    return _submit_report_mode(
-        service,
-        username,
-        storage,
-        instance,
-        problem_id,
-        normalized_report,
-        evaluation,
-        event_type="context_inference_event",
-        mode="context-inference",
-        pass_threshold=CONTEXT_INFERENCE_PASS_THRESHOLD,
-        reference_report=reference_report,
-        found_types=found_types,
-        missed_types=missed_types,
-        utcnow=utcnow,
-        event_extra={"inference_type": inference_type},
     )
 
 
@@ -1774,6 +1536,7 @@ def request_code_arrange_problem(
     default_track_id: str,
     difficulty_choices: Dict[str, Dict[str, str]],
     utcnow: Callable[[], str],
+    on_text_delta: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     track_id = default_track_id
     if language_id not in LANGUAGES:
@@ -1793,6 +1556,7 @@ def request_code_arrange_problem(
         mode="code-arrange",
         history_context=history_context,
         retry_context=None,
+        on_text_delta=on_text_delta,
     )
 
     blocks = service._chunk_and_shuffle_code(generated.code)
@@ -1953,20 +1717,10 @@ class LearningService:
     ) -> Dict[str, Any]:
         return await asyncio.to_thread(self.request_code_arrange_problem, username, language_id, difficulty_id)
 
-    async def request_code_error_problem_async(
-        self, username: str, language_id: str, difficulty_id: str
-    ) -> Dict[str, Any]:
-        return await asyncio.to_thread(self.request_code_error_problem, username, language_id, difficulty_id)
-
     async def request_auditor_problem_async(
         self, username: str, language_id: str, difficulty_id: str
     ) -> Dict[str, Any]:
         return await asyncio.to_thread(self.request_auditor_problem, username, language_id, difficulty_id)
-
-    async def request_context_inference_problem_async(
-        self, username: str, language_id: str, difficulty_id: str
-    ) -> Dict[str, Any]:
-        return await asyncio.to_thread(self.request_context_inference_problem, username, language_id, difficulty_id)
 
     async def request_refactoring_choice_problem_async(
         self, username: str, language_id: str, difficulty_id: str
@@ -2013,20 +1767,10 @@ class LearningService:
     ) -> Dict[str, Any]:
         return await asyncio.to_thread(self.submit_code_arrange_answer, username, problem_id, order)
 
-    async def submit_code_error_answer_async(
-        self, username: str, problem_id: str, selected_index: int
-    ) -> Dict[str, Any]:
-        return await asyncio.to_thread(self.submit_code_error_answer, username, problem_id, selected_index)
-
     async def submit_auditor_report_async(
         self, username: str, problem_id: str, report: str
     ) -> Dict[str, Any]:
         return await asyncio.to_thread(self.submit_auditor_report, username, problem_id, report)
-
-    async def submit_context_inference_report_async(
-        self, username: str, problem_id: str, report: str
-    ) -> Dict[str, Any]:
-        return await asyncio.to_thread(self.submit_context_inference_report, username, problem_id, report)
 
     async def submit_refactoring_choice_report_async(
         self, username: str, problem_id: str, selected_option: str, report: str
@@ -2115,27 +1859,6 @@ class LearningService:
             utcnow=_utcnow,
         )
 
-    def request_code_error_problem(self, username: str, language_id: str, difficulty_id: str) -> Dict[str, Any]:
-        language_id = _normalize_requested_language(language_id)
-        return request_code_error_problem(
-            self,
-            username,
-            language_id,
-            difficulty_id,
-            default_track_id=DEFAULT_TRACK_ID,
-            difficulty_choices=DIFFICULTY_CHOICES,
-            utcnow=_utcnow,
-        )
-
-    def submit_code_error_answer(self, username: str, problem_id: str, selected_index: int) -> Dict[str, Any]:
-        return submit_code_error_answer(
-            self,
-            username,
-            problem_id,
-            selected_index,
-            utcnow=_utcnow,
-        )
-
     def request_auditor_problem(
         self,
         username: str,
@@ -2154,18 +1877,6 @@ class LearningService:
             difficulty_choices=DIFFICULTY_CHOICES,
             utcnow=_utcnow,
             on_text_delta=on_text_delta,
-        )
-
-    def request_context_inference_problem(self, username: str, language_id: str, difficulty_id: str) -> Dict[str, Any]:
-        language_id = _normalize_requested_language(language_id)
-        return request_context_inference_problem(
-            self,
-            username,
-            language_id,
-            difficulty_id,
-            default_track_id=DEFAULT_TRACK_ID,
-            difficulty_choices=DIFFICULTY_CHOICES,
-            utcnow=_utcnow,
         )
 
     def request_refactoring_choice_problem(
@@ -2277,15 +1988,6 @@ class LearningService:
             utcnow=_utcnow,
         )
 
-    def submit_context_inference_report(self, username: str, problem_id: str, report: str) -> Dict[str, Any]:
-        return submit_context_inference_report(
-            self,
-            username,
-            problem_id,
-            report,
-            utcnow=_utcnow,
-        )
-
     def submit_refactoring_choice_report(
         self,
         username: str,
@@ -2363,7 +2065,13 @@ class LearningService:
             utcnow=_utcnow,
         )
 
-    def request_code_arrange_problem(self, username: str, language_id: str, difficulty_id: str) -> Dict[str, Any]:
+    def request_code_arrange_problem(
+        self,
+        username: str,
+        language_id: str,
+        difficulty_id: str,
+        on_text_delta: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
         language_id = _normalize_requested_language(language_id)
         return request_code_arrange_problem(
             self,
@@ -2373,6 +2081,7 @@ class LearningService:
             default_track_id=DEFAULT_TRACK_ID,
             difficulty_choices=DIFFICULTY_CHOICES,
             utcnow=_utcnow,
+            on_text_delta=on_text_delta,
         )
 
     def submit_code_arrange_answer(self, username: str, problem_id: str, order: List[str]) -> Dict[str, Any]:
@@ -2516,11 +2225,8 @@ class LearningService:
     def _collect_attempt_events(self, storage) -> List[Dict[str, Any]]:
         events: List[Dict[str, Any]] = []
         events.extend(storage.filter(lambda item: item.get("type") == "learning_event"))
-        events.extend(storage.filter(lambda item: item.get("type") == "code_calc_event"))
-        events.extend(storage.filter(lambda item: item.get("type") == "code_error_event"))
         events.extend(storage.filter(lambda item: item.get("type") == "code_arrange_event"))
         events.extend(storage.filter(lambda item: item.get("type") == "auditor_event"))
-        events.extend(storage.filter(lambda item: item.get("type") == "context_inference_event"))
         events.extend(storage.filter(lambda item: item.get("type") == "refactoring_choice_event"))
         events.extend(storage.filter(lambda item: item.get("type") == "code_blame_event"))
         events.extend(storage.filter(lambda item: item.get("type") == "single_file_analysis_event"))
@@ -2534,15 +2240,9 @@ class LearningService:
             instances[item.get("problem_id")] = item
         for item in storage.filter(lambda it: it.get("type") == "code_block_instance"):
             instances[item.get("problem_id")] = item
-        for item in storage.filter(lambda it: it.get("type") == "code_calc_instance"):
-            instances[item.get("problem_id")] = item
-        for item in storage.filter(lambda it: it.get("type") == "code_error_instance"):
-            instances[item.get("problem_id")] = item
         for item in storage.filter(lambda it: it.get("type") == "code_arrange_instance"):
             instances[item.get("problem_id")] = item
         for item in storage.filter(lambda it: it.get("type") == "auditor_instance"):
-            instances[item.get("problem_id")] = item
-        for item in storage.filter(lambda it: it.get("type") == "context_inference_instance"):
             instances[item.get("problem_id")] = item
         for item in storage.filter(lambda it: it.get("type") == "refactoring_choice_instance"):
             instances[item.get("problem_id")] = item
@@ -2650,20 +2350,6 @@ class LearningService:
             )
         return "\n".join(lines)
 
-    def _code_error_history_context(self, storage, limit: int = 5) -> Optional[str]:
-        items = storage.filter(lambda item: item.get("type") == "code_error_instance")
-        if not items:
-            return None
-        sorted_items = sorted(items, key=lambda item: item.get("created_at", ""), reverse=True)[:limit]
-        lines: List[str] = []
-        for idx, item in enumerate(sorted_items, 1):
-            title = item.get("title") or "미정 제목"
-            lang = item.get("language") or "-"
-            sample = (item.get("blocks") or [])
-            first = sample[0].splitlines()[0] if sample else ""
-            lines.append(f"{idx}. {lang} · {title} · 첫줄: {first}")
-        return "\n".join(lines)
-
     def _code_arrange_history_context(self, storage, limit: int = 5) -> Optional[str]:
         items = storage.filter(lambda item: item.get("type") == "code_arrange_instance")
         if not items:
@@ -2707,21 +2393,6 @@ class LearningService:
             trap_count = item.get("trap_count") or len(item.get("trap_catalog") or [])
             first_line = (item.get("code") or "").splitlines()[0] if item.get("code") else ""
             lines.append(f"{idx}. {lang}/{diff} - traps {trap_count} - {title} - first line: {first_line}")
-        return "\n".join(lines)
-
-    def _context_inference_history_context(self, storage, limit: int = 5) -> Optional[str]:
-        items = storage.filter(lambda item: item.get("type") == "context_inference_instance")
-        if not items:
-            return None
-        sorted_items = sorted(items, key=lambda item: item.get("created_at", ""), reverse=True)[:limit]
-        lines: List[str] = []
-        for idx, item in enumerate(sorted_items, 1):
-            title = item.get("title") or "Untitled"
-            lang = item.get("language") or "-"
-            diff = item.get("difficulty") or "-"
-            inference_type = item.get("inference_type") or "-"
-            first_line = (item.get("snippet") or "").splitlines()[0] if item.get("snippet") else ""
-            lines.append(f"{idx}. {lang}/{diff} - {inference_type} - {title} - first line: {first_line}")
         return "\n".join(lines)
 
     def _refactoring_choice_history_context(self, storage, limit: int = 5) -> Optional[str]:
@@ -2885,3 +2556,5 @@ def submit_mode_answer(*args: Any, **kwargs: Any) -> dict[str, Any]:
     from server.features.learning.history import submit_mode_answer as _impl
 
     return _impl(*args, **kwargs)
+
+

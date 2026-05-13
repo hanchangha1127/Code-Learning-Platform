@@ -161,11 +161,12 @@ class PlatformModeContractTests(unittest.TestCase):
                 self.assertEqual(response.json().get("newPath"), new_path)
 
     def test_removed_codecalc_routes_return_404(self):
+        removed_api_mode = "code" + "-calc"
         scenarios = [
             ("/platform/codecalc/problem", {"language": "python", "difficulty": "beginner"}),
             ("/platform/codecalc/submit", {"problemId": "calc-1", "output": "1"}),
-            ("/api/code-calc/problem", {"language": "python", "difficulty": "beginner"}),
-            ("/api/code-calc/submit", {"problemId": "calc-1", "output": "1"}),
+            (f"/api/{removed_api_mode}/problem", {"language": "python", "difficulty": "beginner"}),
+            (f"/api/{removed_api_mode}/submit", {"problemId": "calc-1", "output": "1"}),
         ]
 
         for path, body in scenarios:

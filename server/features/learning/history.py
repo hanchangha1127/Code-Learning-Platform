@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Callable
@@ -35,6 +36,7 @@ from server.features.jobs.queue import (
 from server.features.learning.continuity import sync_review_queue_for_submission
 from server.features.learning.catalog import infer_mode_from_problem, mode_from_problem_kind
 from server.features.learning.ops_service import record_ops_event
+from server.features.learning.problem_bank_service import publish_problem_after_submission
 from server.features.learning.problem_stat_service import classify_wrong_answer_type, update_user_problem_stat
 from server.features.reports.pdf import get_latest_report_detail
 from server.bootstrap import learning_service, storage_manager, user_service
@@ -174,12 +176,26 @@ def _get_int_env(name: str, default: int, *, minimum: int = 1) -> int:
     except (TypeError, ValueError):
         return max(default, minimum)
 
+
+def _get_float_env(name: str, default: float, *, minimum: float = 0.0) -> float:
+    raw = os.getenv(name)
+    if not raw:
+        return max(default, minimum)
+    try:
+        return max(float(raw), minimum)
+    except (TypeError, ValueError):
+        return max(default, minimum)
+
 _PROBLEM_FOLLOW_UP_WORKERS = _get_int_env("CODE_PLATFORM_PROBLEM_FOLLOW_UP_WORKERS", 8)
 
 _PROBLEM_FOLLOW_UP_PENDING_MAX = _get_int_env(
     "CODE_PLATFORM_PROBLEM_FOLLOW_UP_PENDING_MAX",
     max(_PROBLEM_FOLLOW_UP_WORKERS * 8, 128),
     minimum=_PROBLEM_FOLLOW_UP_WORKERS,
+)
+_PROBLEM_FOLLOW_UP_RESULT_TIMEOUT_SECONDS = _get_float_env(
+    "CODE_PLATFORM_PROBLEM_FOLLOW_UP_RESULT_TIMEOUT_SECONDS",
+    5.0,
 )
 
 _PROBLEM_FOLLOW_UP_EXECUTOR = ThreadPoolExecutor(
@@ -235,7 +251,7 @@ def _request_runtime_problem(
     if mode == "code-block":
         return learning_service.request_code_block_problem(username, language, difficulty, on_text_delta=on_text_delta)
     if mode == "code-arrange":
-        return learning_service.request_code_arrange_problem(username, language, difficulty)
+        return learning_service.request_code_arrange_problem(username, language, difficulty, on_text_delta=on_text_delta)
     if mode == "auditor":
         return learning_service.request_auditor_problem(username, language, difficulty, on_text_delta=on_text_delta)
     if mode == "refactoring-choice":
@@ -369,7 +385,7 @@ def _load_user_problem(session: Session, *, problem_id: str, user_id: int) -> Pr
         return None
 
     created_by = getattr(problem, "created_by", None)
-    if created_by is not None:
+    if created_by is not None and not getattr(problem, "is_published", False):
         try:
             if int(created_by) != int(user_id):
                 return None
@@ -514,6 +530,8 @@ def _persist_submission(
         if problem is None:
             raise RuntimeError(f"platform_dual_write_failed: missing problem for {mode}:{problem_id}")
 
+        publish_problem_after_submission(problem)
+
         stored_submission_payload = _bridge_payload(submission_payload, bridge_id)
         stored_result_payload = _bridge_payload(result_payload, bridge_id)
 
@@ -617,9 +635,7 @@ def _problem_title(payload: dict[str, Any], mode: str) -> str:
         "analysis": "코드 분석 문제",
         "code-block": "코드 블록 문제",
         "code-arrange": "코드 배치 문제",
-        "code-error": "코드 오류 문제",
         "auditor": "감사관 문제",
-        "context-inference": "맥락 추론 문제",
         "refactoring-choice": "최적의 선택 문제",
         "code-blame": "범인 찾기 문제",
     }
@@ -781,11 +797,8 @@ def _submission_code(mode: str, submission_payload: dict[str, Any]) -> str:
         return f"selected_option={submission_payload.get('selectedOption', submission_payload.get('selected_option'))}"
     if mode == "code-arrange":
         return json.dumps(submission_payload.get("order") or [], ensure_ascii=False)
-    if mode == "code-error":
-        return f"selected_index={submission_payload.get('selectedIndex', submission_payload.get('selected_index'))}"
     if mode in {
         "auditor",
-        "context-inference",
         "refactoring-choice",
         "code-blame",
         "single-file-analysis",
@@ -1124,8 +1137,6 @@ def _db_history_explanation(mode: str, submission: Submission, payload: dict[str
         if selected is None:
             return None
         return f"선택: {selected}"
-    if mode == "code-calc":
-        return f"제출 출력: {submission.code}" if submission.code else None
     return submission.code or None
 
 def _latest_submission_analysis(analyses: list[AIAnalysis] | tuple[AIAnalysis, ...]) -> AIAnalysis | None:
@@ -1221,6 +1232,14 @@ def _defer_problem_follow_up(*, allow_rq: bool = True, **kwargs: Any) -> Future[
         _run_and_release()
         completed.set_result(None)
         return completed
+
+
+def _wait_for_follow_up_completion(future: Future[None], *, timeout_seconds: float) -> None:
+    try:
+        future.result(timeout=timeout_seconds)
+    except FutureTimeoutError:
+        logger.warning("problem_follow_up_wait_timeout seconds=%.3f", timeout_seconds)
+        return
 
 def _defer_failure_ops_event(*, user_id: int, mode: str, latency_ms: int, language: str, difficulty: str) -> None:
     try:
@@ -1456,7 +1475,10 @@ def request_mode_problem(
             if on_payload_ready is not None:
                 on_payload_ready(response_payload)
             if future is not None:
-                future.result()
+                _wait_for_follow_up_completion(
+                    future,
+                    timeout_seconds=_PROBLEM_FOLLOW_UP_RESULT_TIMEOUT_SECONDS,
+                )
             return response_payload
         with _db_session(db) as session:
             if session is not None:

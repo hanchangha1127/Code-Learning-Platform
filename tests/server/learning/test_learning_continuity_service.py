@@ -157,7 +157,7 @@ class LearningContinuityServiceTests(unittest.TestCase):
         goal = SimpleNamespace(
             daily_target_sessions=8,
             weekly_target_sessions=8,
-            focus_modes=["analysis", "code-calc", "code-arrange"],
+            focus_modes=["analysis", "removed-mode", "code-arrange"],
             focus_topics=[],
             updated_at=None,
         )

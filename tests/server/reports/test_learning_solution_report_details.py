@@ -158,7 +158,7 @@ class LearningSolutionReportDetailTests(unittest.TestCase):
         problem = Problem(
             id=21,
             external_id="prob-21",
-            kind=ProblemKind.coding,
+            kind=ProblemKind.analysis,
             title="Return array sum",
             description="Return the sum of the array.",
             difficulty=ProblemDifficulty.medium,
@@ -261,7 +261,7 @@ class LearningSolutionReportDetailTests(unittest.TestCase):
             problem = Problem(
                 id=problem_id,
                 external_id=f"prob-{problem_id}",
-                kind=ProblemKind.coding,
+                kind=ProblemKind.analysis,
                 title=f"Problem {index + 1}",
                 description="Solve the task.",
                 difficulty=ProblemDifficulty.medium,

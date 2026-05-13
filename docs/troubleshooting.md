@@ -37,13 +37,13 @@ curl.exe --resolve hhtj.site:80:127.0.0.1 -I http://hhtj.site/health
 
 정상 동작일 수 있습니다. 현재 canonical 경로는 `/platform/*`이고, 대부분의 제거된 옛 학습 경로는 `410 Gone`으로 새 경로를 안내합니다.
 
-## 4. 페이지가 desktop/mobile 기준과 다르게 보임
+## 4. 페이지가 React 화면으로 보이지 않음
 
 확인 파일:
 
 - `server/features/runtime_ui/pages.py`
 - `server/features/runtime_ui/template_renderer.py`
-- `server/features/runtime_ui/user_agent.py`
+- `server/bootstrap.py`
 
 빠른 검증:
 
@@ -73,8 +73,7 @@ GET /platform/mode-jobs/{job_id}
 그래도 같은 현상이 보이면 먼저 확인할 것:
 
 - 브라우저 강력 새로고침 `Ctrl+F5`
-- `frontend/assets/js/core/problem_stream_client.js`
-- `frontend/assets/js/widgets/advanced_analysis_shell.js`
+- `new frontend/src/App.jsx`
 - `tests/e2e/inline_streaming.spec.mjs`
 
 ## 7. 고급 분석 3모드가 생성 후 500 에러가 남
@@ -110,15 +109,15 @@ cmd /c npm run test:e2e -- tests/e2e/inline_streaming.spec.mjs
 - `server/features/learning/reporting.py`
 - `server/features/learning/streaming.py`
 
-## 9. 프로필에서 공통 학습 설정이 비어 있음
+## 9. 대시보드에서 공통 학습 설정이 비어 있음
 
-프로필은 로컬 저장값만 보지 않고 `/platform/me/settings`를 기준으로 렌더링해야 합니다.
+대시보드는 로컬 저장값만 보지 않고 `/platform/me/settings`를 기준으로 렌더링해야 합니다.
 
 확인 파일:
 
-- `frontend/assets/js/pages/profile.js`
-- `frontend/pages/desktop/profile.html`
-- `frontend/pages/mobile/profile.html`
+- `new frontend/src/pages/Dashboard.jsx`
+- `new frontend/src/components/DashboardHero.jsx`
+- `new frontend/src/lib/learningSettings.js`
 
 캐시된 JS 때문에 예전 화면이 보일 수 있으니 `Ctrl+F5`를 먼저 해보는 것이 좋습니다.
 

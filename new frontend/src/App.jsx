@@ -1,6 +1,20 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Dashboard from "./pages/Dashboard.jsx";
+import ProblemBankPage from "./pages/ProblemBank.jsx";
+import AdminPage from "./pages/Admin.jsx";
+import { AppShell, LoadingScreen } from "./components/AppShell.jsx";
 import { BrandIcon } from "./components/SvgIcon.jsx";
+import {
+  apiRequest,
+  authHeaders,
+  errorMessageFromPayload,
+  isEventStreamResponse,
+  readJson,
+  saveSession,
+  useSessionGuard,
+  verifySession,
+} from "./lib/apiClient.js";
+import { displayModeLabel } from "./lib/modeLabels.js";
 import {
   languageTitle,
   normalizeLanguageId,
@@ -10,30 +24,12 @@ import {
   readStoredRuntimeSettings,
 } from "./lib/learningSettings.js";
 
-const TOKEN_KEY = "code-learning-token";
-const DISPLAY_NAME_KEY = "code-learning-display-name";
-const SESSION_MARKER = "cookie-session";
-
-const MODE_LABELS = {
-  analysis: "코드 분석",
-  "code-block": "코드 블록",
-  "code-arrange": "코드 배치",
-  auditor: "감사관 모드",
-  "refactoring-choice": "최적안 선택",
-  "code-blame": "범인 찾기",
-  "single-file-analysis": "단일 파일 분석",
-  "multi-file-analysis": "멀티 파일 분석",
-  "fullstack-analysis": "풀스택 분석",
-};
-
-const MODE_LABEL_ALIASES = {
-  "코드 해석": "코드 분석",
-  "순서 맞추기": "코드 배치",
-  "코드 점검": "감사관 모드",
-  "리팩터링 방식 선택": "최적안 선택",
-  "최적의 선택": "최적안 선택",
-  "원인 커밋 찾기": "범인 찾기",
-};
+const SUBMITTING_MESSAGE = "제출했습니다. 피드백을 불러오는 중입니다.";
+const SUBMITTED_MESSAGE = "제출 완료. 아래 피드백을 확인하세요.";
+const SUBMIT_FAILED_MESSAGE = "제출에 실패했습니다.";
+const STREAM_INITIAL_STATUS = "문제 생성을 시작했습니다.";
+const STREAM_FALLBACK_STATUS = "스트리밍을 사용할 수 없어 일반 요청으로 전환합니다.";
+const STREAM_LATE_ERROR_STATUS = "문제는 표시되었지만 저장 확인 중 오류가 발생했습니다.";
 
 const OUTCOME_LABELS = {
   passed: "정답",
@@ -67,54 +63,33 @@ const ADVANCED_CONFIG = {
   },
 };
 
+const PATH_ALIASES = {
+  "/index": "/index.html",
+  "/login": "/index.html",
+  "/dashboard": "/dashboard.html",
+  "/profile": "/profile.html",
+  "/problems": "/problems.html",
+  "/analysis": "/analysis.html",
+  "/codeblock": "/codeblock.html",
+  "/code-block": "/codeblock.html",
+  "/arrange": "/arrange.html",
+  "/auditor": "/auditor.html",
+  "/refactoring-choice": "/refactoring-choice.html",
+  "/code-blame": "/code-blame.html",
+  "/single-file-analysis": "/single-file-analysis.html",
+  "/multi-file-analysis": "/multi-file-analysis.html",
+  "/fullstack-analysis": "/fullstack-analysis.html",
+  "/admin": "/admin.html",
+};
+
 function normalizePath() {
   const path = window.location.pathname || "/";
   if (path === "/" || path === "/app.html") return "/dashboard.html";
-  return path;
+  return PATH_ALIASES[path] || path;
 }
 
-function getToken() {
-  return window.localStorage.getItem(TOKEN_KEY) || "";
-}
-
-function isSessionMarker(token) {
-  return String(token || "").trim() === SESSION_MARKER;
-}
-
-function authHeaders() {
-  const token = getToken();
-  if (!token || isSessionMarker(token)) return {};
-  return { Authorization: `Bearer ${token}` };
-}
-
-async function readJson(response) {
-  const text = await response.text();
-  if (!text) return {};
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { detail: text };
-  }
-}
-
-function errorMessageFromPayload(data, fallback) {
-  const detail = data?.detail ?? data?.message;
-  if (!detail) return fallback;
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail)) {
-    return detail
-      .map((item) => item?.msg || item?.message || JSON.stringify(item))
-      .filter(Boolean)
-      .join(" ");
-  }
-  if (typeof detail === "object") return detail.msg || detail.message || JSON.stringify(detail);
-  return String(detail);
-}
-
-function displayModeLabel(value) {
-  const text = String(value || "").trim();
-  if (!text) return "학습";
-  return MODE_LABELS[text] || MODE_LABEL_ALIASES[text] || text;
+function submitButtonClass(submitting) {
+  return `primary submit-button ${submitting ? "is-submitting" : ""}`.trim();
 }
 
 function reportTitle(report) {
@@ -152,75 +127,6 @@ function historyItemSummary(item) {
   return item?.feedback?.summary || item?.summary || item?.resultSummary || item?.result_summary || item?.explanation || "";
 }
 
-async function apiRequest(path, { method = "GET", body, auth = true, headers = {} } = {}) {
-  const response = await fetch(path, {
-    method,
-    credentials: "same-origin",
-    headers: {
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-      ...(auth ? authHeaders() : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  const data = await readJson(response);
-  if (!response.ok) {
-    throw new Error(errorMessageFromPayload(data, `요청에 실패했습니다. (${response.status})`));
-  }
-  return data;
-}
-
-function saveSession(payload) {
-  const token = payload?.accessToken || payload?.access_token || payload?.token || SESSION_MARKER;
-  window.localStorage.setItem(TOKEN_KEY, token || SESSION_MARKER);
-  const displayName = payload?.displayName || payload?.display_name || payload?.username || payload?.email || "";
-  if (displayName) window.localStorage.setItem(DISPLAY_NAME_KEY, displayName);
-}
-
-async function clearSession() {
-  try {
-    await fetch("/platform/auth/logout", { method: "POST", credentials: "same-origin" });
-  } catch {
-    // Ignore logout network cleanup.
-  }
-  window.localStorage.removeItem(TOKEN_KEY);
-  window.localStorage.removeItem(DISPLAY_NAME_KEY);
-}
-
-async function verifySession() {
-  try {
-    await apiRequest("/platform/profile");
-    const existingToken = getToken();
-    if (!existingToken || isSessionMarker(existingToken)) {
-      window.localStorage.setItem(TOKEN_KEY, SESSION_MARKER);
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function useSessionGuard(enabled = true) {
-  const [ready, setReady] = useState(!enabled);
-  useEffect(() => {
-    let active = true;
-    if (!enabled) return undefined;
-    verifySession().then((ok) => {
-      if (!active) return;
-      if (!ok) {
-        clearSession();
-        window.location.replace("/index.html");
-        return;
-      }
-      setReady(true);
-    });
-    return () => {
-      active = false;
-    };
-  }, [enabled]);
-  return ready;
-}
-
 function useLearningSettings() {
   const storedSettings = readStoredRuntimeSettings();
   const [language, setLanguage] = useState(storedSettings.language);
@@ -250,44 +156,6 @@ function useLearningSettings() {
 function variantFromUserAgent() {
   const ua = window.navigator.userAgent || "";
   return /iPhone|Android.+Mobile|IEMobile|BlackBerry|Opera Mini/i.test(ua) ? "mobile" : "desktop";
-}
-
-function AppShell({ children, title = "코드 학습", subtitle = "Code Reading Lab", active = "", actions = null }) {
-  return (
-    <section className="app dashboard-shell route-page">
-      <header className="app-header page-header dashboard-topbar">
-        <a className="brand-lockup" href="/dashboard.html">
-          <span className="brand-mark">
-            <BrandIcon />
-          </span>
-          <div>
-            <p className="eyebrow">{subtitle}</p>
-            <h1>{title}</h1>
-          </div>
-        </a>
-        <nav className="header-actions" aria-label="주요 이동">
-          <a className={active === "dashboard" ? "primary" : "ghost"} href="/dashboard.html">대시보드</a>
-          <a className={active === "profile" ? "primary" : "ghost"} href="/profile.html">프로필</a>
-          {actions}
-          <button
-            type="button"
-            className="ghost"
-            onClick={async () => {
-              await clearSession();
-              window.location.replace("/index.html");
-            }}
-          >
-            로그아웃
-          </button>
-        </nav>
-      </header>
-      {children}
-    </section>
-  );
-}
-
-function LoadingScreen() {
-  return <main className="dashboard-main"><section className="card dashboard-panel">세션을 확인하는 중입니다...</section></main>;
 }
 
 function LoginPage() {
@@ -397,6 +265,8 @@ function ProfilePage() {
   const reviewCount = state.home?.reviewQueue?.dueCount || 0;
   const target = state.home?.dailyGoal?.targetSessions || state.goal?.dailyTargetSessions || 10;
   const completed = state.home?.dailyGoal?.completedSessions || 0;
+  const firstReviewItem = Array.isArray(state.home?.reviewQueue?.items) ? state.home.reviewQueue.items[0] : null;
+  const reviewResumeLink = firstReviewItem?.resumeLink || firstReviewItem?.actionLink || "/analysis.html";
 
   async function generateReport() {
     setState((current) => ({ ...current, busyAction: "report", toast: "" }));
@@ -495,7 +365,7 @@ function ProfilePage() {
           <p id="profile-goal-progress" className="status-line">{completed} / {target}</p>
           <p id="profile-streak-days" className="status-line">{state.home?.streakDays || 0}일 연속 학습</p>
           <div className="profile-links">
-            <a id="profile-review-link" className="ghost" href="/analysis.html">복습 이어가기</a>
+            <a id="profile-review-link" className="ghost" href={reviewResumeLink}>복습 이어가기</a>
             <a id="profile-recommend-link" className="ghost" href="/dashboard.html">추천 모드 보기</a>
           </div>
         </section>
@@ -590,19 +460,188 @@ function ProfileModal({ modal, onClose }) {
   );
 }
 
-async function streamProblem(path, body) {
+function normalizeProblemPayload(payload) {
+  return payload?.problem || payload;
+}
+
+function isProblemFinal(problem) {
+  if (!problem || problem.__streaming) return false;
+  return Boolean(problem.problemId || problem.problem_id || problem.id);
+}
+
+function streamButtonClass(loading) {
+  return `primary ${loading ? "is-streaming" : ""}`.trim();
+}
+
+function useStreamAbortRef() {
+  const ref = useRef(null);
+  useEffect(() => () => {
+    if (ref.current) ref.current.abort();
+  }, []);
+  return ref;
+}
+
+function createStreamController(ref) {
+  if (ref.current) ref.current.abort();
+  const controller = new AbortController();
+  ref.current = controller;
+  return controller;
+}
+
+function clearStreamController(ref, controller) {
+  if (ref.current === controller) ref.current = null;
+}
+
+function decodeJsonString(value) {
+  try {
+    return JSON.parse(`"${String(value || "")}"`);
+  } catch {
+    return String(value || "").replace(/\\"/g, '"').replace(/\\n/g, "\n").replace(/\\\\/g, "\\");
+  }
+}
+
+function extractStringField(raw, names) {
+  for (const name of names) {
+    const pattern = new RegExp(`"${name}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`, "s");
+    const match = pattern.exec(raw);
+    if (match?.[1]) return decodeJsonString(match[1]);
+  }
+  return "";
+}
+
+function stripJsonFences(raw) {
+  return String(raw || "").replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+}
+
+function tryParseJsonObject(raw) {
+  const text = stripJsonFences(raw);
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function copyDraftArray(target, source, key) {
+  if (Array.isArray(source?.[key])) target[key] = source[key];
+}
+
+function parseStreamingProblemDraft(raw, mode) {
+  const text = String(raw || "");
+  if (!text.trim()) return null;
+  const parsed = tryParseJsonObject(text);
+  const source = parsed ? normalizeProblemPayload(parsed) : {};
+  const draft = { __streaming: true, mode };
+  const fieldMap = {
+    title: ["title"],
+    code: ["code"],
+    prompt: ["prompt"],
+    objective: ["objective"],
+    summary: ["summary"],
+    scenario: ["scenario"],
+    description: ["description"],
+    workspace: ["workspace"],
+    errorLog: ["errorLog", "error_log"],
+    language: ["language", "languageId", "language_id"],
+    difficulty: ["difficulty"],
+  };
+  Object.entries(fieldMap).forEach(([targetKey, names]) => {
+    const parsedValue = names.map((name) => source?.[name]).find((value) => typeof value === "string" && value.trim());
+    const value = parsedValue || extractStringField(text, names);
+    if (value) draft[targetKey] = value;
+  });
+  ["options", "constraints", "commits", "checklist", "files", "blocks"].forEach((key) => copyDraftArray(draft, source, key));
+  return Object.keys(draft).length > 2 ? draft : null;
+}
+
+function makeStreamingHandlers({ mode, setProblem, setStatus, onFinalPayload, onDraft }) {
+  let raw = "";
+  return {
+    onStatus(event) {
+      if (event?.message) setStatus(event.message);
+    },
+    onPartial(event) {
+      const delta = event?.delta ?? event?.text ?? event?.raw ?? "";
+      if (!delta) return;
+      raw += String(delta);
+      const draft = parseStreamingProblemDraft(raw, mode);
+      if (!draft) return;
+      if (onDraft) onDraft(draft);
+      else setProblem(draft);
+    },
+    onPayload(payload) {
+      const finalProblem = normalizeProblemPayload(payload);
+      if (onFinalPayload) onFinalPayload(finalProblem, payload);
+      else setProblem(finalProblem);
+    },
+    onError(error, context) {
+      if (context?.payloadSeen) {
+        setStatus(errorMessageFromPayload(error, STREAM_LATE_ERROR_STATUS));
+      }
+    },
+    onDone(event) {
+      if (event?.ok === true) setStatus("");
+    },
+  };
+}
+
+async function loadStreamedProblem({
+  path,
+  body,
+  mode,
+  abortRef,
+  setProblem,
+  setStatus,
+  setLoading,
+  onDraft,
+  onFinalPayload,
+}) {
+  const controller = createStreamController(abortRef);
+  setLoading(true);
+  setStatus(STREAM_INITIAL_STATUS);
+  try {
+    const handlers = makeStreamingHandlers({ mode, setProblem, setStatus, onFinalPayload, onDraft });
+    const payload = await streamProblem(path, body, { ...handlers, signal: controller.signal });
+    const finalProblem = normalizeProblemPayload(payload);
+    if (!finalProblem) throw new Error("문제를 불러오지 못했습니다.");
+    return finalProblem;
+  } catch (error) {
+    if (error?.name === "AbortError") return null;
+    setProblem(null);
+    setStatus(error.message || "문제를 불러오지 못했습니다.");
+    return null;
+  } finally {
+    setLoading(false);
+    clearStreamController(abortRef, controller);
+  }
+}
+
+async function streamProblem(path, body, handlers = {}) {
   let payload;
-  let failedBeforePayload = false;
+  let responseStarted = false;
   try {
     const response = await fetch(path, {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...authHeaders() },
+      signal: handlers.signal,
       body: JSON.stringify(body),
     });
-    if (!response.ok || !response.body || !(response.headers.get("content-type") || "").includes("text/event-stream")) {
-      failedBeforePayload = true;
-      throw new Error("스트리밍 응답을 사용할 수 없습니다.");
+    responseStarted = true;
+    if (!isEventStreamResponse(response)) {
+      const data = await readJson(response);
+      if (!response.ok) {
+        throw new Error(errorMessageFromPayload(data, `요청에 실패했습니다. (${response.status})`));
+      }
+      handlers.onStatus?.({ message: STREAM_FALLBACK_STATUS });
+      payload = data;
+      handlers.onPayload?.(payload);
+      handlers.onDone?.({ ok: true });
+      return payload;
     }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -615,18 +654,34 @@ async function streamProblem(path, body) {
       buffer = chunks.pop() || "";
       for (const chunk of chunks) {
         const event = parseSseEvent(chunk);
-        if (event.name === "payload") payload = event.data?.payload ?? event.data;
+        if (event.name === "status") handlers.onStatus?.(event.data);
+        if (event.name === "partial") handlers.onPartial?.(event.data);
+        if (event.name === "payload") {
+          payload = event.data?.payload ?? event.data;
+          handlers.onPayload?.(payload);
+        }
         if (event.name === "error" && payload === undefined) {
           throw new Error(errorMessageFromPayload(event.data, "스트리밍 처리에 실패했습니다."));
         }
+        if (event.name === "error" && payload !== undefined) {
+          handlers.onError?.(event.data, { payloadSeen: true });
+        }
+        if (event.name === "done") handlers.onDone?.(event.data);
       }
     }
-  } catch {
+    if (payload === undefined) {
+      throw new Error(response.ok ? "문제를 불러오지 못했습니다." : `요청에 실패했습니다. (${response.status})`);
+    }
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
     if (payload !== undefined) return payload;
-    failedBeforePayload = true;
-  }
-  if (failedBeforePayload) {
-    return apiRequest(path, { method: "POST", body });
+    if (responseStarted) throw error;
+
+    handlers.onStatus?.({ message: STREAM_FALLBACK_STATUS });
+    payload = await apiRequest(path, { method: "POST", body });
+    handlers.onPayload?.(payload);
+    handlers.onDone?.({ ok: true });
+    return payload;
   }
   return payload;
 }
@@ -656,6 +711,53 @@ async function resolveQueued(result) {
   throw new Error("대기열 작업 시간이 초과되었습니다.");
 }
 
+function getResumeReviewId() {
+  const value = new URLSearchParams(window.location.search || "").get("resume_review");
+  return /^\d+$/.test(String(value || "")) ? value : "";
+}
+
+function getBankProblemId() {
+  const value = new URLSearchParams(window.location.search || "").get("bank_problem");
+  return /^\d+$/.test(String(value || "")) ? value : "";
+}
+
+function extractProblemPayload(payload) {
+  const root = payload?.problem && typeof payload.problem === "object" ? payload.problem : payload;
+  if (!root || typeof root !== "object") return null;
+  if (root.problem && typeof root.problem === "object") {
+    const { problem, ...rest } = root;
+    return { ...problem, ...rest };
+  }
+  return root;
+}
+
+async function fetchReviewResumeProblem(reviewId) {
+  const payload = await apiRequest(`/platform/review-queue/${encodeURIComponent(reviewId)}/resume`);
+  const problem = extractProblemPayload(payload);
+  if (!problem) throw new Error("복습 문제를 불러오지 못했습니다.");
+  return problem;
+}
+
+async function fetchBankProblem(bankProblemId) {
+  const payload = await apiRequest(`/platform/problem-bank/${encodeURIComponent(bankProblemId)}/resume`);
+  const problem = extractProblemPayload(payload);
+  if (!problem) throw new Error("문제를 불러오지 못했습니다.");
+  return problem;
+}
+
+function fetchStoredProblem(resumeReviewId, bankProblemId) {
+  if (resumeReviewId) return fetchReviewResumeProblem(resumeReviewId);
+  if (bankProblemId) return fetchBankProblem(bankProblemId);
+  return null;
+}
+
+function arrangeBlocksFromProblem(problem) {
+  return (problem?.blocks || []).map((block, index) => ({
+    id: String(block.id || `block-${index + 1}`),
+    code: block.code || block.content || String(block),
+  }));
+}
+
 function AnalysisPage() {
   const ready = useSessionGuard();
   const settings = useLearningSettings();
@@ -663,43 +765,88 @@ function AnalysisPage() {
   const [answer, setAnswer] = useState("");
   const [feedback, setFeedback] = useState(null);
   const [status, setStatus] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const streamAbortRef = useStreamAbortRef();
+  const resumeReviewId = getResumeReviewId();
+  const bankProblemId = getBankProblemId();
+
+  useEffect(() => {
+    if (!ready || (!resumeReviewId && !bankProblemId)) return undefined;
+    let active = true;
+    fetchStoredProblem(resumeReviewId, bankProblemId)
+      .then((resumedProblem) => {
+        if (!active) return;
+        setProblem(resumedProblem);
+        setAnswer("");
+        setFeedback(null);
+        setSubmitting(false);
+        setLoading(false);
+        setStatus("");
+      })
+      .catch((error) => {
+        if (!active) return;
+        setProblem(null);
+        setStatus(error.message || "복습 문제를 불러오지 못했습니다.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [ready, resumeReviewId, bankProblemId]);
 
   if (!ready) return <LoadingScreen />;
+  const problemReady = isProblemFinal(problem);
 
   async function loadProblem() {
-    setStatus("문제를 불러오는 중입니다...");
+    if (submitting) return;
+    setProblem(null);
     setFeedback(null);
-    try {
-      const payload = await streamProblem("/platform/analysis/problem", { language: settings.language, difficulty: settings.difficulty });
-      setProblem(payload.problem || payload);
-      setStatus("");
-    } catch (error) {
-      setProblem(null);
-      setStatus(error.message);
-    }
+    setAnswer("");
+    setSubmitting(false);
+    await loadStreamedProblem({
+      path: "/platform/analysis/problem",
+      body: { language: settings.language, difficulty: settings.difficulty },
+      mode: "analysis",
+      abortRef: streamAbortRef,
+      setProblem,
+      setStatus,
+      setLoading,
+    });
   }
 
   async function submit(event) {
     event.preventDefault();
-    const result = await resolveQueued(await apiRequest("/platform/analysis/submit", {
-      method: "POST",
-      body: { problemId: problem?.problemId || problem?.id, languageId: settings.language, explanation: answer },
-    }));
-    setFeedback(result);
+    if (!problemReady || submitting) return;
+    setSubmitting(true);
+    setFeedback(null);
+    setStatus(SUBMITTING_MESSAGE);
+    try {
+      const result = await resolveQueued(await apiRequest("/platform/analysis/submit", {
+        method: "POST",
+        body: { problemId: problem?.problemId || problem?.id, languageId: problem?.language || settings.language, explanation: answer },
+      }));
+      setFeedback(result);
+      setStatus(SUBMITTED_MESSAGE);
+    } catch (error) {
+      setStatus(error.message || SUBMIT_FAILED_MESSAGE);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
     <AppShell title="코드 분석">
       <main className="mode-shell">
         <section className="card dashboard-panel quiz-panel">
-          <div className="mode-head"><h2 id="problem-title">{problem?.title || "문제를 불러오면 시작할 수 있습니다."}</h2><button id="btn-load-problem" className="primary" onClick={loadProblem}>문제 불러오기</button></div>
+          <div className="mode-head"><h2 id="problem-title">{problem?.title || "문제를 불러오면 시작할 수 있습니다."}</h2><button id="btn-load-problem" className={streamButtonClass(loading)} onClick={loadProblem} disabled={loading || submitting}>{loading ? "생성 중" : "문제 불러오기"}</button></div>
           <p className="status-line">{status}</p>
+          {problem?.__streaming ? <p id="analysis-stream-draft" className="stream-draft-label">생성 중인 문제를 실시간으로 표시하고 있습니다.</p> : null}
           <pre id="problem-code" className="code-block">{problem?.code || problem?.starterCode || "// 불러온 문제가 없습니다."}</pre>
           <p id="problem-prompt">{problem?.prompt || problem?.description || "문제를 불러온 뒤 코드의 동작을 설명하세요."}</p>
           <button id="btn-hint" className="ghost" type="button">힌트</button>
           <form id="answer-form" onSubmit={submit}>
             <textarea id="answer-text" value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="코드 동작을 설명하세요." />
-            <button className="primary" type="submit" disabled={!problem}>제출</button>
+            <button className={submitButtonClass(submitting)} type="submit" disabled={!problemReady || submitting}>{submitting ? "제출됨" : "제출"}</button>
           </form>
         </section>
         <FeedbackPanel feedback={feedback} prefix="feedback" />
@@ -724,23 +871,70 @@ function CodeBlockPage() {
   const [result, setResult] = useState(null);
   const [selectedOption, setSelectedOption] = useState(null);
   const [status, setStatus] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const streamAbortRef = useStreamAbortRef();
+  const resumeReviewId = getResumeReviewId();
+  const bankProblemId = getBankProblemId();
+
+  useEffect(() => {
+    if (!ready || (!resumeReviewId && !bankProblemId)) return undefined;
+    let active = true;
+    fetchStoredProblem(resumeReviewId, bankProblemId)
+      .then((resumedProblem) => {
+        if (!active) return;
+        setProblem(resumedProblem);
+        setResult(null);
+        setSelectedOption(null);
+        setSubmitting(false);
+        setLoading(false);
+        setStatus("");
+      })
+      .catch((error) => {
+        if (!active) return;
+        setProblem(null);
+        setStatus(error.message || "복습 문제를 불러오지 못했습니다.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [ready, resumeReviewId, bankProblemId]);
 
   if (!ready) return <LoadingScreen />;
+  const problemReady = isProblemFinal(problem);
 
   async function loadProblem() {
-    setStatus("불러오는 중입니다...");
-    const payload = await streamProblem("/platform/codeblock/problem", { language: settings.language, difficulty: settings.difficulty });
-    setProblem(payload.problem || payload);
+    if (submitting) return;
+    setProblem(null);
     setResult(null);
     setSelectedOption(null);
-    setStatus("");
+    setSubmitting(false);
+    await loadStreamedProblem({
+      path: "/platform/codeblock/problem",
+      body: { language: settings.language, difficulty: settings.difficulty },
+      mode: "code-block",
+      abortRef: streamAbortRef,
+      setProblem,
+      setStatus,
+      setLoading,
+    });
   }
 
   async function submit(index) {
+    if (!problemReady || submitting || result) return;
     setSelectedOption(index);
     setResult(null);
-    const payload = await apiRequest("/platform/codeblock/submit", { method: "POST", body: { problemId: problem?.problemId || problem?.id, selectedOption: index } });
-    setResult(payload);
+    setSubmitting(true);
+    setStatus(SUBMITTING_MESSAGE);
+    try {
+      const payload = await apiRequest("/platform/codeblock/submit", { method: "POST", body: { problemId: problem?.problemId || problem?.id, selectedOption: index } });
+      setResult(payload);
+      setStatus(SUBMITTED_MESSAGE);
+    } catch (error) {
+      setStatus(error.message || SUBMIT_FAILED_MESSAGE);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const correctAnswerValue = result?.correctAnswer ?? result?.correctAnswerIndex ?? result?.correct_answer_index ?? result?.answerIndex ?? result?.answer_index;
@@ -757,18 +951,19 @@ function CodeBlockPage() {
     <AppShell title="코드 블록">
       <main className="mode-shell">
         <section className="card dashboard-panel cb-board">
-          <div className="mode-head"><h2 id="cb-problem-title">{problem?.title || "코드 블록 문제를 불러오세요."}</h2><button id="cb-load-btn" className="primary" onClick={loadProblem}>불러오기</button></div>
+          <div className="mode-head"><h2 id="cb-problem-title">{problem?.title || "코드 블록 문제를 불러오세요."}</h2><button id="cb-load-btn" className={streamButtonClass(loading)} onClick={loadProblem} disabled={loading || submitting}>{loading ? "생성 중" : "불러오기"}</button></div>
           <p id="cb-status" className="status-line">{status}</p>
+          {problem?.__streaming ? <p className="stream-draft-label">빈칸 문제를 생성하며 코드와 지시문을 먼저 표시합니다.</p> : null}
           <p id="cb-problem-purpose" className="mode-instruction">{problem?.objective || problem?.summary || problem?.prompt || "빈칸에 들어갈 코드를 선택해 전체 흐름을 완성하세요."}</p>
           <pre id="cb-code-display" className="code-block"><CodeWithBlanks code={problem?.code} /></pre>
           <div id="cb-options-container" className="option-grid cb-options">
             {(problem?.options || []).map((option, index) => (
               <button
                 key={`${option}-${index}`}
-                className={`ghost cb-option-btn ${optionResultClass(index)}`.trim()}
+                className={`ghost cb-option-btn ${optionResultClass(index)} ${submitting && selectedOption === index ? "is-submitting" : ""}`.trim()}
                 type="button"
                 onClick={() => submit(index)}
-                disabled={!problem || Boolean(result)}
+                disabled={!problemReady || Boolean(result) || submitting}
                 aria-pressed={selectedOption === index}
               >
                 {String(option)}
@@ -777,7 +972,7 @@ function CodeBlockPage() {
           </div>
           <p id="cb-result-message">{result ? (result.correct ? "정답입니다" : "다시 시도해 보세요") : ""}</p>
           <p id="cb-explanation">{result?.explanation || result?.feedback?.summary || ""}</p>
-          <button id="cb-next-btn" className="ghost" onClick={loadProblem}>다음</button>
+          <button id="cb-next-btn" className="ghost" onClick={loadProblem} disabled={loading || submitting}>다음</button>
         </section>
       </main>
     </AppShell>
@@ -792,25 +987,83 @@ function ArrangePage() {
   const [draggingId, setDraggingId] = useState("");
   const [result, setResult] = useState(null);
   const [status, setStatus] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const streamAbortRef = useStreamAbortRef();
+  const resumeReviewId = getResumeReviewId();
+  const bankProblemId = getBankProblemId();
+
+  useEffect(() => {
+    if (!ready || (!resumeReviewId && !bankProblemId)) return undefined;
+    let active = true;
+    fetchStoredProblem(resumeReviewId, bankProblemId)
+      .then((resumedProblem) => {
+        if (!active) return;
+        setProblem(resumedProblem);
+        setBlocks(arrangeBlocksFromProblem(resumedProblem));
+        setResult(null);
+        setDraggingId("");
+        setSubmitting(false);
+        setLoading(false);
+        setStatus("");
+      })
+      .catch((error) => {
+        if (!active) return;
+        setProblem(null);
+        setBlocks([]);
+        setStatus(error.message || "복습 문제를 불러오지 못했습니다.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [ready, resumeReviewId, bankProblemId]);
 
   if (!ready) return <LoadingScreen />;
+  const problemReady = isProblemFinal(problem);
 
   async function loadProblem() {
-    setStatus("불러오는 중입니다...");
-    const payload = await apiRequest("/platform/arrange/problem", { method: "POST", body: { language: settings.language, difficulty: settings.difficulty } });
-    setProblem(payload.problem || payload);
-    setBlocks((payload.blocks || payload.problem?.blocks || []).map((block, index) => ({
-      id: String(block.id || `block-${index + 1}`),
-      code: block.code || block.content || String(block),
-    })));
+    if (submitting) return;
+    setProblem(null);
+    setBlocks([]);
     setResult(null);
     setDraggingId("");
-    setStatus("");
+    setSubmitting(false);
+    await loadStreamedProblem({
+      path: "/platform/arrange/problem",
+      body: { language: settings.language, difficulty: settings.difficulty },
+      mode: "code-arrange",
+      abortRef: streamAbortRef,
+      setProblem,
+      setStatus,
+      setLoading,
+      onDraft: (draft) => {
+        const safeDraft = { ...draft };
+        delete safeDraft.code;
+        delete safeDraft.blocks;
+        setProblem(safeDraft);
+        setBlocks([]);
+      },
+      onFinalPayload: (finalProblem) => {
+        setProblem(finalProblem);
+        setBlocks(arrangeBlocksFromProblem(finalProblem));
+      },
+    });
   }
 
   async function submit() {
-    const payload = await apiRequest("/platform/arrange/submit", { method: "POST", body: { problemId: problem?.problemId || problem?.id, order: blocks.map((block) => block.id) } });
-    setResult(payload);
+    if (!problemReady || submitting) return;
+    setSubmitting(true);
+    setResult(null);
+    setStatus(SUBMITTING_MESSAGE);
+    try {
+      const payload = await apiRequest("/platform/arrange/submit", { method: "POST", body: { problemId: problem?.problemId || problem?.id, order: blocks.map((block) => block.id) } });
+      setResult(payload);
+      setStatus(SUBMITTED_MESSAGE);
+    } catch (error) {
+      setStatus(error.message || SUBMIT_FAILED_MESSAGE);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const arrangeResultById = new Map(
@@ -883,10 +1136,11 @@ function ArrangePage() {
     <AppShell title="코드 배치">
       <main className="mode-shell">
         <section className="card dashboard-panel quiz-panel">
-          <div className="mode-head"><h2 id="arr-title">{problem?.title || "코드 배치 문제를 불러오세요."}</h2><button id="arr-load-btn" className="primary" onClick={loadProblem}>불러오기</button></div>
+          <div className="mode-head"><h2 id="arr-title">{problem?.title || "코드 배치 문제를 불러오세요."}</h2><button id="arr-load-btn" className={streamButtonClass(loading)} onClick={loadProblem} disabled={loading || submitting}>{loading ? "생성 중" : "불러오기"}</button></div>
           <p id="arr-status" className="status-line">{status}</p>
           <p id="arr-problem-prompt" className="mode-instruction">{problem?.prompt || problem?.objective || problem?.description || "섞인 코드 블록을 실행 순서에 맞게 드래그 앤 드롭으로 배치하세요."}</p>
           <p className="status-line">마우스 드래그 앤 드롭 또는 화살표 버튼으로 순서를 바꿀 수 있습니다.</p>
+          {problem?.__streaming ? <p id="arr-stream-safe-note" className="stream-draft-label">문제를 생성 중입니다. 완성 코드는 표시하지 않고, 섞인 블록이 준비되면 바로 나타납니다.</p> : null}
           <div id="arr-blocks" className="arrange-list arrange-blocks">
             {blocks.map((block, index) => (
               <div
@@ -915,8 +1169,8 @@ function ArrangePage() {
               </div>
             ))}
           </div>
-          <button id="arr-check-btn" className="primary" onClick={submit} disabled={!problem}>확인</button>
-          <button id="arr-next-btn" className="ghost" onClick={loadProblem}>다음</button>
+          <button id="arr-check-btn" className={submitButtonClass(submitting)} onClick={submit} disabled={!problemReady || submitting}>{submitting ? "제출됨" : "확인"}</button>
+          <button id="arr-next-btn" className="ghost" onClick={loadProblem} disabled={loading || submitting}>다음</button>
           <section id="arr-feedback" className="feedback-panel" hidden={!result}><p id="arr-feedback-text">{result?.feedback?.summary || (result?.correct ? "정답입니다" : "순서를 다시 검토하세요.")}</p></section>
           <section id="arr-answer" hidden={!result}><pre id="arr-answer-code" className="code-block">{result?.answerCode || (result?.answerOrder || []).join("\n")}</pre></section>
         </section>
@@ -939,25 +1193,74 @@ function ReportModePage({ kind }) {
   const [selected, setSelected] = useState([]);
   const [result, setResult] = useState(null);
   const [status, setStatus] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const streamAbortRef = useStreamAbortRef();
+  const resumeReviewId = getResumeReviewId();
+  const bankProblemId = getBankProblemId();
+
+  useEffect(() => {
+    if (!ready || (!resumeReviewId && !bankProblemId)) return undefined;
+    let active = true;
+    fetchStoredProblem(resumeReviewId, bankProblemId)
+      .then((resumedProblem) => {
+        if (!active) return;
+        setProblem(resumedProblem);
+        setReport("");
+        setSelected([]);
+        setResult(null);
+        setSubmitting(false);
+        setLoading(false);
+        setStatus("");
+      })
+      .catch((error) => {
+        if (!active) return;
+        setProblem(null);
+        setStatus(error.message || "복습 문제를 불러오지 못했습니다.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [ready, resumeReviewId, bankProblemId]);
 
   if (!ready) return <LoadingScreen />;
+  const problemReady = isProblemFinal(problem);
 
   async function loadProblem() {
-    setStatus("불러오는 중입니다...");
-    const payload = await streamProblem(config.problemPath, { language: settings.language, difficulty: settings.difficulty });
-    setProblem(payload.problem || payload);
+    if (submitting) return;
+    setProblem(null);
     setResult(null);
     setSelected([]);
-    setStatus("");
+    setSubmitting(false);
+    await loadStreamedProblem({
+      path: config.problemPath,
+      body: { language: settings.language, difficulty: settings.difficulty },
+      mode: kind,
+      abortRef: streamAbortRef,
+      setProblem,
+      setStatus,
+      setLoading,
+    });
   }
 
   async function submit(event) {
     event.preventDefault();
+    if (!problemReady || submitting) return;
     const body = { problemId: problem?.problemId || problem?.id, report };
     if (kind === "refactoring-choice") body.selectedOption = selected[0] || "";
     if (kind === "code-blame") body.selectedCommits = selected;
-    const payload = await resolveQueued(await apiRequest(config.submitPath, { method: "POST", body }));
-    setResult(payload);
+    setSubmitting(true);
+    setResult(null);
+    setStatus(SUBMITTING_MESSAGE);
+    try {
+      const payload = await resolveQueued(await apiRequest(config.submitPath, { method: "POST", body }));
+      setResult(payload);
+      setStatus(SUBMITTED_MESSAGE);
+    } catch (error) {
+      setStatus(error.message || SUBMIT_FAILED_MESSAGE);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const options = problem?.options || problem?.commits || [];
@@ -968,8 +1271,9 @@ function ReportModePage({ kind }) {
     <AppShell title={config.title}>
       <main className="mode-shell">
         <section className="card dashboard-panel quiz-panel">
-          <div className="mode-head"><h2 id={`${config.prefix}-problem-title`}>{problem?.title || `${config.title} 문제를 불러오세요.`}</h2><button id={loadId} className="primary" onClick={loadProblem}>불러오기</button></div>
+          <div className="mode-head"><h2 id={`${config.prefix}-problem-title`}>{problem?.title || `${config.title} 문제를 불러오세요.`}</h2><button id={loadId} className={streamButtonClass(loading)} onClick={loadProblem} disabled={loading || submitting}>{loading ? "생성 중" : "불러오기"}</button></div>
           <p id={statusId} className="status-line">{status}</p>
+          {problem?.__streaming ? <p className="stream-draft-label">문제 본문을 생성되는 순서대로 먼저 표시합니다.</p> : null}
           {kind === "auditor" ? (
             <>
               <pre id="auditor-problem-code" className="code-block">{problem?.code || "// 불러온 코드가 없습니다."}</pre>
@@ -1001,6 +1305,7 @@ function ReportModePage({ kind }) {
                     name={kind === "refactoring-choice" ? "selected-option" : "selected-commit"}
                     value={value}
                     checked={checked}
+                    disabled={!problemReady}
                     onChange={(event) => {
                       if (kind === "code-blame") {
                         setSelected((current) => event.target.checked ? [...current, value] : current.filter((item) => item !== value));
@@ -1017,7 +1322,7 @@ function ReportModePage({ kind }) {
           </div>
           <form id={`${config.prefix}-report-form`} onSubmit={submit}>
             <textarea id={`${config.prefix}-report-text`} value={report} onChange={(event) => setReport(event.target.value)} placeholder="판단 근거를 작성하세요." />
-            <button id={`${config.prefix}-submit-btn`} className="primary" type="submit" disabled={!problem}>제출</button>
+            <button id={`${config.prefix}-submit-btn`} className={submitButtonClass(submitting)} type="submit" disabled={!problemReady || submitting}>{submitting ? "제출됨" : "제출"}</button>
           </form>
         </section>
         <ReportFeedback prefix={config.prefix} result={result} kind={kind} />
@@ -1084,6 +1389,11 @@ function AdvancedAnalysisPage({ config }) {
   const [report, setReport] = useState("");
   const [result, setResult] = useState(null);
   const [status, setStatus] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const streamAbortRef = useStreamAbortRef();
+  const resumeReviewId = getResumeReviewId();
+  const bankProblemId = getBankProblemId();
 
   useEffect(() => {
     document.body.dataset.advancedAnalysisMode = config.mode;
@@ -1091,6 +1401,31 @@ function AdvancedAnalysisPage({ config }) {
       delete document.body.dataset.advancedAnalysisMode;
     };
   }, [config.mode]);
+
+  useEffect(() => {
+    if (!ready || (!resumeReviewId && !bankProblemId)) return undefined;
+    let active = true;
+    fetchStoredProblem(resumeReviewId, bankProblemId)
+      .then((resumedProblem) => {
+        if (!active) return;
+        setProblem(resumedProblem);
+        setActiveFileId((resumedProblem.files || [])[0]?.id || "");
+        setReport("");
+        setResult(null);
+        setSubmitting(false);
+        setLoading(false);
+        setStatus("");
+      })
+      .catch((error) => {
+        if (!active) return;
+        setProblem(null);
+        setActiveFileId("");
+        setStatus(error.message || "복습 문제를 불러오지 못했습니다.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [ready, resumeReviewId, bankProblemId]);
 
   if (!ready) return <LoadingScreen />;
 
@@ -1101,20 +1436,48 @@ function AdvancedAnalysisPage({ config }) {
   const activeRole = fileRole(activeFile);
   const activeLines = codeLines(activeFile.content);
   const loadedCount = files.length;
+  const problemReady = isProblemFinal(problem);
 
   async function loadProblem() {
-    setStatus("작업 공간을 불러오는 중입니다...");
-    const payload = await streamProblem(config.problemPath, { language: settings.language, difficulty: settings.difficulty });
-    setProblem(payload.problem || payload);
-    setActiveFileId((payload.files || payload.problem?.files || [])[0]?.id || "");
+    if (submitting) return;
+    setProblem(null);
+    setActiveFileId("");
     setResult(null);
-    setStatus("");
+    setSubmitting(false);
+    await loadStreamedProblem({
+      path: config.problemPath,
+      body: { language: settings.language, difficulty: settings.difficulty },
+      mode: config.mode,
+      abortRef: streamAbortRef,
+      setProblem,
+      setStatus,
+      setLoading,
+      onDraft: (draft) => {
+        setProblem(draft);
+        if ((draft.files || [])[0]?.id) setActiveFileId(draft.files[0].id);
+      },
+      onFinalPayload: (finalProblem) => {
+        setProblem(finalProblem);
+        setActiveFileId((finalProblem.files || [])[0]?.id || "");
+      },
+    });
   }
 
   async function submit(event) {
     event.preventDefault();
-    const payload = await resolveQueued(await apiRequest(config.submitPath, { method: "POST", body: { problemId: problem?.problemId || problem?.id, report } }));
-    setResult(payload);
+    if (!problemReady || submitting) return;
+    setSubmitting(true);
+    setResult(null);
+    setStatus(SUBMITTING_MESSAGE);
+    try {
+      const payload = await resolveQueued(await apiRequest(config.submitPath, { method: "POST", body: { problemId: problem?.problemId || problem?.id, report } }));
+      setResult(payload);
+      setStatus(SUBMITTED_MESSAGE);
+    } catch (error) {
+      setStatus(error.message || SUBMIT_FAILED_MESSAGE);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -1131,7 +1494,7 @@ function AdvancedAnalysisPage({ config }) {
               <span id="advanced-mode-file-range" className="pill">파일 {loadedCount || "-"}개</span>
             </div>
             <div className="advanced-mode-actions">
-              <button id="advanced-load-btn" className="primary" type="button" onClick={loadProblem}>문제 받기</button>
+              <button id="advanced-load-btn" className={streamButtonClass(loading)} type="button" onClick={loadProblem} disabled={loading || submitting}>{loading ? "생성 중" : "문제 받기"}</button>
               <p id="advanced-load-status" className="advanced-load-status">{status || "문제 받기를 누르면 IDE 워크스페이스가 채워집니다."}</p>
             </div>
           </section>
@@ -1239,7 +1602,7 @@ function AdvancedAnalysisPage({ config }) {
               <form onSubmit={submit}>
                 <label htmlFor="advanced-report-text">분석 리포트</label>
                 <textarea id="advanced-report-text" value={report} onChange={(event) => setReport(event.target.value)} placeholder="분석 내용을 작성하세요." />
-                <button id="advanced-submit-btn" className="primary" type="submit" disabled={!problem}>분석 제출</button>
+                <button id="advanced-submit-btn" className={submitButtonClass(submitting)} type="submit" disabled={!problemReady || submitting}>{submitting ? "제출됨" : "분석 제출"}</button>
               </form>
             </article>
 
@@ -1289,534 +1652,6 @@ function AdvancedAnalysisPage({ config }) {
   );
 }
 
-const ADMIN_REFRESH_INTERVAL_MS = 3000;
-const ADMIN_LOCALE = "ko-KR";
-const ADMIN_CHART_COLORS = ["#2563eb", "#16a34a", "#dc2626", "#7c3aed"];
-
-function encodeAdminKey(value) {
-  const bytes = new TextEncoder().encode(String(value || ""));
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function adminHeaders(key) {
-  return { "X-Admin-Key-B64": encodeAdminKey(key) };
-}
-
-function fmtAdminNumber(value) {
-  return Number(value || 0).toLocaleString(ADMIN_LOCALE);
-}
-
-function fmtAdminPercent(value) {
-  return `${Number(value || 0).toFixed(1)}%`;
-}
-
-function fmtAdminDate(value) {
-  if (!value) return "-";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return String(value);
-  return parsed.toLocaleString(ADMIN_LOCALE, {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function adminErrorMessage(payload, fallback) {
-  const detail = payload?.detail;
-  if (typeof detail === "string") return detail;
-  if (detail && typeof detail === "object") {
-    const code = detail.code ? ` [${detail.code}]` : "";
-    return `${detail.detail || detail.message || fallback}${code}`;
-  }
-  return payload?.message || fallback;
-}
-
-async function adminRequest(path, { method = "GET", key } = {}) {
-  const response = await fetch(path, {
-    method,
-    credentials: "same-origin",
-    cache: "no-store",
-    headers: adminHeaders(key),
-  });
-  const payload = await readJson(response);
-  if (!response.ok) {
-    throw new Error(adminErrorMessage(payload, `관리자 요청 실패 (${response.status})`));
-  }
-  return payload;
-}
-
-function shutdownMessage(shutdown = {}) {
-  if (shutdown.detail) return shutdown.detail;
-  switch (shutdown.reason) {
-    case "docker_socket_not_mounted":
-      return "Docker socket이 API 컨테이너에 연결되지 않아 스택 종료를 사용할 수 없습니다.";
-    case "shutdown_targets_not_found":
-      return "Compose 스택 컨테이너를 찾지 못했습니다.";
-    case "shutdown_targets_incomplete":
-      return "API 컨테이너만 감지되어 전체 스택 종료를 보장할 수 없습니다.";
-    case "docker_control_unavailable":
-      return "API 컨테이너에서 Docker daemon에 접근할 수 없습니다.";
-    case "local_process_disabled":
-      return "로컬 프로세스에서는 스택 종료를 사용할 수 없습니다.";
-    case "disabled_by_config":
-      return "관리자 종료 기능이 설정에서 비활성화되어 있습니다.";
-    default:
-      return "현재 설정에서는 스택 안전 종료를 사용할 수 없습니다.";
-  }
-}
-
-function chartMax(series) {
-  const values = series.flatMap((row) => row.values || []).map((value) => Number(value || 0));
-  return Math.max(1, ...values);
-}
-
-function labelIndexes(labels) {
-  const last = labels.length - 1;
-  if (last <= 0) return labels.length ? [0] : [];
-  return [...new Set([0, Math.floor(last / 2), last])];
-}
-
-function AdminLineChart({ id, labels = [], series = [], suffix = "" }) {
-  const width = 640;
-  const height = 230;
-  const pad = { top: 18, right: 18, bottom: 36, left: 44 };
-  const plotWidth = width - pad.left - pad.right;
-  const plotHeight = height - pad.top - pad.bottom;
-  const max = chartMax(series);
-  const hasData = labels.length > 0 && series.some((row) => (row.values || []).some((value) => Number(value || 0) > 0));
-  const xFor = (index) => pad.left + (labels.length <= 1 ? plotWidth / 2 : (index * plotWidth) / (labels.length - 1));
-  const yFor = (value) => pad.top + plotHeight - (Number(value || 0) / max) * plotHeight;
-  const gridLines = [0, 0.25, 0.5, 0.75, 1];
-
-  return (
-    <svg id={id} className="admin-chart-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={id}>
-      {gridLines.map((line) => {
-        const y = pad.top + plotHeight * line;
-        const value = Math.round(max * (1 - line));
-        return (
-          <g key={line}>
-            <line x1={pad.left} x2={width - pad.right} y1={y} y2={y} className="admin-chart-grid-line" />
-            <text x={pad.left - 8} y={y + 4} className="admin-chart-axis" textAnchor="end">{value}{suffix}</text>
-          </g>
-        );
-      })}
-      <line x1={pad.left} x2={pad.left} y1={pad.top} y2={height - pad.bottom} className="admin-chart-axis-line" />
-      <line x1={pad.left} x2={width - pad.right} y1={height - pad.bottom} y2={height - pad.bottom} className="admin-chart-axis-line" />
-      {labelIndexes(labels).map((index) => (
-        <text key={index} x={xFor(index)} y={height - 10} className="admin-chart-axis" textAnchor="middle">{labels[index]}</text>
-      ))}
-      {hasData ? series.map((row, index) => {
-        const points = (row.values || []).map((value, pointIndex) => `${xFor(pointIndex)},${yFor(value)}`).join(" ");
-        return <polyline key={row.label} points={points} fill="none" stroke={row.color || ADMIN_CHART_COLORS[index % ADMIN_CHART_COLORS.length]} className="admin-chart-line" />;
-      }) : (
-        <text x={width / 2} y={height / 2} className="admin-chart-empty" textAnchor="middle">표시할 데이터가 없습니다.</text>
-      )}
-    </svg>
-  );
-}
-
-function AdminBarChart({ id, labels = [], series = [] }) {
-  const width = 640;
-  const height = 230;
-  const pad = { top: 18, right: 18, bottom: 36, left: 44 };
-  const plotWidth = width - pad.left - pad.right;
-  const plotHeight = height - pad.top - pad.bottom;
-  const max = chartMax(series);
-  const groupCount = Math.max(labels.length, 1);
-  const groupWidth = plotWidth / groupCount;
-  const barWidth = Math.max(4, (groupWidth * 0.72) / Math.max(series.length, 1));
-  const hasData = labels.length > 0 && series.some((row) => (row.values || []).some((value) => Number(value || 0) > 0));
-  const yFor = (value) => pad.top + plotHeight - (Number(value || 0) / max) * plotHeight;
-
-  return (
-    <svg id={id} className="admin-chart-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={id}>
-      {[0, 0.25, 0.5, 0.75, 1].map((line) => {
-        const y = pad.top + plotHeight * line;
-        return <line key={line} x1={pad.left} x2={width - pad.right} y1={y} y2={y} className="admin-chart-grid-line" />;
-      })}
-      <line x1={pad.left} x2={width - pad.right} y1={height - pad.bottom} y2={height - pad.bottom} className="admin-chart-axis-line" />
-      {hasData ? labels.map((label, labelIndex) => {
-        const groupX = pad.left + labelIndex * groupWidth + groupWidth * 0.14;
-        return (
-          <g key={label}>
-            {series.map((row, seriesIndex) => {
-              const value = Number(row.values?.[labelIndex] || 0);
-              const barHeight = height - pad.bottom - yFor(value);
-              return (
-                <rect
-                  key={row.label}
-                  x={groupX + seriesIndex * barWidth}
-                  y={yFor(value)}
-                  width={barWidth - 2}
-                  height={Math.max(0, barHeight)}
-                  rx="3"
-                  fill={row.color || ADMIN_CHART_COLORS[seriesIndex % ADMIN_CHART_COLORS.length]}
-                />
-              );
-            })}
-          </g>
-        );
-      }) : (
-        <text x={width / 2} y={height / 2} className="admin-chart-empty" textAnchor="middle">표시할 데이터가 없습니다.</text>
-      )}
-      {labelIndexes(labels).map((index) => (
-        <text key={index} x={pad.left + index * groupWidth + groupWidth / 2} y={height - 10} className="admin-chart-axis" textAnchor="middle">{labels[index]}</text>
-      ))}
-    </svg>
-  );
-}
-
-function AdminChartCard({ title, legend = [], children }) {
-  return (
-    <article className="card dashboard-panel admin-chart-card">
-      <div className="admin-chart-head">
-        <h3>{title}</h3>
-        <div className="admin-chart-legend">
-          {legend.map((item, index) => (
-            <span key={item.label}><i style={{ background: item.color || ADMIN_CHART_COLORS[index % ADMIN_CHART_COLORS.length] }} />{item.label}</span>
-          ))}
-        </div>
-      </div>
-      <div className="admin-chart-wrap">{children}</div>
-    </article>
-  );
-}
-
-function AdminStatCard({ id, hintId, title, value, hint, tone = "blue" }) {
-  return (
-    <article className={`card dashboard-panel admin-stat-card tone-${tone}`}>
-      <span>{title}</span>
-      <strong id={id}>{value}</strong>
-      <p id={hintId}>{hint}</p>
-    </article>
-  );
-}
-
-function SummaryMetric({ label, value }) {
-  return <div className="admin-summary-metric"><span>{label}</span><strong>{fmtAdminNumber(value)}</strong></div>;
-}
-
-function SummaryList({ items, empty, renderItem }) {
-  if (!items?.length) return <p className="summary-empty">{empty}</p>;
-  return <ul className="summary-list">{items.map((item, index) => <li key={`${index}-${JSON.stringify(item)}`}>{renderItem(item)}</li>)}</ul>;
-}
-
-function ContentSummaryPanel({ summary = {} }) {
-  const statusCounts = summary.statusCounts || {};
-  const promptVersions = Array.isArray(summary.topPromptVersions) ? summary.topPromptVersions : [];
-  const pendingProblems = Array.isArray(summary.recentPendingProblems) ? summary.recentPendingProblems : [];
-
-  return (
-    <section id="content-summary-panel" className="card dashboard-panel admin-summary-panel">
-      <div className="dashboard-panel-head">
-        <div>
-          <h3>콘텐츠 운영 요약</h3>
-          <p>prompt version, 검수 상태, 최근 pending 문제를 확인합니다.</p>
-        </div>
-      </div>
-      <div className="admin-summary-metrics">
-        <SummaryMetric label="추적 중인 문제" value={summary.totals} />
-        <SummaryMetric label="pending" value={statusCounts.pending} />
-        <SummaryMetric label="approved" value={statusCounts.approved} />
-        <SummaryMetric label="hidden" value={statusCounts.hidden} />
-      </div>
-      <div className="admin-summary-columns">
-        <section>
-          <h4>상위 prompt version</h4>
-          <SummaryList
-            items={promptVersions}
-            empty="아직 기록된 prompt version이 없습니다."
-            renderItem={(item) => <><span>{item.version || "-"}</span><strong>{fmtAdminNumber(item.count)}</strong></>}
-          />
-        </section>
-        <section>
-          <h4>최근 pending 문제</h4>
-          <SummaryList
-            items={pendingProblems}
-            empty="현재 pending 상태 문제는 없습니다."
-            renderItem={(item) => (
-              <>
-                <div><strong>{item.title || "제목 없는 문제"}</strong><p>{item.mode || "-"} · {item.promptVersion || "버전 없음"}</p></div>
-                <span>{fmtAdminDate(item.createdAt)}</span>
-              </>
-            )}
-          />
-        </section>
-      </div>
-    </section>
-  );
-}
-
-function OpsEventsPanel({ summary = {} }) {
-  const statusCounts = summary.statusCounts || {};
-  const topEventTypes = Array.isArray(summary.topEventTypes) ? summary.topEventTypes : [];
-  const modeSummary = Array.isArray(summary.modeSummary) ? summary.modeSummary : [];
-  const latest = Array.isArray(summary.latest) ? summary.latest : [];
-
-  return (
-    <section id="ops-events-panel" className="card dashboard-panel admin-summary-panel">
-      <div className="dashboard-panel-head">
-        <div>
-          <h3>운영 이벤트 요약</h3>
-          <p>최근 {fmtAdminNumber(summary.windowHours || 24)}시간 이벤트 상태, 모드별 실패, 최신 이벤트를 확인합니다.</p>
-        </div>
-      </div>
-      <div className="admin-summary-metrics">
-        <SummaryMetric label="이벤트" value={summary.total} />
-        <SummaryMetric label="success" value={statusCounts.success} />
-        <SummaryMetric label="failure" value={statusCounts.failure} />
-        <SummaryMetric label="review_required" value={statusCounts.review_required} />
-      </div>
-      <div className="admin-summary-columns">
-        <section>
-          <h4>이벤트 타입 상위</h4>
-          <SummaryList
-            items={topEventTypes}
-            empty="최근 이벤트가 없습니다."
-            renderItem={(item) => <><span>{item.eventType || "-"}</span><strong>{fmtAdminNumber(item.count)}</strong></>}
-          />
-        </section>
-        <section>
-          <h4>모드별 상태</h4>
-          <SummaryList
-            items={modeSummary}
-            empty="최근 모드 이벤트가 없습니다."
-            renderItem={(item) => (
-              <>
-                <span>{displayModeLabel(item.mode)}</span>
-                <strong>호출 {fmtAdminNumber(item.total)} / 실패 {fmtAdminNumber(item.failure)} / {fmtAdminNumber(item.avgLatencyMs)}ms</strong>
-              </>
-            )}
-          />
-        </section>
-      </div>
-      <section className="latest-events">
-        <h4>최신 이벤트</h4>
-        <SummaryList
-          items={latest}
-          empty="표시할 최신 이벤트가 없습니다."
-          renderItem={(item) => (
-            <>
-              <div><strong>{item.eventType || "event"}</strong><p>{displayModeLabel(item.mode)} · {item.status || "-"} · {item.requestId || "request id 없음"}</p></div>
-              <span>{fmtAdminDate(item.createdAt)}</span>
-            </>
-          )}
-        />
-      </section>
-    </section>
-  );
-}
-
-function PlatformModesPanel({ platformModes = {} }) {
-  const modes = platformModes.modes || {};
-  const rows = Object.entries(modes).map(([mode, data]) => ({
-    mode,
-    problem: data.problem || {},
-    submit: data.submit || {},
-    background: data.submitBackground || {},
-    dispatch: data.dispatch || {},
-  }));
-  const count = (value) => Number(value || 0);
-
-  return (
-    <section className="card dashboard-panel admin-summary-panel admin-platform-panel">
-      <div className="dashboard-panel-head">
-        <div>
-          <h3>학습 모드 런타임</h3>
-          <p>문제 생성, 제출, 큐 처리 상태를 모드별로 확인합니다.</p>
-        </div>
-        <span className="pill soft">처리 중 {fmtAdminNumber(platformModes.inFlight)}</span>
-      </div>
-      <div className="admin-mode-table" role="table" aria-label="학습 모드 런타임">
-        <div role="row" className="admin-mode-table-head">
-          <span role="columnheader">모드</span>
-          <span role="columnheader">문제 생성</span>
-          <span role="columnheader">제출</span>
-          <span role="columnheader">큐</span>
-        </div>
-        {rows.length ? rows.map((row) => (
-          <div role="row" className="admin-mode-table-row" key={row.mode}>
-            <strong role="cell">{displayModeLabel(row.mode)}</strong>
-            <span role="cell">{fmtAdminNumber(row.problem.calls)}회 · 실패 {fmtAdminNumber(row.problem.failure)}</span>
-            <span role="cell">{fmtAdminNumber(count(row.submit.calls) + count(row.background.calls))}회 · 실패 {fmtAdminNumber(count(row.submit.failure) + count(row.background.failure))}</span>
-            <span role="cell">queued {fmtAdminNumber(row.dispatch.queued)} / inline {fmtAdminNumber(row.dispatch.inline)}</span>
-          </div>
-        )) : <p className="summary-empty">아직 기록된 학습 모드 호출이 없습니다.</p>}
-      </div>
-    </section>
-  );
-}
-
-function AdminPage() {
-  const [key, setKey] = useState(window.sessionStorage.getItem("admin_panel_key") || "");
-  const [metrics, setMetrics] = useState(null);
-  const [status, setStatus] = useState("메트릭 응답을 기다리는 중입니다.");
-  const [statusLevel, setStatusLevel] = useState("warn");
-  const [loading, setLoading] = useState(false);
-  const [shutdownBusy, setShutdownBusy] = useState(false);
-
-  const load = useCallback(async () => {
-    const trimmedKey = key.trim();
-    if (!trimmedKey) {
-      setStatus("관리자 키를 입력해 주세요.");
-      setStatusLevel("bad");
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const payload = await adminRequest("/api/admin/metrics", { key: trimmedKey });
-      const shutdown = payload?.admin?.shutdown || {};
-      setMetrics(payload);
-      if (shutdown.supported === false) {
-        setStatus(`메트릭은 정상 동작 중이지만 종료 기능은 제한됩니다. ${shutdownMessage(shutdown)}`);
-        setStatusLevel("warn");
-      } else {
-        setStatus("관리자 메트릭과 백엔드 기능이 정상 동작 중입니다.");
-        setStatusLevel("ok");
-      }
-    } catch (err) {
-      setStatus(err.message || "관리자 메트릭을 불러오지 못했습니다.");
-      setStatusLevel("bad");
-    } finally {
-      setLoading(false);
-    }
-  }, [key]);
-
-  useEffect(() => {
-    if (!key.trim()) return undefined;
-    load();
-    const timer = window.setInterval(load, ADMIN_REFRESH_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [key, load]);
-
-  async function shutdownStack() {
-    const trimmedKey = key.trim();
-    const shutdown = metrics?.admin?.shutdown || {};
-    if (!trimmedKey) {
-      setStatus("관리자 키를 입력해 주세요.");
-      setStatusLevel("bad");
-      return;
-    }
-    if (shutdown.supported === false) {
-      setStatus(shutdownMessage(shutdown));
-      setStatusLevel("warn");
-      return;
-    }
-
-    const ok = window.confirm("Docker 스택을 안전하게 종료할까요? 현재 접속과 작업이 모두 중단됩니다.");
-    if (!ok) return;
-
-    setShutdownBusy(true);
-    setStatus("종료 요청을 전송하는 중입니다...");
-    setStatusLevel("warn");
-    try {
-      const payload = await adminRequest("/api/admin/shutdown", { method: "POST", key: trimmedKey });
-      setStatus(`${payload.detail || "종료 요청이 접수되었습니다."} 서비스가 순차적으로 중지됩니다.`);
-      setStatusLevel("warn");
-    } catch (err) {
-      setStatus(err.message || "종료 요청에 실패했습니다.");
-      setStatusLevel("bad");
-      setShutdownBusy(false);
-    }
-  }
-
-  const aiTotals = metrics?.ai?.totals || {};
-  const aiTimeline = metrics?.ai?.timeline || {};
-  const userTimeline = metrics?.userTimeline || {};
-  const requestTimeline = metrics?.requestsTimeline || {};
-  const requestTotals = metrics?.requestTotals || {};
-  const shutdown = metrics?.admin?.shutdown || {};
-  const shutdownDisabled = shutdown.supported === false || shutdownBusy || loading;
-
-  return (
-    <section className="app dashboard-shell admin-shell">
-      <header className="app-header page-header dashboard-topbar admin-topbar">
-        <div className="brand-lockup">
-          <span className="brand-mark"><BrandIcon /></span>
-          <div>
-            <p className="eyebrow">관리자</p>
-            <h1>운영 현황</h1>
-            <p>실시간 접속, AI 사용량, 콘텐츠 상태, 운영 이벤트를 확인합니다.</p>
-          </div>
-        </div>
-        <div className="admin-topbar-actions">
-          <span id="last-updated" className="pill soft">마지막 갱신: {fmtAdminDate(metrics?.generatedAt)}</span>
-          <button id="refresh-btn" className="primary" type="button" onClick={load} disabled={loading}>{loading ? "갱신 중" : "지금 새로고침"}</button>
-          <button id="shutdown-btn" className="ghost danger" type="button" onClick={shutdownStack} disabled={shutdownDisabled} title={shutdown.supported === false ? shutdownMessage(shutdown) : ""}>스택 안전 종료</button>
-          <a className="ghost" href="/dashboard.html">대시보드</a>
-        </div>
-      </header>
-
-      <main className="admin-main">
-        <section className="card dashboard-panel admin-key-panel">
-          <div>
-            <h2>관리자 키</h2>
-            <p>키는 이 브라우저 세션에만 저장됩니다.</p>
-          </div>
-          <div className="goal-form-row">
-            <input id="admin-key" value={key} onChange={(event) => {
-              const nextKey = event.target.value;
-              setKey(nextKey);
-              if (nextKey.trim()) window.sessionStorage.setItem("admin_panel_key", nextKey);
-              else window.sessionStorage.removeItem("admin_panel_key");
-            }} placeholder="관리자 패널 키" />
-            <button id="admin-load" className="primary" type="button" onClick={load} disabled={loading}>지표 불러오기</button>
-          </div>
-        </section>
-
-        <section className="admin-stat-grid" aria-live="polite">
-          <AdminStatCard id="active-users" title="활성 사용자" value={fmtAdminNumber(metrics?.activeUsers)} hint="최근 활동 기준 사용자 수" tone="blue" />
-          <AdminStatCard id="active-clients" title="활성 클라이언트" value={fmtAdminNumber(metrics?.activeClients)} hint="현재 접속 중인 클라이언트 수" tone="green" />
-          <AdminStatCard id="inflight-requests" title="처리 중 요청" value={fmtAdminNumber(metrics?.inFlightRequests)} hint={`누적 요청 ${fmtAdminNumber(requestTotals.total)} · 오류율 ${fmtAdminPercent(requestTotals.errorRate)}`} tone="purple" />
-          <AdminStatCard id="ai-success-rate" hintId="ai-summary" title="AI 성공률" value={fmtAdminPercent(aiTotals.successRate)} hint={`호출 ${fmtAdminNumber(aiTotals.calls)} · 평균 지연 ${fmtAdminNumber(aiTotals.avgLatencyMs)}ms · 처리 중 ${fmtAdminNumber(metrics?.ai?.inFlight)}`} tone="orange" />
-        </section>
-
-        <section className="admin-chart-grid">
-          <AdminChartCard title="접속 추이" legend={[{ label: "활성 사용자", color: "#2563eb" }, { label: "활성 클라이언트", color: "#16a34a" }]}>
-            <AdminLineChart id="users-chart" labels={userTimeline.labels || []} series={[
-              { label: "활성 사용자", values: userTimeline.activeUsers || [], color: "#2563eb" },
-              { label: "활성 클라이언트", values: userTimeline.activeClients || [], color: "#16a34a" },
-            ]} />
-          </AdminChartCard>
-          <AdminChartCard title="분당 AI 사용량" legend={[{ label: "전체 호출", color: "#7c3aed" }, { label: "성공", color: "#16a34a" }, { label: "실패", color: "#dc2626" }]}>
-            <AdminBarChart id="ai-usage-chart" labels={aiTimeline.labels || []} series={[
-              { label: "전체 호출", values: aiTimeline.calls || [], color: "#7c3aed" },
-              { label: "성공", values: aiTimeline.success || [], color: "#16a34a" },
-              { label: "실패", values: aiTimeline.failure || [], color: "#dc2626" },
-            ]} />
-          </AdminChartCard>
-          <AdminChartCard title="AI 평균 지연 시간 (ms)" legend={[{ label: "평균 지연", color: "#c37d12" }]}>
-            <AdminLineChart id="ai-latency-chart" labels={aiTimeline.labels || []} series={[
-              { label: "평균 지연", values: aiTimeline.avgLatencyMs || [], color: "#c37d12" },
-            ]} />
-          </AdminChartCard>
-          <AdminChartCard title="요청 및 오류 추이" legend={[{ label: "요청 수", color: "#2563eb" }, { label: "오류 수", color: "#dc2626" }]}>
-            <AdminLineChart id="request-chart" labels={requestTimeline.labels || []} series={[
-              { label: "요청 수", values: requestTimeline.calls || [], color: "#2563eb" },
-              { label: "오류 수", values: requestTimeline.errors || [], color: "#dc2626" },
-            ]} />
-          </AdminChartCard>
-        </section>
-
-        <section className="admin-summary-grid">
-          <ContentSummaryPanel summary={metrics?.admin?.contentSummary || {}} />
-          <OpsEventsPanel summary={metrics?.admin?.opsEvents || {}} />
-        </section>
-        <PlatformModesPanel platformModes={metrics?.platformModes || {}} />
-
-        <section id="status-box" className={`status-row ${statusLevel}`}>
-          <strong>상태:</strong>
-          <span id="status-text">{status}</span>
-        </section>
-      </main>
-    </section>
-  );
-}
-
 function FeedbackPanel({ feedback, prefix }) {
   const body = feedback?.feedback || feedback;
   return (
@@ -1845,6 +1680,7 @@ function App() {
   if (path === "/index.html") return <LoginPage />;
   if (path === "/dashboard.html") return <DashboardPage />;
   if (path === "/profile.html") return <ProfilePage />;
+  if (path === "/problems.html") return <ProblemBankPage />;
   if (path === "/analysis.html") return <AnalysisPage />;
   if (path === "/codeblock.html") return <CodeBlockPage />;
   if (path === "/arrange.html") return <ArrangePage />;

@@ -124,7 +124,6 @@ def _request_problem_with_optional_stream(
     current: User,
 ):
     if _wants_problem_stream(request):
-        defer_persistence = mode != "code-arrange"
         return _stream_problem_response(
             request=request,
             work=lambda emit_payload, emit_partial: _execute_stream_problem(
@@ -136,9 +135,9 @@ def _request_problem_with_optional_stream(
                     language=body.language_id,
                     difficulty=body.difficulty_id,
                     db=None,
-                    defer_persistence=defer_persistence,
-                    on_payload_ready=emit_payload if defer_persistence else None,
-                    on_partial_ready=emit_partial if defer_persistence else None,
+                    defer_persistence=True,
+                    on_payload_ready=emit_payload,
+                    on_partial_ready=None if mode == "code-arrange" else emit_partial,
                 ),
             ),
         )

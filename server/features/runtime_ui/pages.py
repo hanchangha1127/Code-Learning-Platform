@@ -1,89 +1,22 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from pathlib import Path
+from fastapi import APIRouter, HTTPException, Response, status
+from fastapi.responses import FileResponse, RedirectResponse
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
-
-from server.bootstrap import FRONTEND_DIR, FRONTEND_IS_REACT_BUILD
+from server.bootstrap import FRONTEND_DIR
 from server.features.runtime_ui.template_renderer import render_template_response
-from server.features.runtime_ui.user_agent import is_mobile_user_agent
 
 router = APIRouter()
 
-APP_DIR = FRONTEND_DIR / "pages"
-DESKTOP_DIR = FRONTEND_DIR / "pages" / "desktop"
-MOBILE_DIR = FRONTEND_DIR / "pages" / "mobile"
 
-PAGE_FILES: dict[str, str] = {
-    "index": "index.html",
-    "dashboard": "dashboard.html",
-    "profile": "profile.html",
-    "analysis": "analysis.html",
-    "codeblock": "codeblock.html",
-    "arrange": "arrange.html",
-    "auditor": "auditor.html",
-    "refactoring-choice": "refactoring-choice.html",
-    "code-blame": "code-blame.html",
-    "single-file-analysis": "single-file-analysis.html",
-    "multi-file-analysis": "multi-file-analysis.html",
-    "fullstack-analysis": "fullstack-analysis.html",
-}
-
-REACT_PAGE_PATHS = {
-    "index": "index.html",
-    "dashboard": "dashboard.html",
-    "profile": "profile.html",
-    "analysis": "analysis.html",
-    "codeblock": "codeblock.html",
-    "arrange": "arrange.html",
-    "auditor": "auditor.html",
-    "refactoring-choice": "refactoring-choice.html",
-    "code-blame": "code-blame.html",
-    "single-file-analysis": "single-file-analysis.html",
-    "multi-file-analysis": "multi-file-analysis.html",
-    "fullstack-analysis": "fullstack-analysis.html",
-}
-
-
-def _variant_for_request(request: Request) -> str:
-    user_agent = request.headers.get("user-agent", "")
-    return "mobile" if is_mobile_user_agent(user_agent) else "desktop"
-
-
-def _template_path(page_key: str, *, variant: str) -> Path:
-    directory = MOBILE_DIR if variant == "mobile" else DESKTOP_DIR
-    return directory / PAGE_FILES[page_key]
-
-
-def _render_template(template_path: Path, *, variant: str) -> Response:
-    return render_template_response(
-        template_path,
-        frontend_dir=FRONTEND_DIR,
-        template_variant=variant,
-        vary_user_agent=True,
-    )
-
-
-def _render_page_or_404(request: Request, page_key: str, *, detail: str) -> Response:
-    if FRONTEND_IS_REACT_BUILD:
-        return _render_react_app(detail=detail)
-
-    variant = _variant_for_request(request)
-    template_path = _template_path(page_key, variant=variant)
-    if not template_path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
-    return _render_template(template_path, variant=variant)
-
-
-def _render_react_app(*, detail: str) -> Response:
+def _render_react_app(*, detail: str, template_variant: str = "react") -> Response:
     index_path = FRONTEND_DIR / "index.html"
     if not index_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
     return render_template_response(
         index_path,
         frontend_dir=FRONTEND_DIR,
-        template_variant="react",
+        template_variant=template_variant,
         vary_user_agent=False,
     )
 
@@ -110,27 +43,15 @@ def icons_svg() -> Response:
 
 
 @router.get("/", include_in_schema=False)
-def root(request: Request) -> Response:
-    if FRONTEND_IS_REACT_BUILD:
-        return _render_react_app(detail="React app not found")
-
-    variant = _variant_for_request(request)
-    template_path = _template_path("index", variant=variant)
-    if template_path.exists():
-        return _render_template(template_path, variant=variant)
-
-    return JSONResponse(
-        {
-            "message": "프런트엔드 파일을 찾을 수 없어 API 모드로 실행 중입니다.",
-            "docs": "/docs",
-            "health": "/health",
-        }
-    )
+def root() -> Response:
+    return _render_react_app(detail="React app not found")
 
 
 @router.get("/index.html", include_in_schema=False)
-def index_page(request: Request) -> Response:
-    return _render_page_or_404(request, "index", detail="Index page not found")
+@router.get("/index", include_in_schema=False)
+@router.get("/login", include_in_schema=False)
+def index_page() -> Response:
+    return _render_react_app(detail="Index page not found")
 
 
 @router.get("/app.html", include_in_schema=False)
@@ -139,55 +60,73 @@ def app_page() -> Response:
 
 
 @router.get("/dashboard.html", include_in_schema=False)
-def dashboard_page(request: Request) -> Response:
-    return _render_page_or_404(request, "dashboard", detail="Dashboard page not found")
+@router.get("/dashboard", include_in_schema=False)
+def dashboard_page() -> Response:
+    return _render_react_app(detail="Dashboard page not found")
 
 
 @router.get("/profile.html", include_in_schema=False)
-def profile_page(request: Request) -> Response:
-    return _render_page_or_404(request, "profile", detail="Profile page not found")
+@router.get("/profile", include_in_schema=False)
+def profile_page() -> Response:
+    return _render_react_app(detail="Profile page not found")
+
+
+@router.get("/problems.html", include_in_schema=False)
+@router.get("/problems", include_in_schema=False)
+def problems_page() -> Response:
+    return _render_react_app(detail="Problems page not found")
 
 
 @router.get("/analysis.html", include_in_schema=False)
-def analysis_page(request: Request) -> Response:
-    return _render_page_or_404(request, "analysis", detail="Analysis page not found")
+@router.get("/analysis", include_in_schema=False)
+def analysis_page() -> Response:
+    return _render_react_app(detail="Analysis page not found")
 
 
 @router.get("/codeblock.html", include_in_schema=False)
-def codeblock_page(request: Request) -> Response:
-    return _render_page_or_404(request, "codeblock", detail="Codeblock page not found")
+@router.get("/codeblock", include_in_schema=False)
+@router.get("/code-block", include_in_schema=False)
+def codeblock_page() -> Response:
+    return _render_react_app(detail="Codeblock page not found")
 
 
 @router.get("/arrange.html", include_in_schema=False)
-def arrange_page(request: Request) -> Response:
-    return _render_page_or_404(request, "arrange", detail="Arrange page not found")
+@router.get("/arrange", include_in_schema=False)
+def arrange_page() -> Response:
+    return _render_react_app(detail="Arrange page not found")
 
 
 @router.get("/auditor.html", include_in_schema=False)
-def auditor_page(request: Request) -> Response:
-    return _render_page_or_404(request, "auditor", detail="Auditor page not found")
+@router.get("/auditor", include_in_schema=False)
+def auditor_page() -> Response:
+    return _render_react_app(detail="Auditor page not found")
 
 
 @router.get("/refactoring-choice.html", include_in_schema=False)
-def refactoring_choice_page(request: Request) -> Response:
-    return _render_page_or_404(request, "refactoring-choice", detail="Refactoring choice page not found")
+@router.get("/refactoring-choice", include_in_schema=False)
+def refactoring_choice_page() -> Response:
+    return _render_react_app(detail="Refactoring choice page not found")
 
 
 @router.get("/code-blame.html", include_in_schema=False)
-def code_blame_page(request: Request) -> Response:
-    return _render_page_or_404(request, "code-blame", detail="Code blame page not found")
+@router.get("/code-blame", include_in_schema=False)
+def code_blame_page() -> Response:
+    return _render_react_app(detail="Code blame page not found")
 
 
 @router.get("/single-file-analysis.html", include_in_schema=False)
-def single_file_analysis_page(request: Request) -> Response:
-    return _render_page_or_404(request, "single-file-analysis", detail="Single file analysis page not found")
+@router.get("/single-file-analysis", include_in_schema=False)
+def single_file_analysis_page() -> Response:
+    return _render_react_app(detail="Single file analysis page not found")
 
 
 @router.get("/multi-file-analysis.html", include_in_schema=False)
-def multi_file_analysis_page(request: Request) -> Response:
-    return _render_page_or_404(request, "multi-file-analysis", detail="Multi file analysis page not found")
+@router.get("/multi-file-analysis", include_in_schema=False)
+def multi_file_analysis_page() -> Response:
+    return _render_react_app(detail="Multi file analysis page not found")
 
 
 @router.get("/fullstack-analysis.html", include_in_schema=False)
-def fullstack_analysis_page(request: Request) -> Response:
-    return _render_page_or_404(request, "fullstack-analysis", detail="Fullstack analysis page not found")
+@router.get("/fullstack-analysis", include_in_schema=False)
+def fullstack_analysis_page() -> Response:
+    return _render_react_app(detail="Fullstack analysis page not found")

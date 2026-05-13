@@ -7,7 +7,6 @@ from server.features.learning.policies import (
     CODE_BLAME_CULPRIT_COUNT_WEIGHTS,
     CODE_BLAME_OPTION_IDS,
     CODE_BLAME_FACET_TAXONOMY,
-    CONTEXT_INFERENCE_TYPE_WEIGHTS,
     REFACTORING_CHOICE_OPTION_IDS,
     REFACTORING_CHOICE_FACET_TAXONOMY,
 )
@@ -38,24 +37,6 @@ def normalize_trap_types(value: Any) -> list[str]:
             continue
         rows.append(token)
     return rows
-
-
-def select_context_inference_type(
-    difficulty_id: str,
-    *,
-    weights_by_difficulty: Mapping[str, Mapping[str, int]] = CONTEXT_INFERENCE_TYPE_WEIGHTS,
-    default_difficulty: str | None = "intermediate",
-) -> str:
-    weights = weights_by_difficulty.get(difficulty_id)
-    if not weights:
-        if default_difficulty is None:
-            raise ValueError("unsupported_context_inference_difficulty")
-        weights = weights_by_difficulty.get(default_difficulty)
-        if not weights:
-            raise ValueError("context_inference_weights_missing")
-
-    options = list(weights.keys())
-    return random.choices(options, weights=[weights[key] for key in options], k=1)[0]
 
 
 def select_weighted_count(

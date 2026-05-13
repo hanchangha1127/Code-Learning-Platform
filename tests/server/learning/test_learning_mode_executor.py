@@ -118,9 +118,9 @@ class PlatformModeExecutorTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 run_platform_mode_submit_background(
-                    "context-inference",
+                    "removed-mode",
                     7,
-                    {"problem_id": "ctx:runtime-problem", "report": "removed mode", "request_id": "req-ctx"},
+                    {"problem_id": "removed:runtime-problem", "report": "removed mode", "request_id": "req-removed"},
                 )
 
         mock_submit.assert_not_called()

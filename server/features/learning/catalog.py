@@ -40,12 +40,9 @@ EXTERNAL_ID_PREFIX_MODE_MAP: dict[str, str] = {
     "sfile": "single-file-analysis",
     "mfile": "multi-file-analysis",
     "fstack": "fullstack-analysis",
-    "cinfer": "context-inference",
     "rchoice": "refactoring-choice",
     "cblame": "code-blame",
     "auditor": "auditor",
-    "cerr": "code-error",
-    "ccalc": "code-calc",
     "cblock": "code-block",
     "analysis": "analysis",
 }
@@ -54,10 +51,7 @@ PROBLEM_KIND_MODE_MAP: dict[str, str] = {
     "analysis": "analysis",
     "code_block": "code-block",
     "code_arrange": "code-arrange",
-    "code_calc": "code-calc",
-    "code_error": "code-error",
     "auditor": "auditor",
-    "context_inference": "context-inference",
     "refactoring_choice": "refactoring-choice",
     "code_blame": "code-blame",
 }

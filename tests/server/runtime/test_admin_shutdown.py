@@ -145,7 +145,7 @@ def _build_client(
             admin_throttle_backend=admin_throttle_backend,
         ),
         admin_metrics=_FakeMetrics(),
-        admin_file=Path("frontend/admin.html"),
+        admin_file=Path("new-frontend/dist/index.html"),
     )
     return TestClient(app)
 

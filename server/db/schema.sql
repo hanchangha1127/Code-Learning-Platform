@@ -41,7 +41,7 @@ CREATE INDEX ix_user_sessions_active_lookup ON user_sessions (refresh_token_hash
 
 CREATE TABLE problems (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  kind ENUM('coding','code_block','auditor','context_inference','refactoring_choice','code_blame') NOT NULL,
+  kind ENUM('analysis','code_block','code_arrange','auditor','refactoring_choice','code_blame') NOT NULL,
   title VARCHAR(200) NOT NULL,
   description TEXT NOT NULL,
   difficulty ENUM('easy','medium','hard') NOT NULL,

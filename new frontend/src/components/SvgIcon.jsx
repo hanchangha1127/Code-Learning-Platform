@@ -126,27 +126,3 @@ export function ModeIcon({ type }) {
       );
   }
 }
-
-export function MiniIcon({ type }) {
-  if (type === "goal") {
-    return (
-      <IconSvg className="mini-svg">
-        <circle cx="24" cy="24" r="15" />
-        <circle cx="24" cy="24" r="8" />
-        <circle className="svg-fill-dot" cx="24" cy="24" r="3" />
-      </IconSvg>
-    );
-  }
-
-  if (type === "review") {
-    return (
-      <IconSvg className="mini-svg">
-        <path d="M13 10h22v28H13z" />
-        <path d="M18 18h12M18 25h10M18 32h7" />
-        <path d="m33 33 4 4" />
-      </IconSvg>
-    );
-  }
-
-  return <BrandIcon />;
-}

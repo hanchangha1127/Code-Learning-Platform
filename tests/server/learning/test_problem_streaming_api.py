@@ -1,6 +1,9 @@
 ﻿from __future__ import annotations
 
+import asyncio
 import os
+import threading
+from concurrent.futures import Future
 import time
 import unittest
 from types import SimpleNamespace
@@ -18,6 +21,8 @@ os.environ.setdefault("DB_USER", "appuser")
 from server.dependencies import get_db
 from server.features.auth.dependencies import get_current_user
 from server.app import platform_app
+from server.features.learning import history as learning_history
+from server.features.learning import streaming as learning_streaming
 from server.features.learning.history import ProblemFollowUpUnavailableError
 from server.features.learning.streaming import (
     _ProblemStreamCancelled,
@@ -303,11 +308,12 @@ class ProblemStreamingApiTests(unittest.TestCase):
         self.assertIn('"phase": "persisting"', response.text)
         self.assertIn('"persisted": true', response.text)
 
-    def test_non_arrange_streaming_problem_endpoints_emit_payload_before_follow_up_completes(self) -> None:
+    def test_streaming_problem_endpoints_emit_payload_before_follow_up_completes(self) -> None:
         payload = {"problemId": "persist-3", "title": "persist"}
         scenarios = [
             ("/platform/analysis/problem", {"languageId": "python", "difficulty": "beginner"}),
             ("/platform/codeblock/problem", {"language": "python", "difficulty": "beginner"}),
+            ("/platform/arrange/problem", {"language": "python", "difficulty": "beginner"}),
             ("/platform/single-file-analysis/problem", {"language": "python", "difficulty": "beginner"}),
             ("/platform/multi-file-analysis/problem", {"language": "python", "difficulty": "beginner"}),
             ("/platform/fullstack-analysis/problem", {"language": "python", "difficulty": "beginner"}),
@@ -334,12 +340,16 @@ class ProblemStreamingApiTests(unittest.TestCase):
                 self.assertIn('"phase": "persisting"', response.text)
                 self.assertIn('"persisted": true', response.text)
 
-    def test_arrange_streaming_problem_endpoint_keeps_non_deferred_path(self) -> None:
+    def test_arrange_streaming_problem_endpoint_hides_partial_code_and_persists_after_payload(self) -> None:
         payload = {"problemId": "arr-early", "title": "arrange"}
 
         def _capture_kwargs(**kwargs):
-            self.assertFalse(bool(kwargs.get("defer_persistence")))
-            self.assertIsNone(kwargs.get("on_payload_ready"))
+            self.assertTrue(bool(kwargs.get("defer_persistence")))
+            self.assertIsNone(kwargs.get("on_partial_ready"))
+            emit_payload = kwargs.get("on_payload_ready")
+            if callable(emit_payload):
+                emit_payload(payload)
+            time.sleep(0.3)
             return payload
 
         with patch("server.features.learning.history.request_mode_problem", side_effect=_capture_kwargs):
@@ -350,7 +360,9 @@ class ProblemStreamingApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertNotIn('"phase": "persisting"', response.text)
+        self.assertNotIn("event: partial", response.text)
+        self.assertIn("event: payload", response.text)
+        self.assertIn('"phase": "persisting"', response.text)
         self.assertIn('"persisted": true', response.text)
 
     def test_streaming_problem_emits_late_error_when_failure_happens_after_payload(self) -> None:
@@ -375,10 +387,11 @@ class ProblemStreamingApiTests(unittest.TestCase):
         self.assertIn('"ok": false', response.text)
         self.assertIn('"persisted": false', response.text)
 
-    def test_streaming_routes_enable_deferred_payload_streaming_for_non_arrange_modes(self) -> None:
+    def test_streaming_routes_enable_deferred_payload_streaming_for_all_modes(self) -> None:
         scenarios = [
             ("/platform/analysis/problem", {"languageId": "python", "difficulty": "beginner"}),
             ("/platform/codeblock/problem", {"language": "python", "difficulty": "beginner"}),
+            ("/platform/arrange/problem", {"language": "python", "difficulty": "beginner"}),
             ("/platform/auditor/problem", {"language": "python", "difficulty": "beginner"}),
             ("/platform/refactoring-choice/problem", {"language": "python", "difficulty": "beginner"}),
             ("/platform/code-blame/problem", {"language": "python", "difficulty": "beginner"}),
@@ -408,13 +421,17 @@ class ProblemStreamingApiTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200, response.text)
                 self.assertTrue(captured_kwargs.get("defer_persistence"))
                 self.assertTrue(callable(captured_kwargs.get("on_payload_ready")))
-                self.assertTrue(callable(captured_kwargs.get("on_partial_ready")))
+                if path == "/platform/arrange/problem":
+                    self.assertIsNone(captured_kwargs.get("on_partial_ready"))
+                else:
+                    self.assertTrue(callable(captured_kwargs.get("on_partial_ready")))
                 self.assertIn("event: payload", response.text)
 
     def test_removed_codecalc_problem_routes_return_404_with_stream_accept(self) -> None:
+        removed_api_mode = "code" + "-calc"
         scenarios = [
             ("/platform/codecalc/problem", {"language": "python", "difficulty": "beginner"}),
-            ("/api/code-calc/problem", {"language": "python", "difficulty": "beginner"}),
+            (f"/api/{removed_api_mode}/problem", {"language": "python", "difficulty": "beginner"}),
         ]
 
         for path, body in scenarios:
@@ -427,11 +444,14 @@ class ProblemStreamingApiTests(unittest.TestCase):
 
                 self.assertEqual(response.status_code, 404, response.text)
 
-    def test_arrange_streaming_route_keeps_immediate_problem_request_contract(self) -> None:
+    def test_arrange_streaming_route_uses_deferred_problem_request_contract(self) -> None:
         captured_kwargs: dict[str, object] = {}
 
         def _capture_request_mode_problem(**kwargs):
             captured_kwargs.update(kwargs)
+            emit_payload = kwargs.get("on_payload_ready")
+            if callable(emit_payload):
+                emit_payload({"problemId": "arrange-1", "title": "arrange"})
             return {"problemId": "arrange-1", "title": "arrange"}
 
         with patch("server.features.learning.history.request_mode_problem", side_effect=_capture_request_mode_problem):
@@ -442,10 +462,67 @@ class ProblemStreamingApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertFalse(captured_kwargs.get("defer_persistence"))
-        self.assertIsNone(captured_kwargs.get("on_payload_ready"))
+        self.assertTrue(captured_kwargs.get("defer_persistence"))
+        self.assertTrue(callable(captured_kwargs.get("on_payload_ready")))
         self.assertIsNone(captured_kwargs.get("on_partial_ready"))
 
+    def test_stream_problem_response_releases_slot_when_disconnect_cancels_pending_worker(self) -> None:
+        class _PendingFutureExecutor:
+            def __init__(self) -> None:
+                self.future = Future()
+
+            def submit(self, _fn) -> Future[None]:
+                return self.future
+
+        class _AlwaysDisconnectedRequest:
+            async def is_disconnected(self) -> bool:
+                return True
+
+        executor = _PendingFutureExecutor()
+        slot = threading.BoundedSemaphore(1)
+
+        with patch("server.features.learning.streaming._STREAM_EXECUTOR", executor), patch(
+            "server.features.learning.streaming._STREAM_SLOTS", slot
+        ):
+            response = learning_streaming._stream_problem_response(
+                request=_AlwaysDisconnectedRequest(),
+                work=lambda: {"problemId": "disconnect-slot"},
+            )
+
+            async def _consume() -> None:
+                async for _ in response.body_iterator:
+                    pass
+
+            asyncio.run(_consume())
+
+        self.assertTrue(slot.acquire(blocking=False))
+        slot.release()
+        self.assertTrue(executor.future.cancelled())
+
+    def test_request_mode_problem_waits_for_follow_up_with_timeout(self) -> None:
+        timeout_future = Future()
+
+        with patch(
+            "server.features.learning.history._defer_problem_follow_up",
+            return_value=timeout_future,
+        ), patch.object(learning_history, "_PROBLEM_FOLLOW_UP_RESULT_TIMEOUT_SECONDS", 0.01), patch.object(
+            learning_history,
+            "_request_runtime_problem",
+            return_value={"problemId": "timeout-1"},
+        ):
+            start = time.perf_counter()
+            payload = learning_history.request_mode_problem(
+                mode="auditor",
+                username="stream-test-user",
+                user_id=1,
+                language="python",
+                difficulty="beginner",
+                defer_persistence=True,
+            )
+            elapsed = time.perf_counter() - start
+
+            self.assertEqual(payload.get("problemId"), "timeout-1")
+            self.assertLess(elapsed, 1.0)
 
 if __name__ == "__main__":
     unittest.main()

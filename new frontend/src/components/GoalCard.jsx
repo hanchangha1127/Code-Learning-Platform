@@ -17,6 +17,7 @@ function GoalCard({ home, goal, loading, onGoalSave }) {
   const streakDays = home?.streakDays || 0;
 
   const [inputGoal, setInputGoal] = useState(target);
+  const [validationMessage, setValidationMessage] = useState("");
 
   useEffect(() => {
     setInputGoal(target);
@@ -28,10 +29,11 @@ function GoalCard({ home, goal, loading, onGoalSave }) {
     const nextGoal = Number(inputGoal);
 
     if (!Number.isFinite(nextGoal) || nextGoal < 1 || nextGoal > 70) {
-      alert("하루 목표는 1 이상 70 이하로 입력해 주세요.");
+      setValidationMessage("하루 목표는 1 이상 70 이하로 입력해 주세요.");
       return;
     }
 
+    setValidationMessage("");
     await onGoalSave(nextGoal);
   };
 
@@ -86,6 +88,7 @@ function GoalCard({ home, goal, loading, onGoalSave }) {
             저장
           </button>
         </div>
+        {validationMessage ? <p className="status-line" role="alert">{validationMessage}</p> : null}
 
         <div id="dashboard-goal-presets" className="preset-row">
           {[10, 20, 30].map((value) => (

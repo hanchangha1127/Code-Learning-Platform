@@ -35,9 +35,13 @@ class ReactSpaPageTests(unittest.TestCase):
         for path in (
             "/",
             "/index.html",
+            "/dashboard",
             "/dashboard.html",
             "/profile.html",
+            "/problems",
+            "/problems.html",
             "/analysis.html",
+            "/analysis",
             "/codeblock.html",
             "/arrange.html",
             "/auditor.html",
@@ -52,6 +56,7 @@ class ReactSpaPageTests(unittest.TestCase):
 
     def test_admin_route_uses_same_react_entry_with_responsive_header(self) -> None:
         self.assert_react_entry("/admin.html", template_variant="responsive")
+        self.assert_react_entry("/admin", template_variant="responsive")
 
     def test_app_route_keeps_dashboard_redirect(self) -> None:
         response = self.client.get("/app.html", follow_redirects=False)
